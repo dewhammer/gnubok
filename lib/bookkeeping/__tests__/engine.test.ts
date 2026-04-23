@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { validateBalance, getSwedishLocalDate, createDraftEntry, reverseEntry } from '../engine'
+import { BookkeepingDatabaseError } from '../errors'
 import type { CreateJournalEntryLineInput, JournalEntryStatus } from '@/types'
 
 // Mock Supabase client for createDraftEntry/reverseEntry tests
@@ -167,7 +168,7 @@ describe('createDraftEntry — cancelled status on line-insert failure', () => {
           { account_number: '3001', debit_amount: 0, credit_amount: 1000 },
         ],
       })
-    ).rejects.toThrow('Failed to create journal entry lines')
+    ).rejects.toThrow(BookkeepingDatabaseError)
 
     // Should call update with cancelled status, NOT delete
     expect(updateMock).toHaveBeenCalledWith({ status: 'cancelled' })

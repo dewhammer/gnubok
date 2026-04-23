@@ -1,6 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { eventBus } from '@/lib/events'
-import { AccountsNotInChartError } from '@/lib/bookkeeping/errors'
+import {
+  AccountsNotInChartError,
+  BookkeepingDatabaseError,
+  CannotReverseNonPostedError,
+  EntryAlreadyReversedError,
+  EntryDateOutsideFiscalPeriodError,
+  FiscalPeriodNotFoundError,
+  JournalEntryNotBalancedError,
+  JournalEntryNotFoundError,
+} from '@/lib/bookkeeping/errors'
 import type {
   CreateJournalEntryInput,
   CreateJournalEntryLineInput,
@@ -48,7 +57,7 @@ export async function getNextVoucherNumber(
   })
 
   if (error) {
-    throw new Error(`Failed to get next voucher number: ${error.message}`)
+    throw new BookkeepingDatabaseError('get_next_voucher_number', error.message)
   }
 
   return data as number
@@ -87,7 +96,7 @@ async function resolveAccountIds(
   const { data: accounts, error } = await query
 
   if (error) {
-    throw new Error(`Failed to resolve account IDs: ${error.message}`)
+    throw new BookkeepingDatabaseError('resolve_account_ids', error.message)
   }
 
   const map = new Map<string, string>()
@@ -165,9 +174,7 @@ export async function createDraftEntry(
   // Validate balance
   const balance = validateBalance(input.lines)
   if (!balance.valid) {
-    throw new Error(
-      `Journal entry is not balanced: debits (${balance.totalDebit}) != credits (${balance.totalCredit})`
-    )
+    throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'draft')
   }
 
   // Validate that entry_date falls within the selected fiscal period
@@ -179,12 +186,15 @@ export async function createDraftEntry(
     .single()
 
   if (periodError || !period) {
-    throw new Error('Fiscal period not found')
+    throw new FiscalPeriodNotFoundError()
   }
 
   if (input.entry_date < period.period_start || input.entry_date > period.period_end) {
-    throw new Error(
-      `Entry date ${input.entry_date} is outside fiscal period "${period.name}" (${period.period_start} - ${period.period_end})`
+    throw new EntryDateOutsideFiscalPeriodError(
+      input.entry_date,
+      period.name,
+      period.period_start,
+      period.period_end
     )
   }
 
@@ -218,7 +228,7 @@ export async function createDraftEntry(
     .single()
 
   if (entryError || !entry) {
-    throw new Error(`Failed to create draft journal entry: ${entryError?.message}`)
+    throw new BookkeepingDatabaseError('create_draft_entry', entryError?.message)
   }
 
   // Insert journal entry lines with dimensions
@@ -230,7 +240,7 @@ export async function createDraftEntry(
 
   if (linesError) {
     await supabase.from('journal_entries').update({ status: 'cancelled' }).eq('id', entry.id)
-    throw new Error(`Failed to create journal entry lines: ${linesError.message}`)
+    throw new BookkeepingDatabaseError('create_entry_lines', linesError.message)
   }
 
   // Fetch complete entry with lines
@@ -275,7 +285,7 @@ export async function commitEntry(
   })
 
   if (commitError) {
-    throw new Error(`Failed to commit journal entry: ${commitError.message}`)
+    throw new BookkeepingDatabaseError('commit_entry', commitError.message)
   }
 
   // Fetch complete posted entry with lines
@@ -362,11 +372,11 @@ export async function reverseEntry(
     .single()
 
   if (error || !original) {
-    throw new Error('Journal entry not found')
+    throw new JournalEntryNotFoundError()
   }
 
   if (original.status !== 'posted') {
-    throw new Error('Can only reverse posted entries')
+    throw new CannotReverseNonPostedError(original.status)
   }
 
   const lines = (original.lines as JournalEntryLine[]) || []
@@ -430,7 +440,7 @@ export async function reverseEntry(
     .single()
 
   if (reversalError || !reversalEntry) {
-    throw new Error(`Failed to create reversal entry: ${reversalError?.message}`)
+    throw new BookkeepingDatabaseError('create_reversal_entry', reversalError?.message)
   }
 
   // Insert reversal lines with dimensions
@@ -443,7 +453,7 @@ export async function reverseEntry(
   if (linesError) {
     await supabase.from('journal_entries').update({ status: 'cancelled' }).eq('id', reversalEntry.id)
     await supabase.from('journal_entry_lines').delete().eq('journal_entry_id', reversalEntry.id)
-    throw new Error(`Failed to create reversal lines: ${linesError.message}`)
+    throw new BookkeepingDatabaseError('create_reversal_lines', linesError.message)
   }
 
   // Post the reversal entry
@@ -455,7 +465,7 @@ export async function reverseEntry(
   if (postError) {
     await supabase.from('journal_entries').update({ status: 'cancelled' }).eq('id', reversalEntry.id)
     await supabase.from('journal_entry_lines').delete().eq('journal_entry_id', reversalEntry.id)
-    throw new Error(`Failed to post reversal entry: ${postError.message}`)
+    throw new BookkeepingDatabaseError('post_reversal_entry', postError.message)
   }
 
   // Mark original as reversed with reversed_by_id link (CAS guard: only if still 'posted')
@@ -474,7 +484,7 @@ export async function reverseEntry(
     // reversal as cancelled so it's excluded from reports but remains traceable.
     await supabase.from('journal_entries').update({ status: 'cancelled' }).eq('id', reversalEntry.id)
     await supabase.from('journal_entry_lines').delete().eq('journal_entry_id', reversalEntry.id)
-    throw new Error('Entry was already reversed by a concurrent operation')
+    throw new EntryAlreadyReversedError()
   }
 
   // If this was a payment entry, sync the linked invoice/supplier-invoice status

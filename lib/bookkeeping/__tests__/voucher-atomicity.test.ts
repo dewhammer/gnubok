@@ -7,6 +7,7 @@ vi.mock('@/lib/events', () => ({
 }))
 
 import { commitEntry, getNextVoucherNumber, createJournalEntry } from '../engine'
+import { BookkeepingDatabaseError } from '../errors'
 
 describe('voucher number atomicity', () => {
   beforeEach(() => {
@@ -39,7 +40,7 @@ describe('voucher number atomicity', () => {
 
     await expect(
       getNextVoucherNumber(supabase as never, 'co-1', 'fp-1', 'A')
-    ).rejects.toThrow('Failed to get next voucher number: connection lost')
+    ).rejects.toThrow(BookkeepingDatabaseError)
   })
 
   /**
@@ -59,7 +60,7 @@ describe('voucher number atomicity', () => {
 
     await expect(
       commitEntry(supabase as never, 'co-1', 'user-1', 'entry-1')
-    ).rejects.toThrow('Failed to commit journal entry: Journal entry is not balanced')
+    ).rejects.toThrow(BookkeepingDatabaseError)
 
     // The atomic RPC was called — it failed, rolling back both the
     // sequence increment and the status update. No burned number.
@@ -231,7 +232,7 @@ describe('createJournalEntry orphan draft cleanup', () => {
           { account_number: '1510', debit_amount: 0, credit_amount: 1000 },
         ],
       })
-    ).rejects.toThrow('Failed to commit journal entry')
+    ).rejects.toThrow(BookkeepingDatabaseError)
 
     // The orphan draft must have been cancelled with CAS guard (status='draft')
     expect(cancelUpdate).toHaveBeenCalledWith({ status: 'cancelled' })

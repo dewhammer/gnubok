@@ -5,7 +5,12 @@ import {
   createInvoiceCashEntry,
 } from '@/lib/bookkeeping/invoice-entries'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import {
+  AccountsNotInChartError,
+  accountsNotInChartResponse,
+  bookkeepingErrorResponse,
+} from '@/lib/bookkeeping/errors'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { validateBody } from '@/lib/api/validate'
 import { MatchInvoiceSchema } from '@/lib/api/schemas'
 import { logMatchEvent } from '@/lib/invoices/match-log'
@@ -122,9 +127,8 @@ export async function POST(
         newState: { journal_entry_id: null },
       })
     } catch (err) {
-      if (err instanceof AccountsNotInChartError) {
-        return accountsNotInChartResponse(err)
-      }
+      const typed = bookkeepingErrorResponse(err)
+      if (typed) return typed
       console.error('Failed to storno conflicting journal entry:', err)
       return NextResponse.json(
         { error: 'Failed to reverse conflicting journal entry' },
@@ -204,11 +208,21 @@ export async function POST(
       journalEntryId = journalEntry?.id ?? null
     }
   } catch (err) {
+    // AccountsNotInChart returns the structured 400 so the UI can open the
+    // account-activation dialog. Other errors are logged and attached to
+    // `journal_entry_error` — the match itself is a valuable business event,
+    // and the user can re-book the payment verifikation separately.
     if (err instanceof AccountsNotInChartError) {
       return accountsNotInChartResponse(err)
     }
     console.error('Failed to create payment journal entry:', err)
-    journalEntryError = err instanceof Error ? err.message : 'Unknown error'
+    const typedResp = bookkeepingErrorResponse(err)
+    if (typedResp) {
+      const body = (await typedResp.json()) as unknown
+      journalEntryError = getErrorMessage(body, { context: 'invoice' })
+    } else {
+      journalEntryError = err instanceof Error ? err.message : 'Unknown error'
+    }
     // Continue - we still want to update the invoice and transaction
   }
 

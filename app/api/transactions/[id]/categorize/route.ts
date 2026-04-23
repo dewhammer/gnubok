@@ -5,6 +5,8 @@ import { ensureInitialized } from '@/lib/init'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
 import { getTemplateById, buildMappingResultFromTemplate, validateTemplateForEntity } from '@/lib/bookkeeping/booking-templates'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { saveUserMappingRule } from '@/lib/bookkeeping/mapping-engine'
 import { upsertCounterpartyTemplate, buildMappingResultFromCounterpartyTemplate } from '@/lib/bookkeeping/counterparty-templates'
 import { requireCompanyId } from '@/lib/company/context'
@@ -297,7 +299,15 @@ export async function POST(
     }
   } catch (err) {
     console.error('Failed to create journal entry:', err)
-    journalEntryError = err instanceof Error ? err.message : 'Unknown error'
+    // Typed bookkeeping errors: surface a Swedish translation in the response
+    // so the client toast can display it directly.
+    const typedResp = bookkeepingErrorResponse(err)
+    if (typedResp) {
+      const body = (await typedResp.json()) as unknown
+      journalEntryError = getErrorMessage(body, { context: 'transaction' })
+    } else {
+      journalEntryError = err instanceof Error ? err.message : 'Unknown error'
+    }
     // Continue - we still want to save the categorization
   }
 

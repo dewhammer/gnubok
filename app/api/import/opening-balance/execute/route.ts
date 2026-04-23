@@ -6,7 +6,7 @@ import { OpeningBalanceExecuteSchema } from '@/lib/api/schemas'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { requireCompanyId } from '@/lib/company/context'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import type { CreateJournalEntryLineInput } from '@/types'
@@ -242,9 +242,8 @@ export async function POST(request: Request) {
       },
     })
   } catch (error) {
-    if (error instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(error)
-    }
+    const typed = bookkeepingErrorResponse(error)
+    if (typed) return typed
     console.error('Opening balance execute error:', error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Importen misslyckades' },

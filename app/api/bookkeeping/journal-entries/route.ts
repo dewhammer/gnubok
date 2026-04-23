@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
 import { CreateJournalEntrySchema } from '@/lib/api/schemas'
@@ -124,9 +124,8 @@ export async function POST(request: Request) {
     const entry = await createJournalEntry(supabase, companyId, user.id, body)
     return NextResponse.json({ data: entry })
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(err)
-    }
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to create journal entry' },
       { status: 400 }

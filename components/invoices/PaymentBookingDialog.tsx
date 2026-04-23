@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/components/ui/use-toast'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import { proposePaymentLines } from '@/lib/bookkeeping/propose-payment-lines'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCompany } from '@/contexts/CompanyContext'
@@ -187,15 +188,19 @@ export default function PaymentBookingDialog({
 
       if (!response.ok) {
         const data = await response.json()
-        throw new Error(data.error || 'Kunde inte markera som betald')
+        const error = new Error('Kunde inte markera som betald') as Error & { body?: unknown; status?: number }
+        error.body = data
+        error.status = response.status
+        throw error
       }
 
       onOpenChange(false)
       onSuccess()
     } catch (error) {
+      const anyErr = error as { body?: unknown; status?: number }
       toast({
         title: 'Bokföring misslyckades',
-        description: error instanceof Error ? error.message : 'Försök igen.',
+        description: getErrorMessage(anyErr.body ?? error, { context: 'invoice', statusCode: anyErr.status }),
         variant: 'destructive',
       })
     }

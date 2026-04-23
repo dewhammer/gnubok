@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
@@ -61,9 +61,8 @@ export async function POST(
   try {
     await reverseEntry(supabase, companyId, user.id, transaction.journal_entry_id)
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(err)
-    }
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     const message = err instanceof Error ? err.message : 'Reversal failed'
     return NextResponse.json({ error: message }, { status: 500 })
   }

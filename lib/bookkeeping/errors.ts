@@ -1,6 +1,24 @@
 import { NextResponse } from 'next/server'
 
+// ============================================================================
+// Error codes
+// ============================================================================
+
 export const ACCOUNTS_NOT_IN_CHART = 'ACCOUNTS_NOT_IN_CHART' as const
+export const JOURNAL_ENTRY_NOT_BALANCED = 'JOURNAL_ENTRY_NOT_BALANCED' as const
+export const FISCAL_PERIOD_NOT_FOUND = 'FISCAL_PERIOD_NOT_FOUND' as const
+export const ENTRY_DATE_OUTSIDE_FISCAL_PERIOD = 'ENTRY_DATE_OUTSIDE_FISCAL_PERIOD' as const
+export const JOURNAL_ENTRY_NOT_FOUND = 'JOURNAL_ENTRY_NOT_FOUND' as const
+export const CANNOT_REVERSE_NON_POSTED = 'CANNOT_REVERSE_NON_POSTED' as const
+export const CANNOT_CORRECT_NON_POSTED = 'CANNOT_CORRECT_NON_POSTED' as const
+export const ENTRY_ALREADY_REVERSED = 'ENTRY_ALREADY_REVERSED' as const
+export const CURRENCY_REVALUATION_ALREADY_EXISTS = 'CURRENCY_REVALUATION_ALREADY_EXISTS' as const
+export const INVALID_MAPPING_RESULT = 'INVALID_MAPPING_RESULT' as const
+export const BOOKKEEPING_DATABASE_ERROR = 'BOOKKEEPING_DATABASE_ERROR' as const
+
+// ============================================================================
+// AccountsNotInChartError — kept for back-compat (many existing call sites)
+// ============================================================================
 
 export class AccountsNotInChartError extends Error {
   readonly code = ACCOUNTS_NOT_IN_CHART
@@ -18,10 +36,166 @@ export function isAccountsNotInChartError(err: unknown): err is AccountsNotInCha
   return err instanceof AccountsNotInChartError
 }
 
+// ============================================================================
+// Semantic errors — carry structured data so getErrorMessage can format rich
+// Swedish translations with amounts / period names / status.
+// ============================================================================
+
+export class JournalEntryNotBalancedError extends Error {
+  readonly code = JOURNAL_ENTRY_NOT_BALANCED
+  constructor(
+    public readonly totalDebit: number,
+    public readonly totalCredit: number,
+    public readonly kind: 'draft' | 'correction' = 'draft'
+  ) {
+    super(`Journal entry is not balanced: debits (${totalDebit}) != credits (${totalCredit})`)
+    this.name = 'JournalEntryNotBalancedError'
+  }
+}
+
+export class FiscalPeriodNotFoundError extends Error {
+  readonly code = FISCAL_PERIOD_NOT_FOUND
+  constructor() {
+    super('Fiscal period not found')
+    this.name = 'FiscalPeriodNotFoundError'
+  }
+}
+
+export class EntryDateOutsideFiscalPeriodError extends Error {
+  readonly code = ENTRY_DATE_OUTSIDE_FISCAL_PERIOD
+  constructor(
+    public readonly entryDate: string,
+    public readonly periodName: string,
+    public readonly periodStart: string,
+    public readonly periodEnd: string
+  ) {
+    super(
+      `Entry date ${entryDate} is outside fiscal period "${periodName}" (${periodStart} - ${periodEnd})`
+    )
+    this.name = 'EntryDateOutsideFiscalPeriodError'
+  }
+}
+
+export class JournalEntryNotFoundError extends Error {
+  readonly code = JOURNAL_ENTRY_NOT_FOUND
+  constructor() {
+    super('Journal entry not found')
+    this.name = 'JournalEntryNotFoundError'
+  }
+}
+
+export class CannotReverseNonPostedError extends Error {
+  readonly code = CANNOT_REVERSE_NON_POSTED
+  constructor(public readonly currentStatus: string) {
+    super('Can only reverse posted entries')
+    this.name = 'CannotReverseNonPostedError'
+  }
+}
+
+export class CannotCorrectNonPostedError extends Error {
+  readonly code = CANNOT_CORRECT_NON_POSTED
+  constructor(public readonly currentStatus: string) {
+    super('Can only correct posted entries')
+    this.name = 'CannotCorrectNonPostedError'
+  }
+}
+
+export class EntryAlreadyReversedError extends Error {
+  readonly code = ENTRY_ALREADY_REVERSED
+  constructor() {
+    super('Entry was already reversed by a concurrent operation')
+    this.name = 'EntryAlreadyReversedError'
+  }
+}
+
+export class CurrencyRevaluationAlreadyExistsError extends Error {
+  readonly code = CURRENCY_REVALUATION_ALREADY_EXISTS
+  constructor() {
+    super('Currency revaluation already exists for this period')
+    this.name = 'CurrencyRevaluationAlreadyExistsError'
+  }
+}
+
+export class InvalidMappingResultError extends Error {
+  readonly code = INVALID_MAPPING_RESULT
+  constructor(
+    public readonly debitAccount: string | null | undefined,
+    public readonly creditAccount: string | null | undefined
+  ) {
+    super(
+      `Invalid mapping result: debit_account="${debitAccount}", credit_account="${creditAccount}". Both must be non-empty.`
+    )
+    this.name = 'InvalidMappingResultError'
+  }
+}
+
+// ============================================================================
+// BookkeepingDatabaseError — single wrapper for all "Failed to <op>: <cause>"
+// engine throws. The `operation` tag is preserved for logs; the cause string
+// stays in `message` so period-lock / trigger messages can still be matched
+// by regex patterns in get-error-message.ts.
+// ============================================================================
+
+export type BookkeepingOperation =
+  | 'get_next_voucher_number'
+  | 'resolve_account_ids'
+  | 'create_draft_entry'
+  | 'create_entry_lines'
+  | 'commit_entry'
+  | 'create_reversal_entry'
+  | 'create_reversal_lines'
+  | 'post_reversal_entry'
+  | 'create_corrected_entry'
+  | 'create_corrected_lines'
+  | 'post_corrected_entry'
+  | 'fetch_currency_receivables'
+  | 'fetch_currency_payables'
+  | 'check_existing_revaluation'
+
+export class BookkeepingDatabaseError extends Error {
+  readonly code = BOOKKEEPING_DATABASE_ERROR
+  constructor(
+    public readonly operation: BookkeepingOperation,
+    public readonly cause: string | undefined
+  ) {
+    super(cause ? `Database operation "${operation}" failed: ${cause}` : `Database operation "${operation}" failed`)
+    this.name = 'BookkeepingDatabaseError'
+  }
+}
+
+// ============================================================================
+// Type guard
+// ============================================================================
+
+/**
+ * True if `err` is any typed bookkeeping error. Use this in inner catch blocks
+ * that want to re-throw domain errors so the outer handler can translate them
+ * via bookkeepingErrorResponse().
+ */
+export function isBookkeepingError(err: unknown): boolean {
+  return (
+    err instanceof AccountsNotInChartError ||
+    err instanceof JournalEntryNotBalancedError ||
+    err instanceof FiscalPeriodNotFoundError ||
+    err instanceof EntryDateOutsideFiscalPeriodError ||
+    err instanceof JournalEntryNotFoundError ||
+    err instanceof CannotReverseNonPostedError ||
+    err instanceof CannotCorrectNonPostedError ||
+    err instanceof EntryAlreadyReversedError ||
+    err instanceof CurrencyRevaluationAlreadyExistsError ||
+    err instanceof InvalidMappingResultError ||
+    err instanceof BookkeepingDatabaseError
+  )
+}
+
+// ============================================================================
+// Response helpers
+// ============================================================================
+
 /**
  * Build a structured 400 response for AccountsNotInChartError.
- * API routes catch the typed error and return this so the frontend can
- * open ActivateAccountsDialog and retry the request after activation.
+ * Kept for back-compat with existing callers; new code should prefer
+ * bookkeepingErrorResponse() which covers all typed bookkeeping errors.
  */
 export function accountsNotInChartResponse(err: AccountsNotInChartError) {
   return NextResponse.json(
@@ -34,4 +208,139 @@ export function accountsNotInChartResponse(err: AccountsNotInChartError) {
     },
     { status: 400 }
   )
+}
+
+/**
+ * Build a structured JSON response for any typed bookkeeping error.
+ * Returns null if `err` is not a recognized bookkeeping error so callers can
+ * fall through to their existing generic handling.
+ *
+ * Response shape: { error: { code, message, details? } }
+ * HTTP status: 404 for *_NOT_FOUND, 409 for concurrent/duplicate conflicts,
+ * 500 for BOOKKEEPING_DATABASE_ERROR, 400 otherwise.
+ */
+export function bookkeepingErrorResponse(err: unknown): NextResponse | null {
+  if (err instanceof AccountsNotInChartError) {
+    return accountsNotInChartResponse(err)
+  }
+
+  if (err instanceof JournalEntryNotBalancedError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: {
+            totalDebit: err.totalDebit,
+            totalCredit: err.totalCredit,
+            kind: err.kind,
+          },
+        },
+      },
+      { status: 400 }
+    )
+  }
+
+  if (err instanceof FiscalPeriodNotFoundError) {
+    return NextResponse.json(
+      { error: { code: err.code, message: err.message } },
+      { status: 404 }
+    )
+  }
+
+  if (err instanceof EntryDateOutsideFiscalPeriodError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: {
+            entryDate: err.entryDate,
+            periodName: err.periodName,
+            periodStart: err.periodStart,
+            periodEnd: err.periodEnd,
+          },
+        },
+      },
+      { status: 400 }
+    )
+  }
+
+  if (err instanceof JournalEntryNotFoundError) {
+    return NextResponse.json(
+      { error: { code: err.code, message: err.message } },
+      { status: 404 }
+    )
+  }
+
+  if (err instanceof CannotReverseNonPostedError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: { currentStatus: err.currentStatus },
+        },
+      },
+      { status: 400 }
+    )
+  }
+
+  if (err instanceof CannotCorrectNonPostedError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: { currentStatus: err.currentStatus },
+        },
+      },
+      { status: 400 }
+    )
+  }
+
+  if (err instanceof EntryAlreadyReversedError) {
+    return NextResponse.json(
+      { error: { code: err.code, message: err.message } },
+      { status: 409 }
+    )
+  }
+
+  if (err instanceof CurrencyRevaluationAlreadyExistsError) {
+    return NextResponse.json(
+      { error: { code: err.code, message: err.message } },
+      { status: 409 }
+    )
+  }
+
+  if (err instanceof InvalidMappingResultError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: {
+            debitAccount: err.debitAccount,
+            creditAccount: err.creditAccount,
+          },
+        },
+      },
+      { status: 400 }
+    )
+  }
+
+  if (err instanceof BookkeepingDatabaseError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: err.code,
+          message: err.message,
+          details: { operation: err.operation },
+        },
+      },
+      { status: 500 }
+    )
+  }
+
+  return null
 }

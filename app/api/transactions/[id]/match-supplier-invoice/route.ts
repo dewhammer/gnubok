@@ -4,7 +4,7 @@ import {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { validateBody } from '@/lib/api/validate'
 import { MatchSupplierInvoiceSchema } from '@/lib/api/schemas'
 import { logMatchEvent } from '@/lib/invoices/match-log'
@@ -128,9 +128,8 @@ export async function POST(
       if (journalEntry) journalEntryId = journalEntry.id
     }
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(err)
-    }
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     console.error('Failed to create payment journal entry:', err)
   }
 

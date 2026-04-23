@@ -6,7 +6,14 @@ import type {
   JournalEntryLine,
 } from '@/types'
 import { validateBalance, getNextVoucherNumber, getSwedishLocalDate } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError } from '@/lib/bookkeeping/errors'
+import {
+  AccountsNotInChartError,
+  BookkeepingDatabaseError,
+  CannotCorrectNonPostedError,
+  EntryAlreadyReversedError,
+  JournalEntryNotBalancedError,
+  JournalEntryNotFoundError,
+} from '@/lib/bookkeeping/errors'
 
 /**
  * Storno Service - 3-step correction flow per Bokföringslagen
@@ -55,9 +62,7 @@ export async function correctEntry(
   // Validate the corrected lines are balanced
   const balance = validateBalance(correctedLines)
   if (!balance.valid) {
-    throw new Error(
-      `Corrected entry is not balanced: debits (${balance.totalDebit}) != credits (${balance.totalCredit})`
-    )
+    throw new JournalEntryNotBalancedError(balance.totalDebit, balance.totalCredit, 'correction')
   }
 
   // Fetch original entry with lines
@@ -69,11 +74,11 @@ export async function correctEntry(
     .single()
 
   if (fetchError || !original) {
-    throw new Error('Original journal entry not found')
+    throw new JournalEntryNotFoundError()
   }
 
   if (original.status !== 'posted') {
-    throw new Error('Can only correct posted entries')
+    throw new CannotCorrectNonPostedError(original.status)
   }
 
   const originalLines = (original.lines as JournalEntryLine[]) || []
@@ -104,7 +109,7 @@ export async function correctEntry(
     .single()
 
   if (reversalError || !reversalEntry) {
-    throw new Error(`Failed to create reversal entry: ${reversalError?.message}`)
+    throw new BookkeepingDatabaseError('create_reversal_entry', reversalError?.message)
   }
 
   // Insert reversed lines (swap debit and credit)
@@ -130,7 +135,7 @@ export async function correctEntry(
 
   if (reversalLinesError) {
     await cancelEntry(supabase, reversalEntry.id)
-    throw new Error(`Failed to create reversal lines: ${reversalLinesError.message}`)
+    throw new BookkeepingDatabaseError('create_reversal_lines', reversalLinesError.message)
   }
 
   // Post the reversal entry
@@ -141,7 +146,7 @@ export async function correctEntry(
 
   if (postReversalError) {
     await cancelEntry(supabase, reversalEntry.id)
-    throw new Error(`Failed to post reversal entry: ${postReversalError.message}`)
+    throw new BookkeepingDatabaseError('post_reversal_entry', postReversalError.message)
   }
 
   // NOTE: Original entry is NOT marked as 'reversed' here. We defer that
@@ -200,7 +205,7 @@ export async function correctEntry(
       .single()
 
     if (correctedError || !newEntry) {
-      throw new Error(`Failed to create corrected entry: ${correctedError?.message}`)
+      throw new BookkeepingDatabaseError('create_corrected_entry', correctedError?.message)
     }
 
     correctedEntry = newEntry
@@ -230,7 +235,7 @@ export async function correctEntry(
 
     if (correctedLinesError) {
       await cancelEntry(supabase, correctedEntry.id)
-      throw new Error(`Failed to create corrected lines: ${correctedLinesError.message}`)
+      throw new BookkeepingDatabaseError('create_corrected_lines', correctedLinesError.message)
     }
 
     // Post the corrected entry
@@ -241,7 +246,7 @@ export async function correctEntry(
 
     if (postCorrectedError) {
       await cancelEntry(supabase, correctedEntry.id)
-      throw new Error(`Failed to post corrected entry: ${postCorrectedError.message}`)
+      throw new BookkeepingDatabaseError('post_corrected_entry', postCorrectedError.message)
     }
   } catch (err) {
     // Cancel the reversal entry (posted → cancelled). Original was never
@@ -265,7 +270,7 @@ export async function correctEntry(
     // Concurrent reversal beat us — cancel both our entries
     await cancelEntry(supabase, reversalEntry.id)
     await cancelEntry(supabase, correctedEntry!.id)
-    throw new Error('Entry was already reversed by a concurrent operation')
+    throw new EntryAlreadyReversedError()
   }
 
   // ===== Step 3: Fetch complete entries =====

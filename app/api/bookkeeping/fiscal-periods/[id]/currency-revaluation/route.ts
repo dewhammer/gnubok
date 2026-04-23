@@ -4,6 +4,7 @@ import {
   previewCurrencyRevaluation,
   executeCurrencyRevaluation,
 } from '@/lib/bookkeeping/currency-revaluation'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 
@@ -40,6 +41,8 @@ export async function GET(
     const preview = await previewCurrencyRevaluation(supabase, companyId, period.period_end)
     return NextResponse.json({ data: preview })
   } catch (err) {
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to preview currency revaluation' },
       { status: 400 }
@@ -92,6 +95,8 @@ export async function POST(
 
     return NextResponse.json({ data: result })
   } catch (err) {
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to execute currency revaluation' },
       { status: 400 }

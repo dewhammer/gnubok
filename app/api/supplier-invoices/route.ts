@@ -2,7 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
 import { CreateSupplierInvoiceSchema } from '@/lib/api/schemas'
@@ -272,9 +272,8 @@ export async function POST(request: Request) {
       // which silently understates the momsdeklaration for the period.
       await supabase.from('supplier_invoices').delete().eq('id', invoice.id).eq('company_id', companyId)
 
-      if (err instanceof AccountsNotInChartError) {
-        return accountsNotInChartResponse(err)
-      }
+      const typed = bookkeepingErrorResponse(err)
+      if (typed) return typed
       console.error('Failed to create registration journal entry:', err)
       return NextResponse.json(
         { error: 'Kunde inte bokföra leverantörsfakturan — försök igen eller ändra datum om perioden är låst.' },

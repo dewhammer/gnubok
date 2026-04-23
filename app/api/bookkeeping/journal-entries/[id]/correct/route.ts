@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { correctEntry } from '@/lib/core/bookkeeping/storno-service'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
 import { CorrectJournalEntrySchema } from '@/lib/api/schemas'
@@ -35,9 +35,8 @@ export async function POST(
     const result = await correctEntry(supabase, companyId, user.id, id, body.lines)
     return NextResponse.json({ data: result })
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(err)
-    }
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to correct entry' },
       { status: 400 }

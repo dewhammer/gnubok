@@ -30,6 +30,7 @@ import { isCounterpartyTemplateId, extractCounterpartyId } from '@/lib/bookkeepi
 import { isLibraryTemplateId } from '@/lib/bookkeeping/template-library'
 import type { TransactionWithInvoice, ViewMode, CategorizeHandler } from '@/components/transactions/transaction-types'
 import { useCompany } from '@/contexts/CompanyContext'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, VatTreatment, InvoiceInboxItem, EntityType, LinePatternEntry } from '@/types'
 import type { SuggestedCategory, SuggestedTemplate } from '@/lib/transactions/category-suggestions'
@@ -319,7 +320,11 @@ export default function TransactionsPage() {
 
       const result = await response.json()
       if (!response.ok) {
-        toast({ title: 'Kategorisering misslyckades', description: result.error || 'Försök igen.', variant: 'destructive' })
+        toast({
+          title: 'Kategorisering misslyckades',
+          description: getErrorMessage(result, { context: 'transaction', statusCode: response.status }),
+          variant: 'destructive',
+        })
         setProcessingId(null)
         return null
       }
@@ -348,7 +353,11 @@ export default function TransactionsPage() {
                   toast({ title: 'Ångrad', description: 'Kategorisering har ångrats' })
                 } else {
                   const errData = await undoRes.json()
-                  toast({ title: 'Kunde inte ångra', description: errData.error || 'Kategoriseringen kunde inte ångras. Försök igen.', variant: 'destructive' })
+                  toast({
+                    title: 'Kunde inte ångra',
+                    description: getErrorMessage(errData, { context: 'transaction', statusCode: undoRes.status }),
+                    variant: 'destructive',
+                  })
                 }
               } catch {
                 toast({ title: 'Kunde inte ångra', description: 'Kategoriseringen kunde inte ångras. Försök igen.', variant: 'destructive' })

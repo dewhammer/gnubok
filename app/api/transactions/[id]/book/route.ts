@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { validateBody } from '@/lib/api/validate'
 import { BookTransactionSchema } from '@/lib/api/schemas'
 import { requireCompanyId } from '@/lib/company/context'
@@ -66,9 +66,8 @@ export async function POST(
       lines,
     })
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(err)
-    }
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to create journal entry' },
       { status: 400 }

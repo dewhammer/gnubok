@@ -1,6 +1,7 @@
 import { createJournalEntry, findFiscalPeriod } from './engine'
 import { resolveSekAmount, buildCurrencyMetadata } from './currency-utils'
 import { extractNetAmount, extractVatAmount } from './vat-entries'
+import { InvalidMappingResultError } from '@/lib/bookkeeping/errors'
 import { createLogger } from '@/lib/logger'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type {
@@ -47,9 +48,7 @@ export async function createTransactionJournalEntry(
   mappingResult: MappingResult
 ): Promise<JournalEntry | null> {
   if (!mappingResult.debit_account || !mappingResult.credit_account) {
-    throw new Error(
-      `Invalid mapping result: debit_account="${mappingResult.debit_account}", credit_account="${mappingResult.credit_account}". Both must be non-empty.`
-    )
+    throw new InvalidMappingResultError(mappingResult.debit_account, mappingResult.credit_account)
   }
 
   const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, transaction.date)

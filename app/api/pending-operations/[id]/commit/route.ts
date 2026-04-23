@@ -16,7 +16,11 @@ import {
   createInvoiceJournalEntry,
 } from '@/lib/bookkeeping/invoice-entries'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import {
+  AccountsNotInChartError,
+  bookkeepingErrorResponse,
+  isBookkeepingError,
+} from '@/lib/bookkeeping/errors'
 import { getEmailService } from '@/lib/email/service'
 import {
   generateInvoiceEmailHtml,
@@ -220,7 +224,7 @@ async function commitCategorizeTransaction(
       journalEntryId = journalEntry.id
     }
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) throw err
+    if (isBookkeepingError(err)) throw err
     log.error('Failed to create journal entry:', err)
     return { error: err instanceof Error ? err.message : 'Failed to create journal entry', status: 500 }
   }
@@ -787,7 +791,7 @@ async function commitMatchTransactionInvoice(
       journalEntryId = je?.id ?? null
     }
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) throw err
+    if (isBookkeepingError(err)) throw err
     log.error('Failed to create match journal entry:', err)
   }
 
@@ -915,9 +919,8 @@ export async function POST(
         return NextResponse.json({ error: 'Unknown operation type' }, { status: 400 })
     }
   } catch (err) {
-    if (err instanceof AccountsNotInChartError) {
-      return accountsNotInChartResponse(err)
-    }
+    const typed = bookkeepingErrorResponse(err)
+    if (typed) return typed
     throw err
   }
 

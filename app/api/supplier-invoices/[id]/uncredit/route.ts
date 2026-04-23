@@ -3,7 +3,11 @@ import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import {
+  bookkeepingErrorResponse,
+  CannotReverseNonPostedError,
+  EntryAlreadyReversedError,
+} from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
@@ -69,16 +73,12 @@ export async function POST(
       )
       reversalEntryId = reversal.id
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
       // Already reversed (manually or by another concurrent uncredit) — fine, continue.
-      if (
-        /Can only reverse posted entries/i.test(msg) ||
-        /already reversed by a concurrent operation/i.test(msg)
-      ) {
+      if (err instanceof CannotReverseNonPostedError || err instanceof EntryAlreadyReversedError) {
         // proceed to row cleanup
-      } else if (err instanceof AccountsNotInChartError) {
-        return accountsNotInChartResponse(err)
       } else {
+        const typed = bookkeepingErrorResponse(err)
+        if (typed) return typed
         // Period lock and similar trigger errors — surface a clear Swedish message
         // so the user knows WHY the action failed (per project's error-UX guidelines).
         return NextResponse.json(

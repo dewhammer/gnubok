@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { eventBus } from '@/lib/events/bus'
 import { makeJournalEntry, makeJournalEntryLine } from '@/tests/helpers'
+import { BookkeepingDatabaseError } from '@/lib/bookkeeping/errors'
 
 // ============================================================
 // Mock — separate client (no .then) from query builder (thenable)
@@ -172,7 +173,7 @@ describe('correctEntry', () => {
     const supabase = makeClient()
     await expect(
       correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
-    ).rejects.toThrow('Failed to create corrected entry')
+    ).rejects.toThrow(BookkeepingDatabaseError)
   })
 
   it('cancels reversal entry when reversal lines fail', async () => {
@@ -189,7 +190,7 @@ describe('correctEntry', () => {
     const supabase = makeClient()
     await expect(
       correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
-    ).rejects.toThrow('Failed to create reversal lines')
+    ).rejects.toThrow(BookkeepingDatabaseError)
   })
 
   it('emits journal_entry.corrected event', async () => {

@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { AccountNumber } from '@/components/ui/account-number'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { Plus, Trash2 } from 'lucide-react'
 import type { JournalEntry, JournalEntryLine, BASAccount } from '@/types'
 
@@ -109,7 +110,10 @@ export default function CorrectionEntryDialog({ entry, open, onOpenChange, onCor
       const result = await res.json()
 
       if (!res.ok) {
-        throw new Error(result.error || 'Failed to create correction')
+        const error = new Error('Failed to create correction') as Error & { body?: unknown; status?: number }
+        error.body = result
+        error.status = res.status
+        throw error
       }
 
       const correctedId = result.data?.corrected?.id
@@ -126,9 +130,10 @@ export default function CorrectionEntryDialog({ entry, open, onOpenChange, onCor
       onOpenChange(false)
       onCorrected()
     } catch (err) {
+      const anyErr = err as { body?: unknown; status?: number }
       toast({
         title: 'Fel',
-        description: err instanceof Error ? err.message : 'Kunde inte skapa ändringsverifikation',
+        description: getErrorMessage(anyErr.body ?? err, { context: 'journal_entry', statusCode: anyErr.status }),
         variant: 'destructive',
       })
     } finally {

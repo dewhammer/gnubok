@@ -1,6 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchMultipleRates } from '@/lib/currency/riksbanken'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
+import {
+  BookkeepingDatabaseError,
+  CurrencyRevaluationAlreadyExistsError,
+} from '@/lib/bookkeeping/errors'
 import type {
   Currency,
   Invoice,
@@ -29,7 +33,7 @@ export async function getOpenForeignCurrencyReceivables(
     .not('exchange_rate', 'is', null)
 
   if (error) {
-    throw new Error(`Failed to fetch foreign currency receivables: ${error.message}`)
+    throw new BookkeepingDatabaseError('fetch_currency_receivables', error.message)
   }
 
   return (data || []) as Invoice[]
@@ -53,7 +57,7 @@ export async function getOpenForeignCurrencyPayables(
     .not('exchange_rate', 'is', null)
 
   if (error) {
-    throw new Error(`Failed to fetch foreign currency payables: ${error.message}`)
+    throw new BookkeepingDatabaseError('fetch_currency_payables', error.message)
   }
 
   return (data || []) as SupplierInvoice[]
@@ -290,11 +294,11 @@ export async function executeCurrencyRevaluation(
     .eq('status', 'posted')
 
   if (checkError) {
-    throw new Error(`Failed to check existing revaluation: ${checkError.message}`)
+    throw new BookkeepingDatabaseError('check_existing_revaluation', checkError.message)
   }
 
   if ((count ?? 0) > 0) {
-    throw new Error('Currency revaluation already exists for this period')
+    throw new CurrencyRevaluationAlreadyExistsError()
   }
 
   const preview = await previewCurrencyRevaluation(supabase, companyId, closingDate)

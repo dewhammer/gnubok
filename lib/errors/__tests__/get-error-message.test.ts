@@ -1,0 +1,128 @@
+import { describe, it, expect } from 'vitest'
+import { getErrorMessage } from '../get-error-message'
+
+describe('getErrorMessage — typed bookkeeping error codes', () => {
+  it('ACCOUNTS_NOT_IN_CHART → lists accounts to activate', () => {
+    const msg = getErrorMessage({
+      error: { code: 'ACCOUNTS_NOT_IN_CHART', message: '...', account_numbers: ['1930', '2641'] },
+    })
+    expect(msg).toBe('Följande konton behöver aktiveras: 1930, 2641')
+  })
+
+  it('JOURNAL_ENTRY_NOT_BALANCED with details → rich amount message', () => {
+    const msg = getErrorMessage({
+      error: {
+        code: 'JOURNAL_ENTRY_NOT_BALANCED',
+        message: 'Journal entry is not balanced: debits (100) != credits (80)',
+        details: { totalDebit: 100, totalCredit: 80, kind: 'draft' },
+      },
+    })
+    expect(msg).toContain('balanserar inte')
+    expect(msg).toContain('debet')
+    expect(msg).toContain('kredit')
+    expect(msg).toMatch(/100/)
+    expect(msg).toMatch(/80/)
+  })
+
+  it('JOURNAL_ENTRY_NOT_BALANCED without details → fallback Swedish message', () => {
+    const msg = getErrorMessage({
+      error: { code: 'JOURNAL_ENTRY_NOT_BALANCED', message: '...' },
+    })
+    expect(msg).toBe('Verifikationen balanserar inte. Kontrollera att debet och kredit är lika stora.')
+  })
+
+  it('FISCAL_PERIOD_NOT_FOUND → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'FISCAL_PERIOD_NOT_FOUND', message: '...' } })
+    expect(msg).toBe('Räkenskapsperioden kunde inte hittas.')
+  })
+
+  it('ENTRY_DATE_OUTSIDE_FISCAL_PERIOD → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'ENTRY_DATE_OUTSIDE_FISCAL_PERIOD', message: '...' } })
+    expect(msg).toBe('Datumet ligger utanför det valda räkenskapsåret.')
+  })
+
+  it('JOURNAL_ENTRY_NOT_FOUND → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'JOURNAL_ENTRY_NOT_FOUND', message: '...' } })
+    expect(msg).toBe('Verifikationen kunde inte hittas.')
+  })
+
+  it('CANNOT_REVERSE_NON_POSTED → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'CANNOT_REVERSE_NON_POSTED', message: '...' } })
+    expect(msg).toBe('Endast bokförda verifikationer kan stornas.')
+  })
+
+  it('CANNOT_CORRECT_NON_POSTED → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'CANNOT_CORRECT_NON_POSTED', message: '...' } })
+    expect(msg).toBe('Endast bokförda verifikationer kan rättas.')
+  })
+
+  it('ENTRY_ALREADY_REVERSED → Swedish concurrent-conflict message', () => {
+    const msg = getErrorMessage({ error: { code: 'ENTRY_ALREADY_REVERSED', message: '...' } })
+    expect(msg).toContain('redan stornats')
+    expect(msg).toContain('Ladda om sidan')
+  })
+
+  it('CURRENCY_REVALUATION_ALREADY_EXISTS → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'CURRENCY_REVALUATION_ALREADY_EXISTS', message: '...' } })
+    expect(msg).toBe('En valutaomvärdering finns redan för denna period.')
+  })
+
+  it('INVALID_MAPPING_RESULT → Swedish message', () => {
+    const msg = getErrorMessage({ error: { code: 'INVALID_MAPPING_RESULT', message: '...' } })
+    expect(msg).toBe('Kontering saknas för transaktionen. Kontrollera bokföringsreglerna.')
+  })
+
+  it('BOOKKEEPING_DATABASE_ERROR → generic "kunde inte sparas" when no pattern matches', () => {
+    const msg = getErrorMessage({
+      error: {
+        code: 'BOOKKEEPING_DATABASE_ERROR',
+        message: 'Database operation "commit_entry" failed: some random constraint',
+      },
+    })
+    expect(msg).toBe('Verifikationen kunde inte sparas. Försök igen.')
+  })
+
+  it('BOOKKEEPING_DATABASE_ERROR falls through to regex pattern for period lock', () => {
+    // Period-lock trigger errors come through as DB errors — message should still
+    // match the locked-period pattern and produce the specific Swedish message.
+    const msg = getErrorMessage({
+      error: {
+        code: 'BOOKKEEPING_DATABASE_ERROR',
+        message: 'Cannot create entry in locked/closed fiscal period',
+      },
+    })
+    expect(msg).toBe('Perioden är låst. Verifikationen kan inte skapas i en stängd eller låst period.')
+  })
+})
+
+describe('getErrorMessage — existing patterns still work', () => {
+  it('regex match for "Entry date ... outside fiscal period" on plain string', () => {
+    const msg = getErrorMessage('Entry date 2024-06-15 is outside fiscal period "FY 2025"')
+    expect(msg).toBe('Datumet ligger utanför det valda räkenskapsåret.')
+  })
+
+  it('regex match for "locked/closed fiscal period" on plain string', () => {
+    const msg = getErrorMessage('Cannot create entry in locked/closed fiscal period')
+    expect(msg).toBe('Perioden är låst. Verifikationen kan inte skapas i en stängd eller låst period.')
+  })
+
+  it('Swedish message passes through unchanged', () => {
+    const msg = getErrorMessage('Bokföringen är låst t.o.m. 2024-12-31.')
+    expect(msg).toBe('Bokföringen är låst t.o.m. 2024-12-31.')
+  })
+
+  it('falls through to context fallback when no pattern matches', () => {
+    const msg = getErrorMessage('Random English error', { context: 'transaction' })
+    expect(msg).toBe('Kunde inte hantera transaktionen. Försök igen.')
+  })
+
+  it('falls through to HTTP status map', () => {
+    const msg = getErrorMessage(null, { statusCode: 404 })
+    expect(msg).toBe('Resursen kunde inte hittas.')
+  })
+
+  it('falls through to generic message', () => {
+    const msg = getErrorMessage(null)
+    expect(msg).toBe('Något gick fel. Försök igen.')
+  })
+})

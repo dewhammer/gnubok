@@ -5,7 +5,7 @@ import {
   createInvoiceCashEntry,
 } from '@/lib/bookkeeping/invoice-entries'
 import { createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { MarkInvoicePaidSchema } from '@/lib/api/schemas'
 import { ensureInitialized } from '@/lib/init'
 import { requireCompanyId } from '@/lib/company/context'
@@ -161,9 +161,8 @@ export async function POST(
         journalEntryId = journalEntry?.id ?? null
       }
     } catch (err) {
-      if (err instanceof AccountsNotInChartError) {
-        return accountsNotInChartResponse(err)
-      }
+      const typed = bookkeepingErrorResponse(err)
+      if (typed) return typed
       console.error('Failed to create payment journal entry:', err)
       return NextResponse.json(
         { error: 'Kunde inte bokföra betalningen' },

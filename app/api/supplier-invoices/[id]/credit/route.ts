@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
 import { createSupplierCreditNoteEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
-import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookkeeping/errors'
+import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import type { SupplierInvoice, SupplierInvoiceItem, AccountingMethod } from '@/types'
@@ -138,9 +138,8 @@ export async function POST(
       // momsdeklaration-integrity concern as the POST-route rollback.
       await supabase.from('supplier_invoices').delete().eq('id', creditNote.id).eq('company_id', companyId)
 
-      if (err instanceof AccountsNotInChartError) {
-        return accountsNotInChartResponse(err)
-      }
+      const typed = bookkeepingErrorResponse(err)
+      if (typed) return typed
       console.error('Failed to create credit note journal entry:', err)
       return NextResponse.json(
         { error: 'Kunde inte bokföra kreditfakturan — försök igen eller ändra datum om perioden är låst.' },

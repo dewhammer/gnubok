@@ -9,6 +9,8 @@
  * 5. Generic fallback
  */
 
+import { formatCurrency } from '@/lib/utils'
+
 type ErrorContext =
   | 'invoice'
   | 'supplier_invoice'
@@ -194,9 +196,11 @@ export function getErrorMessage(
 ): string {
   const { context, statusCode } = options
 
-  // 1. If it's a string, check if it's already Swedish
+  // 1. If it's a string, check if it's already Swedish or matches a known pattern
   if (typeof error === 'string' && error.trim()) {
     if (isSwedishUserMessage(error)) return error
+    const knownError = tryMatchKnownError(error)
+    if (knownError) return knownError
   }
 
   // 2. If it's an object, try various parsing strategies
@@ -205,11 +209,69 @@ export function getErrorMessage(
 
     // Structured application error: { error: { code, message, ... } }
     if (typeof obj.error === 'object' && obj.error !== null) {
-      const structured = obj.error as { code?: unknown; message?: unknown; account_numbers?: unknown }
+      const structured = obj.error as {
+        code?: unknown
+        message?: unknown
+        account_numbers?: unknown
+        details?: unknown
+      }
+
       if (structured.code === 'ACCOUNTS_NOT_IN_CHART' && Array.isArray(structured.account_numbers)) {
         const numbers = structured.account_numbers as string[]
         return `Följande konton behöver aktiveras: ${numbers.join(', ')}`
       }
+
+      if (structured.code === 'JOURNAL_ENTRY_NOT_BALANCED') {
+        const details = structured.details as { totalDebit?: number; totalCredit?: number } | undefined
+        if (details && typeof details.totalDebit === 'number' && typeof details.totalCredit === 'number') {
+          return `Verifikationen balanserar inte (${formatCurrency(details.totalDebit)} debet vs ${formatCurrency(details.totalCredit)} kredit).`
+        }
+        return 'Verifikationen balanserar inte. Kontrollera att debet och kredit är lika stora.'
+      }
+
+      if (structured.code === 'FISCAL_PERIOD_NOT_FOUND') {
+        return 'Räkenskapsperioden kunde inte hittas.'
+      }
+
+      if (structured.code === 'ENTRY_DATE_OUTSIDE_FISCAL_PERIOD') {
+        return 'Datumet ligger utanför det valda räkenskapsåret.'
+      }
+
+      if (structured.code === 'JOURNAL_ENTRY_NOT_FOUND') {
+        return 'Verifikationen kunde inte hittas.'
+      }
+
+      if (structured.code === 'CANNOT_REVERSE_NON_POSTED') {
+        return 'Endast bokförda verifikationer kan stornas.'
+      }
+
+      if (structured.code === 'CANNOT_CORRECT_NON_POSTED') {
+        return 'Endast bokförda verifikationer kan rättas.'
+      }
+
+      if (structured.code === 'ENTRY_ALREADY_REVERSED') {
+        return 'Verifikationen har redan stornats av en annan användare. Ladda om sidan och försök igen.'
+      }
+
+      if (structured.code === 'CURRENCY_REVALUATION_ALREADY_EXISTS') {
+        return 'En valutaomvärdering finns redan för denna period.'
+      }
+
+      if (structured.code === 'INVALID_MAPPING_RESULT') {
+        return 'Kontering saknas för transaktionen. Kontrollera bokföringsreglerna.'
+      }
+
+      if (structured.code === 'BOOKKEEPING_DATABASE_ERROR') {
+        // A DB-layer error may carry a user-relevant cause (e.g. period lock
+        // trigger). Try the known-pattern map before falling back to the
+        // generic "kunde inte sparas" message.
+        if (typeof structured.message === 'string') {
+          const matched = tryMatchKnownError(structured.message)
+          if (matched) return matched
+        }
+        return 'Verifikationen kunde inte sparas. Försök igen.'
+      }
+
       if (typeof structured.message === 'string' && structured.message.trim()) {
         return structured.message
       }

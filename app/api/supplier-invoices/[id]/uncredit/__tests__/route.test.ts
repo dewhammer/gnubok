@@ -30,6 +30,8 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
   reverseEntry: (...args: unknown[]) => mockReverseEntry(...args),
 }))
 
+import { CannotReverseNonPostedError } from '@/lib/bookkeeping/errors'
+
 import { eventBus } from '@/lib/events'
 
 import { POST } from '../route'
@@ -222,7 +224,7 @@ describe('POST /api/supplier-invoices/[id]/uncredit', () => {
       data: { id: 'credit-1', registration_journal_entry_id: 'je-credit' },
       error: null,
     })
-    mockReverseEntry.mockRejectedValue(new Error('Can only reverse posted entries'))
+    mockReverseEntry.mockRejectedValue(new CannotReverseNonPostedError('draft'))
     enqueue({ data: null, error: null })
     enqueue({
       data: { ...original, status: 'approved', remaining_amount: 5000 },
