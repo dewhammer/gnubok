@@ -91,7 +91,9 @@ export type InvoiceDocumentType = 'invoice' | 'proforma' | 'delivery_note'
 export type SupplierType = 'swedish_business' | 'eu_business' | 'non_eu_business'
 
 // Supplier invoice status
-export type SupplierInvoiceStatus = 'registered' | 'approved' | 'paid' | 'partially_paid' | 'overdue' | 'disputed' | 'credited'
+// 'reversed' marks a credit note whose journal entry was storno-reversed via
+// "Ångra kreditering". The row is preserved (BFL 7 kap) rather than hard-deleted.
+export type SupplierInvoiceStatus = 'registered' | 'approved' | 'paid' | 'partially_paid' | 'overdue' | 'disputed' | 'credited' | 'reversed'
 
 // VAT treatment
 export type VatTreatment =

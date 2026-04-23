@@ -301,4 +301,163 @@ describe('POST /api/supplier-invoices', () => {
     expect(status).toBe(500)
     expect(body.error).toBe('Items insert failed')
   })
+
+  it('returns 409 with credit chain on duplicate supplier_invoice_number for credited original', async () => {
+    const supplier = makeSupplier({ id: VALID_UUID })
+
+    // Fetch supplier
+    enqueue({ data: supplier, error: null })
+    // RPC get_next_arrival_number
+    enqueue({ data: 8 })
+    // Insert invoice → unique-index violation
+    enqueue({
+      data: null,
+      error: {
+        code: '23505',
+        message:
+          'duplicate key value violates unique constraint "idx_supplier_invoices_company_supplier_number"',
+      },
+    })
+    // Lookup existing row
+    enqueue({
+      data: {
+        id: 'existing-1',
+        supplier_invoice_number: 'LF-DUP',
+        status: 'credited',
+      },
+      error: null,
+    })
+    // Lookup credit note for the credited original
+    enqueue({ data: { id: 'credit-1' }, error: null })
+
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'LF-DUP',
+        invoice_date: '2024-06-01',
+        due_date: '2024-07-01',
+        items: [{ description: 'Test', quantity: 1, unit_price: 1000, account_number: '4010' }],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{
+      error: string
+      message: string
+      existing: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string }
+    }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error).toBe('duplicate_supplier_invoice_number')
+    expect(body.message).toMatch(/krediterad/i)
+    expect(body.existing).toEqual({
+      id: 'existing-1',
+      supplier_invoice_number: 'LF-DUP',
+      status: 'credited',
+      credit_note_id: 'credit-1',
+    })
+  })
+
+  it('returns 409 without credit_note_id when existing invoice is not credited', async () => {
+    const supplier = makeSupplier({ id: VALID_UUID })
+
+    enqueue({ data: supplier, error: null })
+    enqueue({ data: 9 })
+    enqueue({
+      data: null,
+      error: {
+        code: '23505',
+        message:
+          'duplicate key value violates unique constraint "idx_supplier_invoices_company_supplier_number"',
+      },
+    })
+    enqueue({
+      data: {
+        id: 'existing-2',
+        supplier_invoice_number: 'LF-DUP-2',
+        status: 'approved',
+      },
+      error: null,
+    })
+
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'LF-DUP-2',
+        invoice_date: '2024-06-01',
+        due_date: '2024-07-01',
+        items: [{ description: 'Test', quantity: 1, unit_price: 1000, account_number: '4010' }],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{
+      error: string
+      message: string
+      existing: { id: string; status: string; credit_note_id: string | null }
+    }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error).toBe('duplicate_supplier_invoice_number')
+    expect(body.existing.status).toBe('approved')
+    expect(body.existing.credit_note_id).toBeNull()
+  })
+
+  it('returns generic 409 when existing row lookup races to nothing', async () => {
+    const supplier = makeSupplier({ id: VALID_UUID })
+
+    enqueue({ data: supplier, error: null })
+    enqueue({ data: 10 })
+    enqueue({
+      data: null,
+      error: {
+        code: '23505',
+        message:
+          'duplicate key value violates unique constraint "idx_supplier_invoices_company_supplier_number"',
+      },
+    })
+    // Lookup returns null — the row was deleted between the failing insert and our fetch
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'LF-RACE',
+        invoice_date: '2024-06-01',
+        due_date: '2024-07-01',
+        items: [{ description: 'Test', quantity: 1, unit_price: 1000, account_number: '4010' }],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{ error: string; message: string; existing?: unknown }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error).toBe('duplicate_supplier_invoice_number')
+    expect(body.existing).toBeUndefined()
+  })
+
+  it('falls through to 500 for non-23505 insert errors', async () => {
+    const supplier = makeSupplier({ id: VALID_UUID })
+
+    enqueue({ data: supplier, error: null })
+    enqueue({ data: 11 })
+    enqueue({ data: null, error: { code: '23502', message: 'NOT NULL violation' } })
+
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'LF-OTHER',
+        invoice_date: '2024-06-01',
+        due_date: '2024-07-01',
+        items: [{ description: 'Test', quantity: 1, unit_price: 1000, account_number: '4010' }],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{ error: string }>(response)
+
+    expect(status).toBe(500)
+    expect(body.error).toBe('NOT NULL violation')
+  })
 })

@@ -43,12 +43,11 @@ For each returned thread, call `get_thread` with `messageFormat: FULL_CONTENT` t
 
 - `threadId`
 - `subject`
-- Sender of the first message (the original customer — note that `invoiceservice@arcim.io` is a relay; the actual customer address is in the body as `Från: <email>` for Swedish or directly visible in the body text)
 - Date of the first message
 - Full body text of the first message (this is the customer's actual complaint)
 - Any reply messages (if the team has already responded, mention that but still propose a ticket unless the reply clearly resolves it)
 
-**Customer email extraction**: The Gnubok support relay wraps the original mail. The body typically starts with `Från: <customer@domain>` (Swedish) — parse this line for the real customer email. Fall back to the thread's first-message sender if parsing fails.
+**Do not extract, store, or display the customer's email address anywhere.** Tickets are fully anonymized — the sender address must never appear in chat output, issue bodies, or issue comments. Use the Gmail thread ID alone as the correlation identifier.
 
 ### Phase 2 — Codebase analysis (local only)
 
@@ -102,19 +101,31 @@ Next steps:
 - (2–4 steps total, specific not vague)
 
 Customer email (anonymized):
-<The full body of the customer's first message, with all personal names replaced by `x`. See the anonymization rules below.>
+<The full body of the customer's first message, with all personal names AND email addresses replaced by `x`. See the anonymization rules below.>
 
-Customer: <email address>
 Gmail thread ID: <threadId>
 ```
 
 **Anonymization rules — applied to the email body before it goes into the ticket**:
 
+The goal: strip anything that identifies the **specific customer or their employer**. Keep everything else — competitor tools, banks, authorities, domain terms — because that's operational context the developer needs.
+
 - **Replace personal first and last names with `x`**. Example: *"Hey this is amazing. My name is Emil and I do bla bla"* → *"Hey this is amazing. My name is x and I do bla bla"*. Handles greetings (*"Hej Anna,"* → *"Hej x,"*) and signatures (*"/Lars Andersson"* → *"/x"*).
-- **Keep company names, product names, domain terms, error messages, account numbers, SIE references, dates, and amounts.** These are operational details developers need. Only personal names get redacted.
-- **Keep the customer's email address in the `Customer:` metadata line** (outside the anonymized body). The team needs it to reply; developers generally don't read metadata to learn names.
-- **Keep the Gmail thread ID** as a plain identifier (no URL). It's used for duplicate detection across runs.
-- If unsure whether something is a personal name, redact it — false positives are harmless, leaked names aren't.
+- **Replace the customer's employer / own company name with `x`**, wherever it appears — body text, signatures, "jag jobbar på …", "vi på …", org numbers attributed to the sender, `@company.com` email domains. Also redact names of their direct clients or other companies they identify themselves through. Example: *"Jag jobbar på Capnos och behöver ta bort Capnos"* → *"Jag jobbar på x och behöver ta bort x"*.
+- **Do NOT redact** (these are not identifying — they're context):
+  - **gnubok itself**
+  - **Swedish authorities / standard bodies**: Skatteverket, Bolagsverket, Försäkringskassan, Bankgirot, BFN
+  - **Accounting / ERP providers and competitors**: Fortnox, Visma, Bokio, SpeedLedger, BL/Björn Lundén, Briox, etc.
+  - **Banks by name**: Swedbank, SEB, Handelsbanken, Nordea, etc. (unless clearly the customer's *own* company — rare)
+  - **File formats / protocols / standards**: SIE, K2, K3, BAS, PSD2, Peppol, BFNAR
+  - **Generic domain terms**: moms, verifikat, räkenskapsår, etc.
+- **Replace every email address with `x@x`**, including the sender's address, any `Från: <email>` or `From: <email>` header line inside the body, CC/BCC lines, and addresses mentioned in the body text. Do this before any other processing of the body.
+- **Replace phone numbers with `x`** (Swedish and international formats).
+- **Replace any internal identifier that ties the ticket to a specific account**: user UUIDs (e.g. `User ID: d36ff376-...`), session IDs, customer IDs. Replace the value with `x` but keep the label so the field structure is still readable.
+- **Never include Gmail URLs** (`https://mail.google.com/mail/u/.../#inbox/<id>`) anywhere in the issue body. The Gmail thread ID alone, as a plain identifier, is the only correlation allowed — it shows up once at the bottom as `**Gmail thread ID:** \`<id>\``. No `Original support thread: <URL>` line.
+- **Never output the customer's email address anywhere** — not in the chat preview, not in the GitHub issue body, not in issue comments, not in the summary.
+- **Keep** product names we build around, domain terms, error messages, account numbers, SIE references, dates, and amounts.
+- If unsure whether a capitalized word identifies the *customer or their employer* specifically, redact it. If it's clearly a third-party tool, bank, or authority, keep it. False positives on names/employers are harmless; leaked identifiers aren't.
 
 **Priority label convention**: use `priority:high`, `priority:medium`, `priority:low`. If the repo already has `P0`/`P1`/`P2` labels (check in phase 4), prefer those instead.
 
@@ -180,10 +191,9 @@ cat > /tmp/issue-body-<N>.md <<'EOF'
 
 ## Customer email (anonymized)
 
-> <Full body of the customer's first message, wrapped as a blockquote, with all personal names replaced by `x`.>
+> <Full body of the customer's first message, wrapped as a blockquote, with all personal names AND email addresses replaced by `x` / `x@x` respectively.>
 
 ---
-**Customer:** <email>
 **Gmail thread ID:** `<threadId>`
 EOF
 
@@ -202,7 +212,7 @@ The command prints the new issue's URL on success — capture it for the summary
 ```bash
 gh issue comment <issue-number> \
   --repo erp-mafia/gnubok \
-  --body "Another customer report of this issue. Customer: \`<email>\`. Gmail thread ID: \`<threadId>\`."
+  --body "Another customer report of this issue. Gmail thread ID: \`<threadId>\`."
 ```
 
 **Label notes**:

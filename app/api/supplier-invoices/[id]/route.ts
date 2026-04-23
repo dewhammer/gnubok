@@ -22,7 +22,9 @@ export async function GET(
 
   const { data: invoice, error } = await supabase
     .from('supplier_invoices')
-    .select('*, supplier:suppliers(*), items:supplier_invoice_items(*), payments:supplier_invoice_payments(*)')
+    .select(
+      '*, supplier:suppliers(*), items:supplier_invoice_items(*), payments:supplier_invoice_payments(*), credited_original:supplier_invoices!credited_invoice_id(id, supplier_invoice_number, arrival_number)'
+    )
     .eq('id', id)
     .eq('company_id', companyId)
     .single()
@@ -111,13 +113,27 @@ export async function DELETE(
   // Only allow deleting registered invoices without journal entries
   const { data: existing } = await supabase
     .from('supplier_invoices')
-    .select('status, registration_journal_entry_id')
+    .select('status, registration_journal_entry_id, is_credit_note')
     .eq('id', id)
     .eq('company_id', companyId)
     .single()
 
   if (!existing) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
+  // Block direct deletion of credit notes — deleting just the row would orphan the
+  // posted reversal JE and silently break momsdeklaration. The user must instead
+  // run "Ångra kreditering" on the original, which storno-reverses the JE and
+  // restores the original's status atomically.
+  if (existing.is_credit_note) {
+    return NextResponse.json(
+      {
+        error:
+          'Kreditfakturor kan inte tas bort direkt. Gå till originalfakturan och välj "Ångra kreditering" för att frigöra numret och återställa bokföringen.',
+      },
+      { status: 400 }
+    )
   }
 
   if (existing.status !== 'registered') {

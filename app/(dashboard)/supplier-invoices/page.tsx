@@ -22,6 +22,7 @@ const statusVariants: Record<string, 'default' | 'secondary' | 'success' | 'warn
   overdue: 'destructive',
   disputed: 'warning',
   credited: 'secondary',
+  reversed: 'secondary',
 }
 
 const statusLabels: Record<string, string> = {
@@ -32,6 +33,7 @@ const statusLabels: Record<string, string> = {
   overdue: 'Förfallen',
   disputed: 'Tvist',
   credited: 'Krediterad',
+  reversed: 'Makulerad',
 }
 
 export default function SupplierInvoicesPage() {

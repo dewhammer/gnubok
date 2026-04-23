@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm, Controller, useFieldArray } from 'react-hook-form'
 import { Button } from '@/components/ui/button'
@@ -10,8 +10,9 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { ArrowLeft, Plus, Trash2, Lock } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Lock, AlertCircle } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { SupplierInvoiceReviewContent } from '@/components/suppliers/SupplierInvoiceReviewContent'
@@ -70,6 +71,12 @@ export default function NewSupplierInvoicePage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [pendingData, setPendingData] = useState<FormData | null>(null)
+  const [conflict, setConflict] = useState<{
+    message: string
+    existing: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null } | null
+  } | null>(null)
+  const [isResolvingConflict, setIsResolvingConflict] = useState(false)
+  const invoiceNumberInputRef = useRef<HTMLInputElement | null>(null)
 
   const { register, control, handleSubmit, watch, setValue, formState: { isDirty } } = useForm<FormData>({
     defaultValues: {
@@ -180,9 +187,8 @@ export default function NewSupplierInvoicePage() {
     setShowReview(true)
   }
 
-  async function handleConfirm() {
-    if (!pendingData) return
-    setIsSubmitting(true)
+  async function submitInvoice(): Promise<{ ok: boolean; status: number; result: { data?: { id: string; arrival_number: number }; error?: string; message?: string; existing?: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null } } }> {
+    if (!pendingData) return { ok: false, status: 0, result: {} }
 
     const vatTreatment = inferVatTreatment(pendingData.items, pendingData.reverse_charge)
 
@@ -213,16 +219,88 @@ export default function NewSupplierInvoicePage() {
     })
 
     const result = await res.json()
+    return { ok: res.ok, status: res.status, result }
+  }
 
-    if (!res.ok) {
-      toast({ title: 'Kunde inte registrera faktura', description: getErrorMessage(result, { context: 'supplier_invoice', statusCode: res.status }), variant: 'destructive' })
-    } else {
+  async function handleConfirm() {
+    if (!pendingData) return
+    setIsSubmitting(true)
+
+    const { ok, status, result } = await submitInvoice()
+
+    if (ok && result.data) {
       toast({ title: 'Faktura registrerad', description: `Ankomstnummer: ${result.data.arrival_number}` })
       setShowReview(false)
       router.push(`/supplier-invoices/${result.data.id}`)
+    } else if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
+      // Surface the explanatory modal instead of a toast — the user has real choices to make.
+      setShowReview(false)
+      setConflict({
+        message: result.message || 'Det finns redan en faktura med detta nummer från denna leverantör.',
+        existing: result.existing ?? null,
+      })
+    } else {
+      toast({
+        title: 'Kunde inte registrera faktura',
+        description: getErrorMessage(result, { context: 'supplier_invoice', statusCode: status }),
+        variant: 'destructive',
+      })
     }
 
     setIsSubmitting(false)
+  }
+
+  async function handleUncreditAndRetry() {
+    if (!conflict?.existing) return
+    const existingId = conflict.existing.id
+    const existingNumber = conflict.existing.supplier_invoice_number
+    setIsResolvingConflict(true)
+
+    const uncreditRes = await fetch(
+      `/api/supplier-invoices/${existingId}/uncredit`,
+      { method: 'POST' }
+    )
+    const uncreditResult = await uncreditRes.json()
+    if (!uncreditRes.ok) {
+      toast({
+        title: 'Kunde inte ångra kreditering',
+        description: getErrorMessage(uncreditResult, { context: 'supplier_invoice', statusCode: uncreditRes.status }),
+        variant: 'destructive',
+      })
+      setIsResolvingConflict(false)
+      return
+    }
+
+    // The duplicate number is now free — drop the dialog regardless of what
+    // happens next, otherwise the user is left staring at a stale "number in
+    // use" prompt that no longer matches reality.
+    setConflict(null)
+
+    const { ok, status, result } = await submitInvoice()
+    setIsResolvingConflict(false)
+
+    if (ok && result.data) {
+      toast({
+        title: 'Kreditering ångrad och faktura registrerad',
+        description: `Ankomstnummer: ${result.data.arrival_number}`,
+      })
+      router.push(`/supplier-invoices/${result.data.id}`)
+      return
+    }
+
+    // Uncredit succeeded but the resubmit hit a different validation error.
+    // Tell the user exactly what happened so they don't assume the uncredit
+    // also failed, and leave them on the form to fix and retry.
+    toast({
+      title: 'Kreditering ångrad — men nya fakturan kunde inte registreras',
+      description: `Faktura ${existingNumber} är återställd och numret är ledigt. ${getErrorMessage(result, { context: 'supplier_invoice', statusCode: status })}`,
+      variant: 'destructive',
+    })
+  }
+
+  function handlePickNewNumber() {
+    setConflict(null)
+    setTimeout(() => invoiceNumberInputRef.current?.focus(), 0)
   }
 
   return (
@@ -268,10 +346,19 @@ export default function NewSupplierInvoicePage() {
               </div>
               <div className="space-y-2">
                 <Label>Leverantörens fakturanummer *</Label>
-                <Input
-                  placeholder="Fakturanr från leverantören"
-                  {...register('supplier_invoice_number')}
-                />
+                {(() => {
+                  const { ref: rhfRef, ...rest } = register('supplier_invoice_number')
+                  return (
+                    <Input
+                      placeholder="Fakturanr från leverantören"
+                      {...rest}
+                      ref={(el) => {
+                        rhfRef(el)
+                        invoiceNumberInputRef.current = el
+                      }}
+                    />
+                  )
+                })()}
               </div>
             </div>
             <div className="space-y-2">
@@ -638,6 +725,37 @@ export default function NewSupplierInvoicePage() {
           </ConfirmationDialog>
         )
       })()}
+
+      <Dialog open={!!conflict} onOpenChange={(open) => !open && setConflict(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              Fakturanummer används redan
+            </DialogTitle>
+            <DialogDescription>{conflict?.message}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            {conflict?.existing && (
+              <Button
+                variant="outline"
+                onClick={() => router.push(`/supplier-invoices/${conflict.existing!.id}`)}
+                disabled={isResolvingConflict}
+              >
+                Visa befintlig faktura
+              </Button>
+            )}
+            {conflict?.existing?.status === 'credited' && (
+              <Button onClick={handleUncreditAndRetry} disabled={isResolvingConflict}>
+                {isResolvingConflict ? 'Bearbetar...' : 'Ångra kreditering & återförsök'}
+              </Button>
+            )}
+            <Button variant="ghost" onClick={handlePickNewNumber} disabled={isResolvingConflict}>
+              Använd ett annat nummer
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

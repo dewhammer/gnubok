@@ -147,6 +147,76 @@ export async function POST(request: Request) {
     .single()
 
   if (invoiceError || !invoice) {
+    // Translate the unique-index violation on (company_id, supplier_id, supplier_invoice_number)
+    // into a structured 409 so the UI can offer to undo the credit chain rather than
+    // leaving the user stuck on a generic 500. Other DB errors keep the existing 500 path.
+    const pgErr = invoiceError as { code?: string; message?: string } | null
+    const isDuplicateNumber =
+      pgErr?.code === '23505' &&
+      (pgErr.message || '').includes('idx_supplier_invoices_company_supplier_number')
+
+    if (isDuplicateNumber) {
+      const { data: existing } = await supabase
+        .from('supplier_invoices')
+        .select('id, supplier_invoice_number, status')
+        .eq('company_id', companyId)
+        .eq('supplier_id', body.supplier_id)
+        .eq('supplier_invoice_number', body.supplier_invoice_number)
+        .maybeSingle()
+
+      if (!existing) {
+        // Race: row vanished between the failing insert and our lookup. Stay defensive.
+        return NextResponse.json(
+          {
+            error: 'duplicate_supplier_invoice_number',
+            message: `Det finns redan en faktura med nummer ${body.supplier_invoice_number} från denna leverantör.`,
+          },
+          { status: 409 }
+        )
+      }
+
+      let creditNoteId: string | null = null
+      if (existing.status === 'credited') {
+        const { data: creditNote } = await supabase
+          .from('supplier_invoices')
+          .select('id')
+          .eq('company_id', companyId)
+          .eq('credited_invoice_id', existing.id)
+          .eq('is_credit_note', true)
+          .maybeSingle()
+        creditNoteId = creditNote?.id ?? null
+      }
+
+      const statusLabels: Record<string, string> = {
+        registered: 'registrerad',
+        approved: 'godkänd',
+        paid: 'betald',
+        partially_paid: 'delbetald',
+        overdue: 'förfallen',
+        disputed: 'tvist',
+        credited: 'krediterad',
+      }
+      const statusLabel = statusLabels[existing.status] || existing.status
+      const message =
+        existing.status === 'credited'
+          ? `Det finns redan en faktura med nummer ${existing.supplier_invoice_number} från denna leverantör (krediterad). Du kan ångra krediteringen för att frigöra numret, eller använda ett annat nummer.`
+          : `Det finns redan en faktura med nummer ${existing.supplier_invoice_number} från denna leverantör (status: ${statusLabel}). Använd ett annat nummer.`
+
+      return NextResponse.json(
+        {
+          error: 'duplicate_supplier_invoice_number',
+          message,
+          existing: {
+            id: existing.id,
+            supplier_invoice_number: existing.supplier_invoice_number,
+            status: existing.status,
+            credit_note_id: creditNoteId,
+          },
+        },
+        { status: 409 }
+      )
+    }
+
     return NextResponse.json({ error: invoiceError?.message || 'Failed to create invoice' }, { status: 500 })
   }
 

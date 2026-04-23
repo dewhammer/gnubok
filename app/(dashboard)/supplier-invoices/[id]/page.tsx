@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { ArrowLeft, CheckCircle, CreditCard, FileText, Trash2, Lock } from 'lucide-react'
+import { ArrowLeft, CheckCircle, CreditCard, FileText, Trash2, Lock, Undo2, Info } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import Link from 'next/link'
 import { AccountNumber } from '@/components/ui/account-number'
@@ -28,6 +28,7 @@ const statusColors: Record<string, string> = {
   overdue: 'bg-destructive/10 text-destructive',
   disputed: 'bg-purple-100 text-purple-800',
   credited: 'bg-gray-100 text-gray-800',
+  reversed: 'bg-gray-100 text-gray-500',
 }
 
 const statusLabels: Record<string, string> = {
@@ -38,6 +39,7 @@ const statusLabels: Record<string, string> = {
   overdue: 'Förfallen',
   disputed: 'Tvist',
   credited: 'Krediterad',
+  reversed: 'Makulerad',
 }
 
 export default function SupplierInvoiceDetailPage() {
@@ -141,6 +143,34 @@ export default function SupplierInvoiceDetailPage() {
     }
   }
 
+  async function handleUncredit() {
+    const ok = await confirmAction({
+      title: 'Ångra kreditering',
+      description:
+        'Kreditfakturan tas bort och dess verifikation makuleras (storno). Originalfakturan återställs så att fakturanumret blir ledigt igen.',
+      confirmLabel: 'Ångra kreditering',
+      variant: 'warning',
+    })
+    if (!ok) return
+    setIsProcessing(true)
+    const res = await fetch(`/api/supplier-invoices/${params.id}/uncredit`, { method: 'POST' })
+    const result = await res.json()
+    if (!res.ok) {
+      toast({
+        title: 'Kunde inte ångra kreditering',
+        description: result.error || 'Försök igen',
+        variant: 'destructive',
+      })
+    } else {
+      toast({
+        title: 'Kreditering ångrad',
+        description: 'Originalfakturan är återställd och numret är ledigt.',
+      })
+      fetchInvoice()
+    }
+    setIsProcessing(false)
+  }
+
   if (isLoading) {
     return (
       <div className="space-y-6">
@@ -189,7 +219,7 @@ export default function SupplierInvoiceDetailPage() {
 
         {/* Actions */}
         <div className="flex flex-wrap gap-2">
-          {invoice.status === 'registered' && (
+          {invoice.status === 'registered' && !invoice.is_credit_note && (
             <>
               <Button
                 onClick={handleApprove}
@@ -233,8 +263,43 @@ export default function SupplierInvoiceDetailPage() {
               )}
             </>
           )}
+          {invoice.status === 'credited' && !invoice.is_credit_note && (
+            <Button
+              variant="outline"
+              onClick={handleUncredit}
+              disabled={isProcessing || !canWrite}
+              title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+            >
+              {canWrite ? <Undo2 className="mr-2 h-4 w-4" /> : <Lock className="mr-2 h-4 w-4" />}
+              Ångra kreditering
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Credit note banner — explain why this row has no edit/delete affordances and where to undo */}
+      {invoice.is_credit_note && (
+        <div className="rounded-lg border bg-muted/40 p-4 flex gap-3 text-sm">
+          <Info className="h-5 w-5 shrink-0 text-muted-foreground mt-0.5" />
+          <div className="space-y-1">
+            <p className="font-medium">Detta är en kreditfaktura</p>
+            <p className="text-muted-foreground">
+              Den är kopplad till{' '}
+              {(invoice as SupplierInvoice & { credited_original?: { id: string; supplier_invoice_number: string; arrival_number: number } }).credited_original ? (
+                <Link
+                  href={`/supplier-invoices/${(invoice as SupplierInvoice & { credited_original: { id: string; supplier_invoice_number: string; arrival_number: number } }).credited_original.id}`}
+                  className="text-primary hover:underline font-medium"
+                >
+                  faktura {(invoice as SupplierInvoice & { credited_original: { id: string; supplier_invoice_number: string; arrival_number: number } }).credited_original.supplier_invoice_number}
+                </Link>
+              ) : (
+                <span>originalfakturan</span>
+              )}
+              . För att ta bort kreditfakturan och frigöra fakturanumret, gå till originalet och välj &quot;Ångra kreditering&quot;.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Invoice details */}
       <div className="grid gap-4 md:grid-cols-2">
