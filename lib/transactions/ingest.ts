@@ -120,6 +120,28 @@ export async function ingestTransactions(
   // by incoming enable_banking rows to avoid blocking unrelated CSV imports.
   const existingMaps = await buildExistingTransactionMaps(supabase, companyId, rawTransactions)
 
+  // AI agent gate: when the company has opted into the agent flow, every
+  // uncategorized transaction becomes a review proposal — no silent auto-book.
+  // Matching/suggestion still runs (it only sets potential_*_id fields), but
+  // the mapping-rule auto-categorize branch below is disabled. Fetched lazily
+  // the first time the auto-categorize branch is about to run, and cached for
+  // the rest of the batch so we don't hit the DB per-transaction.
+  let aiFlowEnabledCache: boolean | null = null
+  const isAiFlowEnabled = async (): Promise<boolean> => {
+    if (aiFlowEnabledCache !== null) return aiFlowEnabledCache
+    try {
+      const { data: aiSettings } = await supabase
+        .from('company_settings')
+        .select('ai_flow_enabled')
+        .eq('company_id', companyId)
+        .maybeSingle()
+      aiFlowEnabledCache = Boolean(aiSettings?.ai_flow_enabled)
+    } catch {
+      aiFlowEnabledCache = false
+    }
+    return aiFlowEnabledCache
+  }
+
   // When rawInsertOnly is set (viewer imports), skip pre-fetching GL lines,
   // supplier invoices, and exchange rates — they are not used.
   let glLinePool: UnlinkedGLLine[] = []
@@ -372,7 +394,9 @@ export async function ingestTransactions(
     // Skipped when SIE-imported entries overlap the sync range — prevents
     // double-booking. Reconciliation (step 2.5) still links transactions to
     // existing GL lines; only the "create new journal entry" path is suppressed.
-    if (!options?.skipAutoCategorization) {
+    // Also skipped when the company has opted into the AI agent flow — every
+    // uncategorized transaction must become a proposal, not a silent post.
+    if (!options?.skipAutoCategorization && !(await isAiFlowEnabled())) {
       try {
         const mappingResult = await evaluateMappingRules(
           supabase,

@@ -414,6 +414,8 @@ describe('ingestTransactions', () => {
     enqueue({ data: [], error: null })
     // Transaction 1: insert OK
     enqueue({ data: inserted1, error: null })
+    // AI flow flag lookup (lazy, fires once on first auto-categorize branch)
+    enqueue({ data: { ai_flow_enabled: false }, error: null })
     // Transaction 2: insert OK
     enqueue({ data: inserted2, error: null })
 

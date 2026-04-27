@@ -1,1 +1,1 @@
-{"$schema":"./extensions.schema.json","extensions":["enable-banking","email","arcim-migration","tic","mcp-server","cloud-backup"]}
+{"$schema":"./extensions.schema.json","extensions":["enable-banking","email","arcim-migration","tic","mcp-server","cloud-backup","invoice-inbox","ai-agent"]}

@@ -10,6 +10,8 @@ import type {
   ReconciliationMethod,
   InvoiceInboxItem,
   SupplierInvoice,
+  AIProposal,
+  AIRequest,
 } from '@/types'
 
 // ============================================================
@@ -86,6 +88,11 @@ export type CoreEvent =
   // Company & account lifecycle
   | { type: 'company.deleted'; payload: { companyId: string; userId: string; archivedAt: string } }
   | { type: 'account.deleted'; payload: { userId: string; deletedAt: string } }
+  // AI agent flow (receipts v1)
+  | { type: 'ai_proposal.generated'; payload: { proposal: AIProposal; userId: string; companyId: string } }
+  | { type: 'ai_proposal.accepted'; payload: { proposal: AIProposal; appliedEntry: JournalEntry | null; userId: string; companyId: string } }
+  | { type: 'ai_proposal.rejected'; payload: { proposal: AIProposal; userId: string; companyId: string } }
+  | { type: 'ai_request.created'; payload: { request: AIRequest; userId: string; companyId: string } }
 
 // ============================================================
 // Helper Types

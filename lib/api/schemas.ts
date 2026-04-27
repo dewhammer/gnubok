@@ -394,6 +394,8 @@ export const UpdateSettingsSchema = z.object({
   invoice_show_plusgiro: z.boolean().optional(),
   invoice_late_fee_text: z.string().nullable().optional(),
   invoice_credit_terms_text: z.string().nullable().optional(),
+  // AI agent flow
+  ai_flow_enabled: z.boolean().optional(),
 }).refine(
   (data) => {
     // BFL 3 kap.: Enskild firma must have fiscal year starting January
@@ -768,3 +770,87 @@ export const CreateSalaryLineItemSchema = z.object({
 })
 
 export const UpdateSalaryLineItemSchema = CreateSalaryLineItemSchema.partial().omit({ salary_run_employee_id: true })
+
+// ============================================================
+// AI agent flow schemas
+// ============================================================
+
+const BookingProposalLineSchema = z.object({
+  account_number: accountNumber,
+  debit_amount: nonNegativeAmount,
+  credit_amount: nonNegativeAmount,
+  description: z.string().min(1).max(500),
+})
+
+const BookingProposalCounterpartyTemplateSchema = z.object({
+  counterparty_name: z.string().min(1).max(200),
+  debit_account: accountNumber,
+  credit_account: accountNumber,
+  vat_treatment: VatTreatmentSchema.nullable(),
+  category: TransactionCategorySchema.nullable(),
+})
+
+// Edit payload: the user's edited version of a booking proposal. Used in
+// the /accept endpoint when the user adjusted accounts/VAT before approving.
+export const EditBookingProposalSchema = z.object({
+  lines: z.array(BookingProposalLineSchema).min(2),
+  vat_treatment: VatTreatmentSchema.nullable(),
+  default_private: z.boolean(),
+  counterparty_template_proposal: BookingProposalCounterpartyTemplateSchema.nullable(),
+  fiscal_period_id: uuid,
+  entry_date: isoDate,
+  description: z.string().min(1).max(500),
+})
+
+// For match proposals, editing just means picking a different transaction.
+export const EditMatchProposalSchema = z.object({
+  matched_transaction_id: uuid,
+})
+
+export const AcceptProposalSchema = z.object({
+  version: z.number().int().nonnegative(),
+  edits: z.union([EditBookingProposalSchema, EditMatchProposalSchema]).optional(),
+})
+
+// Change the matched transaction on a pending match proposal without
+// accepting it. Source tells us whether the user picked one of the AI's
+// own alternatives, an AI-regenerated suggestion, or a manually-chosen
+// transaction — kept on edit_diff for learning signal.
+export const ChangeMatchProposalSchema = z.object({
+  version: z.number().int().nonnegative(),
+  matched_transaction_id: uuid,
+  source: z.enum(['user_alternative', 'user_manual', 'ai_regenerated']),
+})
+
+export const RejectProposalSchema = z.object({
+  version: z.number().int().nonnegative(),
+  reason: z.string().max(500).optional(),
+})
+
+export const BatchAcceptSchema = z.object({
+  proposal_ids: z.array(uuid).min(1).max(50),
+})
+
+export const ResolveRequestSchema = z.object({
+  response: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const StartBackfillSchema = z.object({}).strict()
+
+export const RememberLearningSchema = z.object({
+  proposal_id: uuid,
+  counterparty_name: z.string().min(1).max(200),
+  debit_account: accountNumber,
+  credit_account: accountNumber,
+  vat_treatment: VatTreatmentSchema.nullable(),
+  category: TransactionCategorySchema.nullable(),
+})
+
+export const ListProposalsQuerySchema = z.object({
+  status: z
+    .enum(['pending', 'accepted', 'rejected', 'skipped', 'invalidated'])
+    .optional(),
+  step_type: z.enum(['match', 'booking']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+})

@@ -80,6 +80,11 @@ const SOURCE_PRIORITY: Record<CategorizationTemplateSource, number> = {
   auto_learned: 1,
   sie_import: 2,
   user_approved: 3,
+  // AI-corrected templates carry explicit user validation (they edited the
+  // AI's proposal, then confirmed "remember this"), so rank equal to
+  // user_approved. Fresh incoming AI corrections still win over older
+  // templates of the same rank (>= in resolveSource).
+  ai_corrected: 3,
 }
 
 export function resolveSource(

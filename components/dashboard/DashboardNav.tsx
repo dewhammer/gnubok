@@ -27,7 +27,10 @@ import {
   TrendingUp,
   ClipboardCheck,
   HandCoins,
+  Sparkles,
 } from 'lucide-react'
+import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+import { isAgentInboxEnabled } from '@/lib/ai/feature-flag'
 import { resolveIcon } from '@/lib/extensions/icon-resolver'
 import { SupportLink } from '@/components/ui/support-link'
 import CompanySwitcher from '@/components/dashboard/CompanySwitcher'
@@ -57,6 +60,7 @@ interface NavItem {
   modes?: EntityType[] // If set, only visible for these entity types. If not set, visible to all.
   hidden?: boolean // Temporarily hide from sidebar
   comingSoon?: boolean // Visible but disabled; shows "Kommer snart" badge
+  devBadge?: boolean // Shows a "Dev" badge to indicate dev-only feature
 }
 
 // All nav items for sidebar and mobile drawer
@@ -74,6 +78,8 @@ const navItems: NavItem[] = [
   { href: '/supplier-invoices', label: 'Leverantörsfakturor', icon: FileInput, group: 'inköp', hidden: true },
   // General accounting
   { href: '/pending', label: 'Granskning', icon: ClipboardCheck, group: 'redovisning' },
+  { href: '/receipts', label: 'Kvitton', icon: Receipt, group: 'redovisning', hidden: !ENABLED_EXTENSION_IDS.has('invoice-inbox'), devBadge: true },
+  { href: '/agent-inbox', label: 'Agent-inkorg', icon: Sparkles, group: 'redovisning', hidden: !ENABLED_EXTENSION_IDS.has('ai-agent') || !isAgentInboxEnabled(), devBadge: true },
   { href: '/transactions', label: 'Transaktioner', icon: ArrowLeftRight, group: 'redovisning' },
   { href: '/bookkeeping', label: 'Bokföring', icon: BookOpen, group: 'redovisning' },
   { href: '/reports', label: 'Rapporter', icon: BarChart3, group: 'redovisning' },
@@ -264,6 +270,10 @@ export default function DashboardNav({ companyName: _companyName, entityType, un
                           {item.comingSoon ? (
                             <span className="ml-auto rounded-full bg-muted/60 text-muted-foreground/70 text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5">
                               Kommer snart
+                            </span>
+                          ) : item.devBadge ? (
+                            <span className="ml-auto rounded-full bg-muted/60 text-muted-foreground/70 text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5">
+                              Dev
                             </span>
                           ) : badge !== null && (
                             <span className="ml-auto min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-semibold px-1">
@@ -591,6 +601,10 @@ export default function DashboardNav({ companyName: _companyName, entityType, un
                           {item.comingSoon ? (
                             <span className="rounded-full bg-muted/60 text-muted-foreground/70 text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5">
                               Kommer snart
+                            </span>
+                          ) : item.devBadge ? (
+                            <span className="rounded-full bg-muted/60 text-muted-foreground/70 text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5">
+                              Dev
                             </span>
                           ) : badge !== null && (
                             <span className="min-w-[20px] h-[20px] flex items-center justify-center rounded-full bg-primary/15 text-primary text-[10px] font-semibold px-1.5">
