@@ -4,6 +4,7 @@ import { requireCompanyId } from '@/lib/company/context'
 import { requireWritePermission } from '@/lib/auth/require-write'
 import { ensureInitialized } from '@/lib/init'
 import { eventBus } from '@/lib/events/bus'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 
 ensureInitialized()
 
@@ -59,7 +60,7 @@ export async function DELETE(
 
   if (error) {
     return NextResponse.json(
-      { error: error.message },
+      { error: getErrorMessage(error, { context: 'journal_entry', statusCode: 400 }) },
       { status: 400 }
     )
   }
