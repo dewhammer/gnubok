@@ -1073,8 +1073,8 @@ function BalansrapportView({ periodId, onNavigateToAccount }: { periodId: string
                   <th className="text-left font-medium px-4 py-2 w-20">Konto</th>
                   <th className="text-left font-medium px-4 py-2">Kontonamn</th>
                   <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Ingående balans</th>
-                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Utgående balans</th>
                   <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Förändring</th>
+                  <th className="text-right font-medium px-4 py-2 w-32 tabular-nums">Utgående balans</th>
                 </tr>
               </thead>
               <tbody>
@@ -1096,8 +1096,8 @@ function BalansrapportView({ periodId, onNavigateToAccount }: { periodId: string
                         </td>
                         <td className="px-4 py-1.5">{row.account_name}</td>
                         <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">{formatAmount(row.ib)}</td>
-                        <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(row.ub)}</td>
                         <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">{formatAmount(row.period_change)}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(row.ub)}</td>
                       </tr>
                     ))}
                     <tr className="border-b font-medium">
@@ -1105,10 +1105,10 @@ function BalansrapportView({ periodId, onNavigateToAccount }: { periodId: string
                         Summa
                       </td>
                       <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">{formatAmount(group.subtotal_ib)}</td>
-                      <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(group.subtotal_ub)}</td>
                       <td className="px-4 py-1.5 text-right tabular-nums text-muted-foreground">
                         {formatAmount(group.subtotal_ub - group.subtotal_ib)}
                       </td>
+                      <td className="px-4 py-1.5 text-right tabular-nums">{formatAmount(group.subtotal_ub)}</td>
                     </tr>
                   </React.Fragment>
                 ))}

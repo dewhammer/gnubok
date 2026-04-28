@@ -110,19 +110,19 @@ describe('generateBalansrapport', () => {
     expect(assets.subtotal_ib).toBe(60000)
     expect(assets.subtotal_ub).toBe(87500)
 
-    // Equity & liabilities — credit-positive
+    // Equity & liabilities — debit-negative (Fortnox/Visma convention)
     const equity = report.groups[1]
     expect(equity.rows[0]).toEqual({
       account_number: '2099',
       account_name: 'Årets resultat',
-      ib: 52000,
-      ub: 72500,
-      period_change: 20500,
+      ib: -52000,
+      ub: -72500,
+      period_change: -20500,
     })
-    expect(equity.subtotal_ub).toBe(87500)
+    expect(equity.subtotal_ub).toBe(-87500)
 
     expect(report.total_assets_ub).toBe(87500)
-    expect(report.total_equity_liabilities_ub).toBe(87500)
+    expect(report.total_equity_liabilities_ub).toBe(-87500)
     // 2099 already absorbs prior+current result, residual is 0
     expect(report.beraknat_resultat).toBe(0)
     expect(report.is_balanced).toBe(true)
@@ -150,10 +150,63 @@ describe('generateBalansrapport', () => {
     const report = await generateBalansrapport(q.supabase as any, 'company-1', 'period-1')
 
     expect(report.total_assets_ub).toBe(80000)
-    expect(report.total_equity_liabilities_ub).toBe(30000)
+    expect(report.total_equity_liabilities_ub).toBe(-30000)
     expect(report.beraknat_resultat).toBe(50000)
     // Trial balance still balances — double-entry guarantees this.
     expect(report.is_balanced).toBe(true)
+  })
+
+  it('renders class 2 rows with negative sign (god redovisningssed convention)', async () => {
+    // Regression test: every Swedish accounting tool (Fortnox, Visma, Bokio,
+    // Briox, BL) renders class 2 debit-negative on Balansrapport so that
+    // assets + eq_liab = beräknat resultat. Pin this convention.
+    const q = createQueuedMockSupabase()
+    q.enqueue({
+      data: { period_start: '2026-01-01', period_end: '2026-12-31' },
+      error: null,
+    })
+
+    mockTrialBalance.mockResolvedValueOnce(
+      tb([
+        makeRow({
+          account_number: '1930',
+          account_name: 'Bank',
+          account_class: 1,
+          opening_debit: 100000,
+          closing_debit: 120000,
+        }),
+        makeRow({
+          account_number: '2440',
+          account_name: 'Lev.skulder',
+          account_class: 2,
+          opening_credit: 40000,
+          closing_credit: 50000,
+        }),
+        makeRow({
+          account_number: '2350',
+          account_name: 'Banklån',
+          account_class: 2,
+          opening_credit: 30000,
+          closing_credit: 25000,
+        }),
+      ])
+    )
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const report = await generateBalansrapport(q.supabase as any, 'company-1', 'period-1')
+
+    const equity = report.groups.find((g) => g.class === 2)!
+    // Strict < 0: every fixture row has a nonzero credit balance, so the
+    // convention requires every row to be strictly negative.
+    expect(equity.rows.every((r) => r.ib < 0)).toBe(true)
+    expect(equity.rows.every((r) => r.ub < 0)).toBe(true)
+    expect(equity.subtotal_ib).toBeLessThan(0)
+    expect(equity.subtotal_ub).toBeLessThan(0)
+    expect(report.total_equity_liabilities_ub).toBeLessThan(0)
+    // Sum of both sides equals beräknat resultat (here: profit residual)
+    expect(report.total_assets_ub + report.total_equity_liabilities_ub).toBe(
+      report.beraknat_resultat
+    )
   })
 
   it('is_balanced reflects trial balance balance state', async () => {

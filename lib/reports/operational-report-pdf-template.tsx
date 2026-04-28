@@ -385,8 +385,8 @@ export function BalansrapportPDF({ report, company, generatedAt }: Balansrapport
           <Text style={[styles.tableHeaderText, styles.colAccount]}>Konto</Text>
           <Text style={[styles.tableHeaderText, styles.colName]}>Kontonamn</Text>
           <Text style={[styles.tableHeaderText, styles.colAmountMuted]}>Ingående</Text>
-          <Text style={[styles.tableHeaderText, styles.colAmount]}>Utgående</Text>
           <Text style={[styles.tableHeaderText, styles.colAmountMuted]}>Förändring</Text>
+          <Text style={[styles.tableHeaderText, styles.colAmount]}>Utgående</Text>
         </View>
 
         {report.groups.map((group) => (
@@ -399,17 +399,17 @@ export function BalansrapportPDF({ report, company, generatedAt }: Balansrapport
                 <Text style={styles.colAccount}>{row.account_number}</Text>
                 <Text style={styles.colName}>{row.account_name}</Text>
                 <Text style={styles.colAmountMuted}>{formatAmount(row.ib)}</Text>
-                <Text style={styles.colAmount}>{formatAmount(row.ub)}</Text>
                 <Text style={styles.colAmountMuted}>{formatAmount(row.period_change)}</Text>
+                <Text style={styles.colAmount}>{formatAmount(row.ub)}</Text>
               </View>
             ))}
             <View style={styles.subtotalRow} wrap={false}>
               <Text style={styles.subtotalLabel}>Summa</Text>
               <Text style={[styles.subtotalAmount, { color: '#666' }]}>{formatAmount(group.subtotal_ib)}</Text>
-              <Text style={styles.subtotalAmount}>{formatAmount(group.subtotal_ub)}</Text>
               <Text style={[styles.subtotalAmount, { color: '#666' }]}>
                 {formatAmount(group.subtotal_ub - group.subtotal_ib)}
               </Text>
+              <Text style={styles.subtotalAmount}>{formatAmount(group.subtotal_ub)}</Text>
             </View>
           </View>
         ))}
