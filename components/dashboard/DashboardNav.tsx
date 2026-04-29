@@ -29,6 +29,7 @@ import {
   HandCoins,
   Sparkles,
 } from 'lucide-react'
+import { getBranding } from '@/lib/branding/service'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import { isAgentInboxEnabled } from '@/lib/ai/feature-flag'
 import { resolveIcon } from '@/lib/extensions/icon-resolver'
@@ -157,9 +158,12 @@ export default function DashboardNav({ companyName: _companyName, entityType, un
     }, 200)
   }
 
+  const hiddenNavHrefs = new Set(getBranding().hiddenNavHrefs)
+
   // Filter nav items by entity type, hidden flag, and conditional visibility
   const filteredItems = navItems.filter(item => {
     if (item.hidden) return false
+    if (hiddenNavHrefs.has(item.href)) return false
     if (item.modes && !item.modes.includes(entityType)) return false
     // Only show Granskning when there are pending operations
     if (item.href === '/pending' && pendingOperationsCount === 0) return false

@@ -19,6 +19,7 @@ registerBrandingService({
   // themeColor: '#000000',
   // manifestThemeColor: '#000000',
   // manifestBackgroundColor: '#ffffff',
+  // hiddenNavHrefs: ['/salary', '/salary/employees', '/customers'],
 })
 
 export const exampleBrandingExtension: Extension = {

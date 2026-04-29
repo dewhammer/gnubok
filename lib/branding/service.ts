@@ -38,6 +38,9 @@ export interface BrandingConfig {
   themeColor: string
   manifestThemeColor: string
   manifestBackgroundColor: string
+
+  // Navigation
+  hiddenNavHrefs: string[]
 }
 
 const DEFAULT_BRANDING: BrandingConfig = {
@@ -55,6 +58,7 @@ const DEFAULT_BRANDING: BrandingConfig = {
   themeColor: '#304D83',
   manifestThemeColor: '#1a1a1a',
   manifestBackgroundColor: '#ffffff',
+  hiddenNavHrefs: [],
 }
 
 let _override: Partial<BrandingConfig> = {}
@@ -88,5 +92,9 @@ function readEnvOverrides(): Partial<BrandingConfig> {
   if (env.NEXT_PUBLIC_BRANDING_THEME_COLOR) o.themeColor = env.NEXT_PUBLIC_BRANDING_THEME_COLOR
   if (env.NEXT_PUBLIC_BRANDING_MANIFEST_THEME_COLOR) o.manifestThemeColor = env.NEXT_PUBLIC_BRANDING_MANIFEST_THEME_COLOR
   if (env.NEXT_PUBLIC_BRANDING_MANIFEST_BG_COLOR) o.manifestBackgroundColor = env.NEXT_PUBLIC_BRANDING_MANIFEST_BG_COLOR
+  if (env.NEXT_PUBLIC_BRANDING_HIDDEN_NAV) {
+    const hrefs = env.NEXT_PUBLIC_BRANDING_HIDDEN_NAV.split(',').map(s => s.trim()).filter(Boolean)
+    if (hrefs.length > 0) o.hiddenNavHrefs = hrefs
+  }
   return o
 }

@@ -47,6 +47,7 @@ All branding can be set via env vars. Public ones use `NEXT_PUBLIC_BRANDING_*` (
 | `NEXT_PUBLIC_BRANDING_THEME_COLOR` | `themeColor` | `#304D83` |
 | `NEXT_PUBLIC_BRANDING_MANIFEST_THEME_COLOR` | `manifestThemeColor` | `#1a1a1a` |
 | `NEXT_PUBLIC_BRANDING_MANIFEST_BG_COLOR` | `manifestBackgroundColor` | `#ffffff` |
+| `NEXT_PUBLIC_BRANDING_HIDDEN_NAV` | `hiddenNavHrefs` (comma-separated, e.g. `/salary,/customers`) | `` (none hidden) |
 
 Resolution order (last wins): **defaults → env vars → extension override**.
 

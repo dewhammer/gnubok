@@ -14,6 +14,7 @@ const ENV_KEYS = [
   'NEXT_PUBLIC_BRANDING_THEME_COLOR',
   'NEXT_PUBLIC_BRANDING_MANIFEST_THEME_COLOR',
   'NEXT_PUBLIC_BRANDING_MANIFEST_BG_COLOR',
+  'NEXT_PUBLIC_BRANDING_HIDDEN_NAV',
 ] as const
 
 describe('branding service', () => {
@@ -51,6 +52,32 @@ describe('branding service', () => {
     expect(b.themeColor).toBe('#304D83')
     expect(b.manifestThemeColor).toBe('#1a1a1a')
     expect(b.manifestBackgroundColor).toBe('#ffffff')
+    expect(b.hiddenNavHrefs).toEqual([])
+  })
+
+  it('parses NEXT_PUBLIC_BRANDING_HIDDEN_NAV as comma-separated hrefs', async () => {
+    process.env.NEXT_PUBLIC_BRANDING_HIDDEN_NAV = '/salary,/salary/employees,/customers'
+    const { getBranding } = await import('../service')
+    expect(getBranding().hiddenNavHrefs).toEqual(['/salary', '/salary/employees', '/customers'])
+  })
+
+  it('trims whitespace and drops empty entries in hidden nav list', async () => {
+    process.env.NEXT_PUBLIC_BRANDING_HIDDEN_NAV = ' /salary , ,/customers, '
+    const { getBranding } = await import('../service')
+    expect(getBranding().hiddenNavHrefs).toEqual(['/salary', '/customers'])
+  })
+
+  it('empty NEXT_PUBLIC_BRANDING_HIDDEN_NAV keeps default empty list', async () => {
+    process.env.NEXT_PUBLIC_BRANDING_HIDDEN_NAV = ''
+    const { getBranding } = await import('../service')
+    expect(getBranding().hiddenNavHrefs).toEqual([])
+  })
+
+  it('extension override replaces hiddenNavHrefs', async () => {
+    process.env.NEXT_PUBLIC_BRANDING_HIDDEN_NAV = '/salary'
+    const { getBranding, registerBrandingService } = await import('../service')
+    registerBrandingService({ hiddenNavHrefs: ['/customers', '/suppliers'] })
+    expect(getBranding().hiddenNavHrefs).toEqual(['/customers', '/suppliers'])
   })
 
   it('env vars override defaults', async () => {
