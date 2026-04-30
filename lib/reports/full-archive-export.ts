@@ -118,7 +118,6 @@ export async function generateFullArchive(
             company_name: company.company_name || 'Unknown',
             trade_name: company.trade_name,
             org_number: company.org_number,
-            program_name: 'ERPBase',
           })
           sieFolder.file(`${periodLabel(period)}.se`, sie)
 
@@ -135,7 +134,6 @@ export async function generateFullArchive(
       company_name: company.company_name || 'Unknown',
       trade_name: company.trade_name,
       org_number: company.org_number,
-      program_name: 'ERPBase',
     })
     zip.file('bokforing.se', sie)
 

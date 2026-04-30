@@ -36,7 +36,6 @@ export async function GET(request: Request) {
       fiscal_period_id: periodId,
       company_name: company.company_name || 'Unknown',
       org_number: company.org_number,
-      program_name: 'ERPBase',
     })
 
     // Return as downloadable file

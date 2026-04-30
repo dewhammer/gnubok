@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { getBranding } from '@/lib/branding/service'
 import type { SIEExportOptions, JournalEntry, JournalEntryLine, BASAccount } from '@/types'
+
+function sanitizeProgramName(str: string): string {
+  return str.replace(/"/g, '').replace(/[\r\n]/g, ' ').substring(0, 60)
+}
 
 /**
  * Generate SIE4 export file
@@ -81,7 +86,8 @@ export async function generateSIEExport(
   lines.push('#FLAGGA 0')
   lines.push('#FORMAT PC8')
   lines.push('#SIETYP 4')
-  lines.push(`#PROGRAM "${options.program_name || 'ERPBase'}" "1.0"`)
+  const programName = sanitizeProgramName(options.program_name || getBranding().appName)
+  lines.push(`#PROGRAM "${programName}" "1.0"`)
   lines.push(`#GEN ${formatSIEDate(now)}`)
 
   if (options.org_number) {

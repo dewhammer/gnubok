@@ -40,4 +40,13 @@ if [ -d /app/.next/static ]; then
     {} +
 fi
 
+# Stamp the service worker fallback notification title with the brand name.
+# public/sw.js is served as a static file (not bundled by Next), so NEXT_PUBLIC_*
+# inlining doesn't reach it — substitute the placeholder here at container start.
+if [ -f /app/public/sw.js ]; then
+  sed -i \
+    -e "s|__NEXT_PUBLIC_BRANDING_APP_NAME__|${NEXT_PUBLIC_BRANDING_APP_NAME:-Gnubok}|g" \
+    /app/public/sw.js
+fi
+
 exec "$@"

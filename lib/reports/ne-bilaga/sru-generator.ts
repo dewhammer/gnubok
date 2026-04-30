@@ -1,4 +1,9 @@
 import type { NEDeclaration, SRUFile, SRURecord } from '@/lib/reports/ne-bilaga/types'
+import { getBranding } from '@/lib/branding/service'
+
+function sanitizeString(str: string): string {
+  return str.replace(/#/g, '').replace(/[\r\n]/g, ' ').substring(0, 250)
+}
 
 /**
  * SRU File Generator
@@ -54,7 +59,7 @@ export function generateSRUFile(declaration: NEDeclaration): SRUFile {
   // File header
   records.push({ fieldCode: 'PRODUKT', value: 'KONTROLLUPPGIFTER' })
   records.push({ fieldCode: 'SESSION', value: '1' })
-  records.push({ fieldCode: 'PROGRAMNAMN', value: 'ERPBase' })
+  records.push({ fieldCode: 'PROGRAMNAMN', value: sanitizeString(getBranding().appName) })
   records.push({ fieldCode: 'PROGRAMVERSION', value: '1.0' })
   records.push({
     fieldCode: 'SKAPAT',
