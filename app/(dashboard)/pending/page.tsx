@@ -19,7 +19,6 @@ import {
   CheckCircle2,
   XCircle,
   Bot,
-  Sparkles,
 } from 'lucide-react'
 import type { PendingOperation, PendingOperationStatus } from '@/types'
 
@@ -168,9 +167,7 @@ function OperationPreview({ op }: { op: PendingOperation }) {
   }
 }
 
-type SourceFilter = 'all' | 'agent' | 'auto_committed' | 'high_risk'
-
-const AUTO_COMMIT_BANNER_DISMISS_KEY = 'gnubok.pending.autoCommitBannerDismissedAt'
+type SourceFilter = 'all' | 'agent' | 'high_risk'
 
 export default function PendingOperationsPage() {
   const [operations, setOperations] = useState<PendingOperation[]>([])
@@ -181,8 +178,6 @@ export default function PendingOperationsPage() {
   const [selectedOp, setSelectedOp] = useState<PendingOperation | null>(null)
   const [showCommitDialog, setShowCommitDialog] = useState(false)
   const [isCommitting, setIsCommitting] = useState(false)
-  const [recentAutoCommits, setRecentAutoCommits] = useState<PendingOperation[]>([])
-  const [bannerDismissedAt, setBannerDismissedAt] = useState<number | null>(null)
   const { toast } = useToast()
   const { dialogProps, confirm } = useDestructiveConfirm()
 
@@ -201,38 +196,6 @@ export default function PendingOperationsPage() {
   useEffect(() => {
     fetchOperations()
   }, [fetchOperations])
-
-  useEffect(() => {
-    const stored = typeof window !== 'undefined'
-      ? window.localStorage.getItem(AUTO_COMMIT_BANNER_DISMISS_KEY)
-      : null
-    setBannerDismissedAt(stored ? Number(stored) : null)
-
-    fetch('/api/pending-operations?status=committed&limit=50')
-      .then((r) => r.json())
-      .then((json) => {
-        const ops: PendingOperation[] = json.data ?? []
-        const cutoff = Date.now() - 24 * 60 * 60 * 1000
-        setRecentAutoCommits(
-          ops.filter((o) => o.auto_committed_at && new Date(o.auto_committed_at).getTime() > cutoff)
-        )
-      })
-      .catch(() => { /* silent */ })
-  }, [])
-
-  function dismissAutoCommitBanner() {
-    const now = Date.now()
-    setBannerDismissedAt(now)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(AUTO_COMMIT_BANNER_DISMISS_KEY, String(now))
-    }
-  }
-
-  const newAutoCommits = recentAutoCommits.filter((o) =>
-    bannerDismissedAt == null ||
-    (o.auto_committed_at != null &&
-      new Date(o.auto_committed_at).getTime() > bannerDismissedAt)
-  )
 
   async function handleCommit() {
     if (!selectedOp) return
@@ -284,8 +247,6 @@ export default function PendingOperationsPage() {
     switch (sourceFilter) {
       case 'agent':
         return op.actor_type === 'api_key' || op.actor_type === 'mcp_oauth' || op.actor_type === 'cron'
-      case 'auto_committed':
-        return Boolean(op.auto_committed_at)
       case 'high_risk':
         return op.risk_level === 'high'
       case 'all':
@@ -301,49 +262,6 @@ export default function PendingOperationsPage() {
         description="Operationer som väntar på godkännande"
       />
 
-      {newAutoCommits.length > 0 && (
-        <Card className="border-sage/40 bg-sage/5">
-          <CardContent className="flex items-start justify-between gap-4 py-3">
-            <div className="flex items-start gap-3">
-              <Sparkles className="h-4 w-4 mt-0.5 text-sage-foreground" />
-              <div className="text-sm">
-                <p className="font-medium">
-                  {newAutoCommits.length === 1
-                    ? '1 åtgärd auto-godkändes'
-                    : `${newAutoCommits.length} åtgärder auto-godkändes`}{' '}
-                  senaste dygnet
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Granska vad agenten utförde utan din direkta godkännande.
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-2 flex-shrink-0">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 px-3 text-xs"
-                onClick={() => {
-                  setActiveTab('committed')
-                  setSourceFilter('auto_committed')
-                  dismissAutoCommitBanner()
-                }}
-              >
-                Visa
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-8 px-3 text-xs"
-                onClick={dismissAutoCommitBanner}
-              >
-                Dölj
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as PendingOperationStatus)}>
         <TabsList>
           <TabsTrigger value="pending">Väntande</TabsTrigger>
@@ -356,7 +274,6 @@ export default function PendingOperationsPage() {
         <TabsList>
           <TabsTrigger value="all">Alla</TabsTrigger>
           <TabsTrigger value="agent">Från agent</TabsTrigger>
-          <TabsTrigger value="auto_committed">Auto-godkända</TabsTrigger>
           <TabsTrigger value="high_risk">Hög risk</TabsTrigger>
         </TabsList>
       </Tabs>
@@ -417,13 +334,7 @@ export default function PendingOperationsPage() {
                             {op.actor_label || op.actor_type}
                           </Badge>
                         )}
-                        {op.auto_committed_at && (
-                          <Badge variant="outline" className="bg-sage/10 border-sage/40 text-sage-foreground">
-                            <Sparkles className="h-3 w-3 mr-1" />
-                            Auto-godkänd
-                          </Badge>
-                        )}
-                        {op.status === 'committed' && !op.auto_committed_at && (
+                        {op.status === 'committed' && (
                           <Badge variant="default" className="bg-emerald-500/10 text-emerald-600 border-emerald-200">
                             <CheckCircle2 className="h-3 w-3 mr-1" />
                             Godkänd

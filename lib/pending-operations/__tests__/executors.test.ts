@@ -60,8 +60,6 @@ function makePendingOp(overrides: Partial<PendingOperation>): PendingOperation {
     actor_id: null,
     actor_label: null,
     risk_level: 'high',
-    auto_commit_eligible: false,
-    auto_committed_at: null,
     created_at: '2026-05-03T00:00:00Z',
     resolved_at: null,
     updated_at: '2026-05-03T00:00:00Z',

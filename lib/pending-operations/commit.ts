@@ -79,12 +79,6 @@ export interface CommitResult {
 export interface CommitOptions {
   /** Email address used as cc on send_invoice (typically the human user's email). */
   userEmail?: string
-  /**
-   * When true, the op was auto-committed by a trusted agent (no human in the
-   * loop). The status row is updated with `auto_committed_at` so the UI can
-   * surface this on /pending and in audit reports.
-   */
-  isAutoCommit?: boolean
 }
 
 // ── Helper: ensure fiscal period covers the date ──────────────────
@@ -1574,18 +1568,13 @@ export async function commitPendingOperation(
   }
 
   const now = new Date().toISOString()
-  const update: Record<string, unknown> = {
-    status: 'committed',
-    resolved_at: now,
-    result_data: result.data || {},
-  }
-  if (opts.isAutoCommit) {
-    update.auto_committed_at = now
-  }
-
   await supabase
     .from('pending_operations')
-    .update(update)
+    .update({
+      status: 'committed',
+      resolved_at: now,
+      result_data: result.data || {},
+    })
     .eq('id', pendingOp.id)
 
   return {

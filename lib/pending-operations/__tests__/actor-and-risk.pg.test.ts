@@ -1,6 +1,6 @@
 /**
- * pg-real smoke tests for the four migrations introduced by the
- * AI-native streams (actor model, auto-commit, expanded op types, idempotency).
+ * pg-real smoke tests for the migrations introduced by the AI-native streams
+ * (actor model, expanded op types, idempotency).
  *
  * These don't replicate the unit-test coverage — they prove the schema and
  * constraints behave as the application code assumes when running against a
@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { getPool } from '@/tests/pg/setup'
 import { seedCompany } from '@/tests/pg/fixtures'
 
-describe('pending_operations: actor model + risk + auto-commit columns', () => {
+describe('pending_operations: actor model + risk columns', () => {
   it('accepts the expanded actor_type and risk_level enums', async () => {
     const { userId, companyId } = await seedCompany()
     const pool = getPool()
@@ -19,21 +19,19 @@ describe('pending_operations: actor model + risk + auto-commit columns', () => {
       id: string
       actor_type: string
       risk_level: string
-      auto_commit_eligible: boolean
     }>(
       `INSERT INTO public.pending_operations (
          user_id, company_id, operation_type, title, params, preview_data,
-         actor_type, actor_id, actor_label, risk_level, auto_commit_eligible
+         actor_type, actor_id, actor_label, risk_level
        ) VALUES ($1, $2, 'create_customer', 'pg-real test', '{}', '{}',
-                 'api_key', NULL, 'Claude Desktop', 'low', true)
-       RETURNING id, actor_type, risk_level, auto_commit_eligible`,
+                 'api_key', NULL, 'Claude Desktop', 'low')
+       RETURNING id, actor_type, risk_level`,
       [userId, companyId],
     )
 
     expect(result.rows[0]).toMatchObject({
       actor_type: 'api_key',
       risk_level: 'low',
-      auto_commit_eligible: true,
     })
   })
 
@@ -59,20 +57,6 @@ describe('pending_operations: actor model + risk + auto-commit columns', () => {
         [userId, companyId],
       ),
     ).rejects.toThrow(/check constraint|risk_level/i)
-  })
-
-  it('blocks auto_committed_at when status is still pending', async () => {
-    const { userId, companyId } = await seedCompany()
-    await expect(
-      getPool().query(
-        `INSERT INTO public.pending_operations (
-           user_id, company_id, operation_type, title, params, preview_data,
-           actor_type, risk_level, auto_committed_at
-         ) VALUES ($1, $2, 'create_customer', 'x', '{}', '{}',
-                   'api_key', 'low', now())`,
-        [userId, companyId],
-      ),
-    ).rejects.toThrow(/pending_ops_auto_commit_status|check constraint/i)
   })
 
   it('accepts the expanded operation_type enum (close_period, run_year_end, …)', async () => {
@@ -108,38 +92,6 @@ describe('audit_log: actor_type + actor_label columns', () => {
       [userId],
     )
     expect(result.rows[0]?.id).toBeTruthy()
-  })
-})
-
-describe('company_settings: auto_commit columns', () => {
-  it('exposes agent_auto_commit_enabled (default false) and agent_auto_commit_max_amount (NULL)', async () => {
-    const { companyId } = await seedCompany()
-
-    const settings = await getPool().query<{
-      enabled: boolean
-      max_amount: string | null
-    }>(
-      `SELECT agent_auto_commit_enabled AS enabled,
-              agent_auto_commit_max_amount AS max_amount
-       FROM public.company_settings
-       WHERE company_id = $1`,
-      [companyId],
-    )
-
-    // company_settings may or may not have a default row; if it doesn't, the
-    // columns still exist on the table and we can inspect the catalog.
-    if (settings.rows.length === 0) {
-      const catalog = await getPool().query<{ name: string }>(
-        `SELECT column_name AS name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = 'company_settings'
-           AND column_name IN ('agent_auto_commit_enabled', 'agent_auto_commit_max_amount')`,
-      )
-      expect(catalog.rowCount).toBe(2)
-      return
-    }
-
-    expect(settings.rows[0]?.enabled).toBe(false)
-    expect(settings.rows[0]?.max_amount).toBeNull()
   })
 })
 

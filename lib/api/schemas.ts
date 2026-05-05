@@ -396,9 +396,6 @@ export const UpdateSettingsSchema = z.object({
   invoice_credit_terms_text: z.string().nullable().optional(),
   // AI agent flow
   ai_flow_enabled: z.boolean().optional(),
-  // Agent auto-commit (low-risk ops staged by trusted agents)
-  agent_auto_commit_enabled: z.boolean().optional(),
-  agent_auto_commit_max_amount: z.number().nullable().optional(),
 }).refine(
   (data) => {
     // BFL 3 kap.: Enskild firma must have fiscal year starting January

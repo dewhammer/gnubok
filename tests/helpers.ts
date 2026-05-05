@@ -537,8 +537,6 @@ export function makeCompanySettings(
     onboarding_complete: true,
     sector_slug: null,
     is_sandbox: false,
-    agent_auto_commit_enabled: false,
-    agent_auto_commit_max_amount: null,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
     ...overrides,

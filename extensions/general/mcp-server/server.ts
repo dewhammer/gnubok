@@ -29,8 +29,6 @@ import { dataResources, findResource, parseResourceQuery } from './resources'
 import { prompts, findPrompt } from './prompts'
 import { skills, findSkill, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
-import { shouldAutoCommit } from '@/lib/pending-operations/should-auto-commit'
-import { commitPendingOperation } from '@/lib/pending-operations/commit'
 import {
   checkIdempotencyKey,
   storeIdempotencyResponse,
@@ -38,7 +36,6 @@ import {
   IdempotencyKeyReuseError,
 } from '@/lib/api/idempotency'
 import { toToolError } from './tool-result'
-import type { PendingOperation } from '@/types'
 import { generateBalanceSheet } from '@/lib/reports/balance-sheet'
 import { generateGeneralLedger } from '@/lib/reports/general-ledger'
 import { generateSupplierLedger } from '@/lib/reports/supplier-ledger'
@@ -169,9 +166,6 @@ async function stagePendingOperation(
   operation_id?: string
   risk_level: 'low' | 'medium' | 'high'
   actor: ActorContext
-  auto_committed: boolean
-  auto_commit_reason?: string
-  result?: Record<string, unknown>
   message: string
   preview: Record<string, unknown>
   next?: StageNextHint
@@ -187,7 +181,6 @@ async function stagePendingOperation(
       dry_run: true,
       risk_level: riskLevel,
       actor,
-      auto_committed: false,
       message: `Dry run: would stage "${operationType}" (risk: ${riskLevel}). No changes made.`,
       preview: previewData,
       ...(next ? { next } : {}),
@@ -215,18 +208,6 @@ async function stagePendingOperation(
     }
   }
 
-  // Decide auto-commit eligibility BEFORE insert so we can persist the flag.
-  const previewAmount =
-    typeof previewData.amount === 'number' ? previewData.amount as number :
-    typeof previewData.total === 'number' ? previewData.total as number :
-    null
-
-  const decision = await shouldAutoCommit(supabase, companyId, {
-    operationType,
-    actorType: actor.type,
-    amount: previewAmount,
-  })
-
   const { data, error } = await supabase
     .from('pending_operations')
     .insert({
@@ -240,56 +221,18 @@ async function stagePendingOperation(
       actor_id: actor.id ?? null,
       actor_label: actor.label ?? null,
       risk_level: riskLevel,
-      auto_commit_eligible: decision.eligible,
     })
     .select('*')
     .single()
 
   if (error) throw new Error(`Failed to stage operation: ${error.message}`)
 
-  if (!decision.eligible) {
-    const response = {
-      staged: true,
-      operation_id: data.id,
-      risk_level: riskLevel,
-      actor,
-      auto_committed: false,
-      auto_commit_reason: decision.reason,
-      message: `Operation staged for review (risk: ${riskLevel}). Open the ${branding} web app to approve or reject it.`,
-      preview: previewData,
-      ...(next ? { next } : {}),
-    } as const
-
-    if (options.idempotencyKey && requestHash) {
-      await storeIdempotencyResponse(
-        supabase, userId, companyId, options.idempotencyKey, requestHash,
-        'success', { staged: true, operation_id: data.id, auto_committed: false, preview: previewData }
-      )
-    }
-    return response
-  }
-
-  // Auto-commit path: invoke the dispatcher inline so the same audit
-  // trail/event-emission logic runs as for human approvals.
-  const commitResult = await commitPendingOperation(
-    supabase,
-    userId,
-    companyId,
-    data as PendingOperation,
-    { isAutoCommit: true }
-  )
-
   const response = {
     staged: true,
     operation_id: data.id,
     risk_level: riskLevel,
     actor,
-    auto_committed: commitResult.status === 'committed',
-    auto_commit_reason: decision.reason,
-    result: commitResult.data,
-    message: commitResult.status === 'committed'
-      ? `Auto-committed by ${actor.label ?? actor.type} (risk: ${riskLevel}).`
-      : `Auto-commit failed: ${commitResult.error ?? 'unknown'}. Review in the ${branding} web app.`,
+    message: `Operation staged for review (risk: ${riskLevel}). Open the ${branding} web app to approve or reject it.`,
     preview: previewData,
     ...(next ? { next } : {}),
   } as const
@@ -297,14 +240,7 @@ async function stagePendingOperation(
   if (options.idempotencyKey && requestHash) {
     await storeIdempotencyResponse(
       supabase, userId, companyId, options.idempotencyKey, requestHash,
-      commitResult.status === 'committed' ? 'success' : 'error',
-      {
-        staged: true,
-        operation_id: data.id,
-        auto_committed: commitResult.status === 'committed',
-        result: commitResult.data,
-        preview: previewData,
-      }
+      'success', { staged: true, operation_id: data.id, preview: previewData }
     )
   }
   return response
@@ -535,16 +471,13 @@ const STAGED_OPERATION_SCHEMA = {
     operation_id: { type: 'string', description: 'UUID of the staged operation, present once persisted' },
     risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
     actor: { type: 'object' },
-    auto_committed: { type: 'boolean' },
-    auto_commit_reason: { type: 'string' },
     dry_run: { type: 'boolean' },
     idempotency_replay: { type: 'boolean' },
     message: { type: 'string' },
     preview: { type: 'object' },
-    result: { type: 'object' },
     next: { type: 'object' },
   },
-  required: ['staged', 'risk_level', 'actor', 'auto_committed', 'message', 'preview'],
+  required: ['staged', 'risk_level', 'actor', 'message', 'preview'],
 } as const
 
 function paginatedSchema(itemsKey: string, itemSchema: Record<string, unknown> = { type: 'object' }) {
@@ -2482,13 +2415,22 @@ export const tools: McpTool[] = [
     async execute(_args, companyId, userId, supabase) {
       const { data, error } = await supabase
         .from('fiscal_periods')
-        .select('id, name, period_start, period_end, status')
+        .select('id, name, period_start, period_end, is_closed, locked_at, opening_balances_set')
         .eq('company_id', companyId)
         .order('period_start', { ascending: false })
 
       if (error) throw new Error(`Database error: ${error.message}`)
 
-      return { periods: data ?? [], count: data?.length ?? 0 }
+      const periods = (data ?? []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        period_start: p.period_start,
+        period_end: p.period_end,
+        opening_balances_set: p.opening_balances_set,
+        status: p.is_closed ? 'closed' : p.locked_at ? 'locked' : 'active',
+      }))
+
+      return { periods, count: periods.length }
     },
   },
 
