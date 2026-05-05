@@ -90,6 +90,53 @@ export type CoreEvent =
   // Company & account lifecycle
   | { type: 'company.deleted'; payload: { companyId: string; userId: string; archivedAt: string } }
   | { type: 'account.deleted'; payload: { userId: string; deletedAt: string } }
+  // MCP telemetry — fired from the MCP dispatcher.
+  // Persisted to event_log (30-day TTL) for hot-tool / error-rate / latency analytics.
+  // Intentionally lightweight: no args, no result body — only metadata.
+  | { type: 'mcp.tool_called'; payload: {
+      tool: string                                  // e.g. 'gnubok_create_invoice'
+      requiredScope: string | null                  // from TOOL_SCOPE_MAP, null if unscoped
+      actorType: 'user' | 'api_key' | 'mcp_oauth' | 'cron'
+      actorId: string | null                        // api_key id, oauth client, etc.
+      actorLabel: string | null                     // human-readable actor label
+      latencyMs: number                             // wall-clock time inside execute()
+      success: boolean                              // true iff the tool returned without throwing AND was invoked (not denied)
+      isError: boolean                              // matches the JSON-RPC tool-result isError flag returned to the client
+      errorCode: string | null                      // structured error code from tool-result.toToolError when applicable
+      errorKind: 'execution' | 'scope_denied' | 'unknown_tool' | null
+      requestId: string | number | null             // JSON-RPC request id (helps correlate with client-side logs)
+      userId: string
+      companyId: string
+    }}
+  // tools/list — informs us whether agents are using progressive discovery
+  // (gnubok_search_tools) or pulling the full list. Tool counts vary with
+  // the caller's scope set.
+  | { type: 'mcp.tools_list_called'; payload: {
+      toolCount: number                             // tools actually returned (post scope filter)
+      actorType: 'user' | 'api_key' | 'mcp_oauth' | 'cron'
+      actorId: string | null
+      actorLabel: string | null
+      latencyMs: number
+      requestId: string | number | null
+      userId: string
+      companyId: string
+    }}
+  // resources/read — informs us which skills/widgets/data resources actually
+  // get loaded by agents. `kind` discriminates by URI scheme so we can
+  // GROUP BY skill vs widget vs data without parsing URIs.
+  | { type: 'mcp.resource_read'; payload: {
+      uri: string                                   // e.g. 'gnubok://skill/month-end-close'
+      kind: 'widget' | 'skill' | 'data' | 'unknown'
+      success: boolean
+      errorCode: string | null
+      latencyMs: number
+      actorType: 'user' | 'api_key' | 'mcp_oauth' | 'cron'
+      actorId: string | null
+      actorLabel: string | null
+      requestId: string | number | null
+      userId: string
+      companyId: string
+    }}
 
 // ============================================================
 // Helper Types

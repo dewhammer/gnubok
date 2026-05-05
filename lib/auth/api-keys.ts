@@ -45,7 +45,7 @@ export const SCOPE_GROUPS = [
   { domain: 'payroll',      label: 'Löner',          read: 'payroll:read' as const,      write: 'payroll:write' as const },
 ] as const
 
-/** Map MCP tool name → required scope */
+/** Map MCP tool name → required scope. Tools omitted from this map are available to any authenticated key (e.g. discovery/search/skill loading). */
 export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // Transactions
   gnubok_list_uncategorized_transactions: 'transactions:read',
@@ -69,6 +69,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // Reports
   gnubok_get_trial_balance:               'reports:read',
   gnubok_get_vat_report:                  'reports:read',
+  gnubok_vat_review_widget:               'reports:read',
   gnubok_get_kpi_report:                  'reports:read',
   gnubok_get_income_statement:            'reports:read',
   gnubok_list_accounts:                   'reports:read',

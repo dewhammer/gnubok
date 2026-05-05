@@ -1,9 +1,9 @@
+import type { UiWidget } from './types'
+
 /**
- * Receipt Matcher Widget — MCP Apps inline HTML
- *
- * Self-contained HTML document rendered in an iframe by MCP Apps hosts
- * (Claude Desktop, etc.). Communicates exclusively via postMessage
- * (JSON-RPC 2.0 over the MCP Apps protocol). No fetch() calls.
+ * Receipt Matcher Widget — MCP Apps inline HTML.
+ * Drag-and-drop receipt attachment for uncategorized bank transactions.
+ * Triggered by the gnubok_receipt_matcher tool.
  */
 
 export const RECEIPT_MATCHER_HTML = `<!DOCTYPE html>
@@ -377,4 +377,11 @@ export const RECEIPT_MATCHER_HTML = `<!DOCTYPE html>
 })();
 </script>
 </body>
-</html>`;
+</html>`
+
+export const receiptMatcherWidget: UiWidget = {
+  uri: 'ui://receipt-matcher/app.html',
+  name: 'Receipt Matcher',
+  description: 'Interactive widget for matching receipts to uncategorized transactions',
+  html: RECEIPT_MATCHER_HTML,
+}

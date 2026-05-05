@@ -33,6 +33,11 @@ const PERSISTED_EVENT_TYPES: CoreEventType[] = [
   'invoice.match_confirmed',
   'supplier_invoice.match_confirmed',
   'supplier_invoice.confirmed',
+  // MCP telemetry — every tool invocation, tools/list call, and resources/read.
+  // Lightweight metadata only; 30-day TTL on event_log bounds the volume.
+  'mcp.tool_called',
+  'mcp.tools_list_called',
+  'mcp.resource_read',
 ]
 
 // Excluded (with reasoning):

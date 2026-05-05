@@ -341,7 +341,7 @@ describe('MCP Receipt Matcher', () => {
       expect(result.content).toBeDefined()
     })
 
-    it('does not include structuredContent for regular tools', async () => {
+    it('also includes structuredContent for regular tools (alongside the text content block)', async () => {
       const tx = makeTransaction({ id: 'tx-1', amount: -500 })
       enqueueMany([
         { data: tx, error: null },
@@ -358,7 +358,9 @@ describe('MCP Receipt Matcher', () => {
       )
       const result = await parseResult(res)
 
-      expect(result.structuredContent).toBeUndefined()
+      // Modern clients consume structuredContent directly when an outputSchema is declared.
+      expect(result.structuredContent).toBeDefined()
+      expect(result.structuredContent).toMatchObject({ staged: true })
       expect(result.content).toBeDefined()
     })
   })
