@@ -1589,12 +1589,14 @@ interface SupplierLedgerData {
     total_current: number
     total_overdue: number
     unpaid_count: number
+    unconverted_fx_count: number
   }
   reconciliation: {
     supplier_ledger_total: number
     account_2440_balance: number
     difference: number
     is_reconciled: boolean
+    unconverted_fx_count: number
   } | null
 }
 
@@ -1669,6 +1671,11 @@ function SupplierLedgerView({ periodId }: { periodId: string }) {
           <CardContent>
             <p className="font-display text-2xl font-medium tabular-nums">{formatAmount(ledger.total_outstanding)} kr</p>
             <p className="text-xs text-muted-foreground">{ledger.unpaid_count} fakturor</p>
+            {ledger.unconverted_fx_count > 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {ledger.unconverted_fx_count} faktura i utländsk valuta utan växelkurs är inte med i totalen.
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -1759,11 +1766,16 @@ function SupplierLedgerView({ periodId }: { periodId: string }) {
                   {formatAmount(reconciliation.difference)} kr
                 </span>
               </div>
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 {reconciliation.is_reconciled ? (
                   <Badge className="bg-success/10 text-success">Avstämd</Badge>
                 ) : (
                   <Badge variant="destructive">Ej avstämd - kontrollera bokföring</Badge>
+                )}
+                {reconciliation.unconverted_fx_count > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {reconciliation.unconverted_fx_count} leverantörsfaktura i utländsk valuta saknar växelkurs — differensen kan bero på saknade kursuppgifter snarare än felbokning.
+                  </p>
                 )}
               </div>
             </div>
@@ -2175,6 +2187,7 @@ interface ARLedgerData {
         total: number
         paid_amount: number
         outstanding: number
+        outstanding_sek: number | null
         days_overdue: number
         currency: string
       }[]
@@ -2189,12 +2202,14 @@ interface ARLedgerData {
     total_current: number
     total_overdue: number
     unpaid_count: number
+    unconverted_fx_count: number
   }
   reconciliation: {
     ar_ledger_total: number
     account_1510_balance: number
     difference: number
     is_reconciled: boolean
+    unconverted_fx_count: number
   } | null
 }
 
@@ -2282,6 +2297,11 @@ function ARLedgerView({ periodId }: { periodId: string }) {
           <CardContent>
             <p className="font-display text-2xl font-medium tabular-nums">{formatAmount(ledger.total_outstanding)} kr</p>
             <p className="text-xs text-muted-foreground">{ledger.unpaid_count} fakturor</p>
+            {ledger.unconverted_fx_count > 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {ledger.unconverted_fx_count} faktura i utländsk valuta utan växelkurs är inte med i totalen.
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -2400,7 +2420,7 @@ function ARLedgerView({ periodId }: { periodId: string }) {
                 <span className="font-mono">{formatAmount(reconciliation.ar_ledger_total)} kr</span>
               </div>
               <div className="flex justify-between">
-                <span><AccountNumber number="1510" /> saldo (huvudbok)</span>
+                <span>Kundfordringar (<AccountNumber number="1510" /> + <AccountNumber number="1513" />) saldo</span>
                 <span className="font-mono">{formatAmount(reconciliation.account_1510_balance)} kr</span>
               </div>
               <div className="flex justify-between pt-2 border-t font-semibold">
@@ -2409,11 +2429,16 @@ function ARLedgerView({ periodId }: { periodId: string }) {
                   {formatAmount(reconciliation.difference)} kr
                 </span>
               </div>
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 {reconciliation.is_reconciled ? (
                   <Badge className="bg-success/10 text-success">Avstämd</Badge>
                 ) : (
                   <Badge variant="destructive">Ej avstämd - kontrollera bokföring</Badge>
+                )}
+                {reconciliation.unconverted_fx_count > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    {reconciliation.unconverted_fx_count} kundfaktura i utländsk valuta saknar växelkurs — differensen kan bero på saknade kursuppgifter snarare än felbokning.
+                  </p>
                 )}
               </div>
             </div>

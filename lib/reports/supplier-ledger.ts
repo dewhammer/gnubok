@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
 
 export interface SupplierLedgerEntry {
   supplier_id: string
@@ -18,6 +19,12 @@ export interface SupplierLedgerReport {
   total_current: number
   total_overdue: number
   unpaid_count: number
+  /**
+   * Number of foreign-currency invoices excluded from the SEK totals because
+   * they had no exchange_rate. Adding them would mix currencies; surfacing
+   * the count lets the UI tell the user a row could not be converted.
+   */
+  unconverted_fx_count: number
 }
 
 /**
@@ -49,15 +56,27 @@ export async function generateSupplierLedger(
       total_current: 0,
       total_overdue: 0,
       unpaid_count: 0,
+      unconverted_fx_count: 0,
     }
   }
 
   // Group by supplier and calculate aging
   const bySupplier = new Map<string, SupplierLedgerEntry>()
+  let unconvertedFxCount = 0
 
   for (const inv of invoices) {
     const supplierId = inv.supplier_id
     const supplierName = inv.supplier?.name || 'Okänd leverantör'
+
+    // Foreign-currency invoice with no exchange_rate cannot be converted to
+    // SEK; adding the raw foreign amount to a SEK total would be unsound, so
+    // the row is excluded from sums and only counted.
+    const isFx = inv.currency && inv.currency !== 'SEK'
+    const hasRate = inv.exchange_rate != null && Number(inv.exchange_rate) > 0
+    if (isFx && !hasRate) {
+      unconvertedFxCount += 1
+      continue
+    }
 
     if (!bySupplier.has(supplierId)) {
       bySupplier.set(supplierId, {
@@ -75,7 +94,14 @@ export async function generateSupplierLedger(
     const entry = bySupplier.get(supplierId)!
     const dueDate = new Date(inv.due_date)
     const daysOverdue = Math.floor((refDate.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
-    const amount = inv.remaining_amount || 0
+    // remaining_amount is stored in invoice currency. The 2440 GL line was posted
+    // in SEK at the invoice-date rate, so we convert here for the reconciliation.
+    const amount = resolveSekAmount(
+      Number(inv.remaining_amount) || 0,
+      null,
+      inv.currency,
+      inv.exchange_rate
+    )
 
     if (daysOverdue <= 0) {
       entry.current += amount
@@ -105,5 +131,6 @@ export async function generateSupplierLedger(
     total_current: Math.round(total_current * 100) / 100,
     total_overdue: Math.round(total_overdue * 100) / 100,
     unpaid_count: invoices.length,
+    unconverted_fx_count: unconvertedFxCount,
   }
 }

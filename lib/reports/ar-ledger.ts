@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
 
 export interface ARInvoiceDetail {
   invoice_id: string
@@ -8,7 +9,15 @@ export interface ARInvoiceDetail {
   due_date: string
   total: number
   paid_amount: number
+  /** Outstanding in the invoice's original currency. Use for display only. */
   outstanding: number
+  /**
+   * Outstanding converted to SEK using the invoice-date exchange_rate. `null`
+   * when conversion failed (FX invoice with no rate). Callers summing across
+   * customers must use this field, never `outstanding`, to avoid mixing
+   * currencies.
+   */
+  outstanding_sek: number | null
   days_overdue: number
   currency: string
 }
@@ -31,6 +40,12 @@ export interface ARLedgerReport {
   total_current: number
   total_overdue: number
   unpaid_count: number
+  /**
+   * Number of foreign-currency invoices excluded from the SEK totals because
+   * they had no exchange_rate. Their detail rows are still listed (with
+   * outstanding_sek = null) so the user can see them.
+   */
+  unconverted_fx_count: number
 }
 
 /**
@@ -63,11 +78,13 @@ export async function generateARLedger(
       total_current: 0,
       total_overdue: 0,
       unpaid_count: 0,
+      unconverted_fx_count: 0,
     }
   }
 
   // Group by customer and calculate aging
   const byCustomer = new Map<string, ARLedgerEntry>()
+  let unconvertedFxCount = 0
 
   for (const inv of invoices) {
     const customerId = inv.customer_id
@@ -94,7 +111,22 @@ export async function generateARLedger(
     const total = Number(inv.total) || 0
     const outstanding = Math.round((total - paidAmount) * 100) / 100
 
-    // Add invoice detail
+    // Aging buckets and totals must be in SEK so they reconcile with account 1510.
+    // Foreign-currency invoices without an exchange_rate cannot be converted —
+    // adding the raw foreign amount to a SEK total is unsound, so the row is
+    // counted but excluded from the buckets. The detail row is still pushed so
+    // the user can see the invoice in the expandable list, with outstanding_sek
+    // = null to flag the missing conversion.
+    const isFx = inv.currency && inv.currency !== 'SEK'
+    const hasRate = inv.exchange_rate != null && Number(inv.exchange_rate) > 0
+    const outstandingSek =
+      isFx && !hasRate
+        ? null
+        : resolveSekAmount(outstanding, null, inv.currency, inv.exchange_rate)
+
+    if (outstandingSek === null) unconvertedFxCount += 1
+
+    // Add invoice detail (always — even if unconvertible, so it's visible)
     entry.invoices.push({
       invoice_id: inv.id,
       invoice_number: inv.invoice_number || '',
@@ -103,24 +135,27 @@ export async function generateARLedger(
       total,
       paid_amount: paidAmount,
       outstanding,
+      outstanding_sek: outstandingSek,
       days_overdue: Math.max(0, daysOverdue),
       currency: inv.currency || 'SEK',
     })
 
-    // Bucket by aging
+    if (outstandingSek === null) continue
+
+    // Bucket by aging (in SEK)
     if (daysOverdue <= 0) {
-      entry.current += outstanding
+      entry.current += outstandingSek
     } else if (daysOverdue <= 30) {
-      entry.days_1_30 += outstanding
+      entry.days_1_30 += outstandingSek
     } else if (daysOverdue <= 60) {
-      entry.days_31_60 += outstanding
+      entry.days_31_60 += outstandingSek
     } else if (daysOverdue <= 90) {
-      entry.days_61_90 += outstanding
+      entry.days_61_90 += outstandingSek
     } else {
-      entry.days_90_plus += outstanding
+      entry.days_90_plus += outstandingSek
     }
 
-    entry.total_outstanding += outstanding
+    entry.total_outstanding += outstandingSek
   }
 
   // Round all amounts and sort invoices within each customer.
@@ -155,5 +190,6 @@ export async function generateARLedger(
     total_current: Math.round(total_current * 100) / 100,
     total_overdue: Math.round(total_overdue * 100) / 100,
     unpaid_count,
+    unconverted_fx_count: unconvertedFxCount,
   }
 }

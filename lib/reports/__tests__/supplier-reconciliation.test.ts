@@ -144,6 +144,70 @@ describe('generateReconciliation', () => {
     expect(result.account_2440_balance).toBe(7000)
   })
 
+  it('converts foreign-currency remaining_amount to SEK before reconciliation', async () => {
+    // Reproduces the production bug: 225 EUR + 1 000 SEK was reported as 1 225
+    // against a 2440 balance of 3 475, flagging a false discrepancy.
+    results = [
+      // 0: supplier_invoices — 225 EUR at 11, plus 1 000 SEK
+      {
+        data: [
+          { remaining_amount: 225, currency: 'EUR', exchange_rate: 11 },
+          { remaining_amount: 1000, currency: 'SEK', exchange_rate: null },
+        ],
+        error: null,
+      },
+      // 1: 2440 balance = 3 475 SEK (matches converted ledger total)
+      {
+        data: [
+          { debit_amount: 0, credit_amount: 3475, journal_entry_id: 'e1' },
+        ],
+        error: null,
+      },
+    ]
+
+    const result = await generateReconciliation(supabase, 'company-1', 'period-1')
+
+    expect(result.supplier_ledger_total).toBe(3475)
+    expect(result.account_2440_balance).toBe(3475)
+    expect(result.difference).toBe(0)
+    expect(result.is_reconciled).toBe(true)
+    expect(result.unconverted_fx_count).toBe(0)
+  })
+
+  it('excludes FX invoices without exchange_rate from the SEK total and counts them', async () => {
+    // An FX invoice without an exchange rate cannot be converted to SEK; the
+    // sum must not silently add raw foreign currency. The row is excluded and
+    // counted, so the UI can warn that the reconciliation may be unreliable.
+    results = [
+      // 0: supplier_invoices — 100 EUR with no rate (excluded), 1 000 SEK control
+      {
+        data: [
+          { remaining_amount: 100, currency: 'EUR', exchange_rate: null },
+          { remaining_amount: 1000, currency: 'SEK', exchange_rate: null },
+        ],
+        error: null,
+      },
+      // 1: 2440 balance reflects only the SEK invoice
+      {
+        data: [
+          { debit_amount: 0, credit_amount: 1000, journal_entry_id: 'e1' },
+        ],
+        error: null,
+      },
+    ]
+
+    const result = await generateReconciliation(supabase, 'company-1', 'period-1')
+
+    expect(result.unconverted_fx_count).toBe(1)
+    // EUR row excluded → ledger total is just the SEK 1 000
+    expect(result.supplier_ledger_total).toBe(1000)
+    expect(result.account_2440_balance).toBe(1000)
+    // Numbers match, but the calculation is incomplete (a row was excluded);
+    // BFL 5 kap requires the period not be stamped Avstämd until the missing
+    // exchange rate is filled in.
+    expect(result.is_reconciled).toBe(false)
+  })
+
   it('uses Math.round for monetary precision', async () => {
     results = [
       {

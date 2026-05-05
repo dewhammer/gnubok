@@ -212,6 +212,93 @@ describe('generateSupplierLedger', () => {
     expect(report.unpaid_count).toBe(2)
   })
 
+  it('converts foreign-currency invoices to SEK using exchange_rate', async () => {
+    // Reproduces the production bug: EUR/USD invoices were summed as if SEK,
+    // making the ledger total drift from the 2440 GL balance.
+    results = [
+      {
+        data: [
+          // 225 EUR at 11.00 → 2 475 SEK
+          {
+            supplier_id: 'sup-1',
+            supplier: { id: 'sup-1', name: 'Anthropic' },
+            due_date: '2024-06-01',
+            remaining_amount: 225,
+            currency: 'EUR',
+            exchange_rate: 11,
+          },
+          // 6.25 USD at 10.00 → 62.50 SEK
+          {
+            supplier_id: 'sup-1',
+            supplier: { id: 'sup-1', name: 'Anthropic' },
+            due_date: '2024-06-01',
+            remaining_amount: 6.25,
+            currency: 'USD',
+            exchange_rate: 10,
+          },
+          // 1 000 SEK (no conversion)
+          {
+            supplier_id: 'sup-2',
+            supplier: { id: 'sup-2', name: 'Svensk leverantör' },
+            due_date: '2024-06-01',
+            remaining_amount: 1000,
+            currency: 'SEK',
+            exchange_rate: null,
+          },
+        ],
+        error: null,
+      },
+    ]
+
+    const report = await generateSupplierLedger(supabase, 'company-1', '2024-06-15')
+
+    // Anthropic: 2 475 + 62.50 = 2 537.50 SEK (all in 1-30 days bucket)
+    const anthropic = report.entries.find(e => e.supplier_name === 'Anthropic')!
+    expect(anthropic.days_1_30).toBe(2537.5)
+    expect(anthropic.total_outstanding).toBe(2537.5)
+
+    // Swedish supplier unchanged
+    const swedish = report.entries.find(e => e.supplier_name === 'Svensk leverantör')!
+    expect(swedish.days_1_30).toBe(1000)
+
+    // Grand total in SEK: 2 537.50 + 1 000 = 3 537.50
+    expect(report.total_outstanding).toBe(3537.5)
+  })
+
+  it('excludes FX invoices without exchange_rate from totals and counts them', async () => {
+    // Legacy data: an FX invoice without an exchange rate cannot be converted
+    // to SEK without falsifying the total. The row is excluded from sums and
+    // surfaced via unconverted_fx_count so the UI can warn the user.
+    results = [
+      {
+        data: [
+          {
+            supplier_id: 'sup-1',
+            supplier: { id: 'sup-1', name: 'Legacy' },
+            due_date: '2024-06-01',
+            remaining_amount: 100,
+            currency: 'EUR',
+            exchange_rate: null,
+          },
+          {
+            supplier_id: 'sup-2',
+            supplier: { id: 'sup-2', name: 'SEK supplier' },
+            due_date: '2024-06-01',
+            remaining_amount: 500,
+            currency: 'SEK',
+            exchange_rate: null,
+          },
+        ],
+        error: null,
+      },
+    ]
+
+    const report = await generateSupplierLedger(supabase, 'company-1', '2024-06-15')
+    expect(report.total_outstanding).toBe(500)
+    expect(report.unconverted_fx_count).toBe(1)
+    expect(report.entries.map(e => e.supplier_name)).toEqual(['SEK supplier'])
+  })
+
   it('uses Math.round for monetary precision', async () => {
     results = [
       {
