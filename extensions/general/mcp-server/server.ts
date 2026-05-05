@@ -26,6 +26,7 @@ import { generateARLedger } from '@/lib/reports/ar-ledger'
 import { generateMonthlyBreakdown } from '@/lib/reports/monthly-breakdown'
 import { RECEIPT_MATCHER_HTML } from './widget-html'
 import { dataResources, findResource, parseResourceQuery } from './resources'
+import { prompts, findPrompt } from './prompts'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
 import { shouldAutoCommit } from '@/lib/pending-operations/should-auto-commit'
 import { commitPendingOperation } from '@/lib/pending-operations/commit'
@@ -3560,6 +3561,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           capabilities: {
             tools: { listChanged: false },
             resources: { listChanged: false },
+            prompts: { listChanged: false },
           },
           serverInfo: SERVER_INFO,
           instructions: 'gnubok — Swedish bookkeeping via conversation. Categorize transactions, manage invoices (create, send, mark paid), view suppliers, match payments, get reports (trial balance, income statement, balance sheet, VAT, KPI, general ledger, AR/AP ledgers), and explore chart of accounts.',
@@ -3709,6 +3711,37 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 
       return NextResponse.json(
         jsonRpcError(id ?? null, -32602, `Resource not found: "${uri}"`)
+      )
+    }
+
+    case 'prompts/list':
+      return NextResponse.json(
+        jsonRpc(id ?? null, {
+          prompts: prompts.map((p) => ({
+            name: p.name,
+            description: p.description,
+          })),
+        })
+      )
+
+    case 'prompts/get': {
+      const promptName = (params as Record<string, unknown>)?.name as string
+      const prompt = findPrompt(promptName)
+      if (!prompt) {
+        return NextResponse.json(
+          jsonRpcError(id ?? null, -32602, `Unknown prompt: "${promptName}"`)
+        )
+      }
+      return NextResponse.json(
+        jsonRpc(id ?? null, {
+          description: prompt.description,
+          messages: [
+            {
+              role: 'user',
+              content: { type: 'text', text: prompt.text },
+            },
+          ],
+        })
       )
     }
 

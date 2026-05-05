@@ -173,6 +173,12 @@ describe('validateApiKey', () => {
     expect(result).toEqual({ error: 'Invalid API key format', status: 401 })
   })
 
+  it('rejects a refresh token presented as Bearer with a specific message', async () => {
+    const result = await validateApiKey('gnubok_rt_some_refresh_token')
+    expect('status' in result && result.status).toBe(401)
+    expect('error' in result && result.error).toContain('Refresh token')
+  })
+
   it('rejects when RPC returns error', async () => {
     setupMockRpc({ data: null, error: { message: 'db error' } })
 

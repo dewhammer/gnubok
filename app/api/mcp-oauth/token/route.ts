@@ -1,17 +1,25 @@
 import { NextResponse } from 'next/server'
 import { decryptAuthCode, verifyPkce, hashAuthCode } from '@/lib/auth/oauth-codes'
-import { generateApiKey, createServiceClientNoCookies, ALL_SCOPES } from '@/lib/auth/api-keys'
+import {
+  generateApiKey,
+  generateRefreshToken,
+  hashRefreshToken,
+  createServiceClientNoCookies,
+  ALL_SCOPES,
+} from '@/lib/auth/api-keys'
 import { requireCompanyId } from '@/lib/company/context'
+
+const ACCESS_TOKEN_TTL_SECONDS = 3600
 
 /**
  * OAuth 2.0 Token Endpoint.
  *
- * Exchanges an authorization code for an API key (access token).
- * 1. Decrypts the stateless auth code
- * 2. Checks for replay (single-use enforcement per OAuth 2.1 §4.1.2)
- * 3. Verifies PKCE (S256 only)
- * 4. Creates the API key (deferred from /authorize to prevent orphaned keys)
- * 5. Returns the key as a bearer token
+ * Supports two grant types:
+ *   - authorization_code: exchange a PKCE-protected auth code for a fresh
+ *     api_key (access_token) plus a refresh_token.
+ *   - refresh_token: rotate the refresh_token and return the same api_key
+ *     with a fresh expires_in. The api_key itself does not expire
+ *     server-side; expires_in is a hint so clients refresh on a cadence.
  */
 export async function POST(request: Request) {
   let params: URLSearchParams
@@ -28,16 +36,28 @@ export async function POST(request: Request) {
   }
 
   const grantType = params.get('grant_type')
+
+  if (grantType === 'authorization_code') {
+    return handleAuthorizationCodeGrant(params)
+  }
+
+  if (grantType === 'refresh_token') {
+    return handleRefreshTokenGrant(params)
+  }
+
+  return NextResponse.json(
+    {
+      error: 'unsupported_grant_type',
+      error_description: 'Only authorization_code and refresh_token are supported',
+    },
+    { status: 400 }
+  )
+}
+
+async function handleAuthorizationCodeGrant(params: URLSearchParams) {
   const code = params.get('code')
   const codeVerifier = params.get('code_verifier')
   const redirectUri = params.get('redirect_uri')
-
-  if (grantType !== 'authorization_code') {
-    return NextResponse.json(
-      { error: 'unsupported_grant_type', error_description: 'Only authorization_code is supported' },
-      { status: 400 }
-    )
-  }
 
   if (!code) {
     return NextResponse.json(
@@ -46,7 +66,6 @@ export async function POST(request: Request) {
     )
   }
 
-  // Decrypt the auth code
   const payload = decryptAuthCode(code)
   if (!payload) {
     return NextResponse.json(
@@ -55,7 +74,6 @@ export async function POST(request: Request) {
     )
   }
 
-  // Verify redirect_uri matches
   if (redirectUri && redirectUri !== payload.redirectUri) {
     return NextResponse.json(
       { error: 'invalid_grant', error_description: 'redirect_uri mismatch' },
@@ -63,7 +81,6 @@ export async function POST(request: Request) {
     )
   }
 
-  // Verify PKCE (S256 only)
   if (!codeVerifier) {
     return NextResponse.json(
       { error: 'invalid_request', error_description: 'code_verifier is required' },
@@ -78,7 +95,6 @@ export async function POST(request: Request) {
     )
   }
 
-  // Single-use enforcement: check and mark code as used (atomically via unique constraint)
   const codeHash = hashAuthCode(code)
   const supabase = createServiceClientNoCookies()
 
@@ -87,7 +103,6 @@ export async function POST(request: Request) {
     .insert({ code_hash: codeHash })
 
   if (replayError) {
-    // Unique constraint violation = code already used
     return NextResponse.json(
       { error: 'invalid_grant', error_description: 'Authorization code already used' },
       { status: 400 }
@@ -101,11 +116,10 @@ export async function POST(request: Request) {
     .lt('created_at', new Date(Date.now() - 10 * 60 * 1000).toISOString())
     .then(() => {})
 
-  // Resolve company context for the user
   const companyId = await requireCompanyId(supabase, payload.userId)
 
-  // Create the API key now (after PKCE verification — prevents orphaned keys)
   const { key, hash, prefix } = generateApiKey()
+  const refresh = generateRefreshToken()
 
   const { error: insertError } = await supabase
     .from('api_keys')
@@ -116,6 +130,7 @@ export async function POST(request: Request) {
       key_prefix: prefix,
       name: 'MCP-klient (OAuth)',
       scopes: ALL_SCOPES,
+      refresh_token_hash: refresh.hash,
     })
 
   if (insertError) {
@@ -128,6 +143,91 @@ export async function POST(request: Request) {
   return NextResponse.json({
     access_token: key,
     token_type: 'Bearer',
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
+    refresh_token: refresh.token,
+    scope: 'mcp',
+  })
+}
+
+async function handleRefreshTokenGrant(params: URLSearchParams) {
+  const refreshToken = params.get('refresh_token')
+  if (!refreshToken) {
+    return NextResponse.json(
+      { error: 'invalid_request', error_description: 'refresh_token is required' },
+      { status: 400 }
+    )
+  }
+
+  const supabase = createServiceClientNoCookies()
+  const presentedHash = hashRefreshToken(refreshToken)
+
+  // Look up the api_key row by refresh_token_hash. The hash is unique among
+  // non-null values, so there's at most one match.
+  const { data: row, error: lookupError } = await supabase
+    .from('api_keys')
+    .select('id, revoked_at')
+    .eq('refresh_token_hash', presentedHash)
+    .maybeSingle()
+
+  if (lookupError) {
+    return NextResponse.json(
+      { error: 'server_error', error_description: 'Failed to look up refresh token' },
+      { status: 500 }
+    )
+  }
+
+  if (!row) {
+    return NextResponse.json(
+      { error: 'invalid_grant', error_description: 'Invalid refresh token' },
+      { status: 400 }
+    )
+  }
+
+  if (row.revoked_at) {
+    return NextResponse.json(
+      { error: 'invalid_grant', error_description: 'Refresh token revoked' },
+      { status: 400 }
+    )
+  }
+
+  // Rotate both tokens atomically. OAuth 2.1 §6.1 recommends rotating the
+  // refresh token; we also rotate the api_key because key_hash is one-way
+  // and we cannot recover the original plaintext to return to the client.
+  // The .eq('refresh_token_hash', presentedHash) guard makes this a CAS:
+  // a concurrent refresh with the same token will affect 0 rows.
+  const rotated = generateRefreshToken()
+  const { key: newKey, hash: newKeyHash, prefix: newKeyPrefix } = generateApiKey()
+
+  const { data: updated, error: updateError } = await supabase
+    .from('api_keys')
+    .update({
+      refresh_token_hash: rotated.hash,
+      key_hash: newKeyHash,
+      key_prefix: newKeyPrefix,
+    })
+    .eq('id', row.id)
+    .eq('refresh_token_hash', presentedHash)
+    .select('id')
+
+  if (updateError) {
+    return NextResponse.json(
+      { error: 'server_error', error_description: 'Failed to rotate refresh token' },
+      { status: 500 }
+    )
+  }
+
+  if (!updated || updated.length === 0) {
+    return NextResponse.json(
+      { error: 'invalid_grant', error_description: 'Refresh token already used' },
+      { status: 400 }
+    )
+  }
+
+  return NextResponse.json({
+    access_token: newKey,
+    token_type: 'Bearer',
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
+    refresh_token: rotated.token,
     scope: 'mcp',
   })
 }

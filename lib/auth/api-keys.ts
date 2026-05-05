@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { createClient } from '@supabase/supabase-js'
 
 const KEY_PREFIX = 'gnubok_sk_'
+const REFRESH_TOKEN_PREFIX = 'gnubok_rt_'
 
 // ── API Key Scopes ──────────────────────────────────────────
 
@@ -140,6 +141,21 @@ export function hashApiKey(key: string): string {
   return crypto.createHash('sha256').update(key).digest('hex')
 }
 
+export function generateRefreshToken(): { token: string; hash: string } {
+  const random = crypto.randomBytes(32).toString('base64url')
+  const token = `${REFRESH_TOKEN_PREFIX}${random}`
+  const hash = crypto.createHash('sha256').update(token).digest('hex')
+  return { token, hash }
+}
+
+export function hashRefreshToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+export function isRefreshToken(token: string): boolean {
+  return token.startsWith(REFRESH_TOKEN_PREFIX)
+}
+
 export function extractBearerToken(request: Request): string | null {
   const authHeader = request.headers.get('authorization')
   if (!authHeader?.startsWith('Bearer ')) return null
@@ -170,6 +186,13 @@ export async function validateApiKey(
     }
   | { error: string; status: number }
 > {
+  if (isRefreshToken(key)) {
+    return {
+      error: 'Refresh token cannot be used as access token; exchange it at /api/mcp-oauth/token',
+      status: 401,
+    }
+  }
+
   if (!key.startsWith(KEY_PREFIX)) {
     return { error: 'Invalid API key format', status: 401 }
   }
