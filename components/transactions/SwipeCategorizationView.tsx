@@ -519,19 +519,8 @@ export default function SwipeCategorizationView({
             </div>
           </div>
 
-          {/* Document upload / pre-attached document */}
-          {pendingInboxItemId && currentTransaction.matched_inbox_item?.document_id ? (
-            <div className="rounded-lg border bg-success/5 border-success/30 px-3 py-2.5">
-              <div className="flex items-center gap-2">
-                <Paperclip className="h-4 w-4 text-success" />
-                <span className="text-sm font-medium">Underlag bifogat</span>
-                <Check className="h-4 w-4 text-success" />
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Dokumentet från inkorgen länkas automatiskt till verifikationen.
-              </p>
-            </div>
-          ) : (
+          {/* Document upload */}
+          {(
             <div className="rounded-lg border">
               <button
                 type="button"
@@ -711,55 +700,6 @@ export default function SwipeCategorizationView({
                   </div>
                 )}
 
-                {/* Document Match from Inbox */}
-                {currentTransaction.matched_inbox_item && (
-                  <div className="p-4 rounded-lg border-2 border-primary/40 bg-primary/5 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-primary">
-                        <Paperclip className="h-5 w-5" />
-                        <span className="font-semibold text-sm">
-                          {currentTransaction.matched_inbox_item.document_type === 'receipt'
-                            ? 'Matchat kvitto'
-                            : currentTransaction.matched_inbox_item.document_type === 'supplier_invoice'
-                            ? 'Matchad leverantörsfaktura'
-                            : 'Matchat dokument'}
-                        </span>
-                      </div>
-                      {currentTransaction.matched_inbox_item.match_confidence != null && (
-                        <Badge variant="outline" className="text-primary border-primary">
-                          {Math.round(currentTransaction.matched_inbox_item.match_confidence * 100)}%
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="text-sm">
-                      {(() => {
-                        const ext = currentTransaction.matched_inbox_item.extracted_data as Record<string, unknown> | null
-                        if (!ext) return null
-                        const supplierName = (ext as { supplier?: { name?: string } })?.supplier?.name
-                        const merchantName = (ext as { merchant?: { name?: string } })?.merchant?.name
-                        const totals = ext as { totals?: { total?: number } }
-                        return (
-                          <>
-                            {(supplierName || merchantName) && (
-                              <p className="font-medium">{supplierName || merchantName}</p>
-                            )}
-                            {totals?.totals?.total != null && (
-                              <p className="text-muted-foreground">
-                                {formatCurrency(totals.totals.total)}
-                              </p>
-                            )}
-                          </>
-                        )
-                      })()}
-                      {currentTransaction.matched_inbox_item.suggested_template_id && (
-                        <p className="text-xs text-primary mt-1">
-                          Mall: {currentTransaction.matched_inbox_item.suggested_template_id}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 {/* Warnings */}
                 {warnings.length > 0 && (
                   <div className="space-y-2 pt-4 border-t">
@@ -798,25 +738,6 @@ export default function SwipeCategorizationView({
               {error}
             </div>
           )}
-
-          {/* Document template match — primary action when inbox item has a suggested template */}
-          {currentTransaction.matched_inbox_item?.suggested_template_id && (() => {
-            const inboxItem = currentTransaction.matched_inbox_item
-            if (!inboxItem?.suggested_template_id) return null
-            const tmplId = inboxItem.suggested_template_id
-            const template = getTemplateById(tmplId)
-            if (!template) return null
-            return (
-              <Button
-                className="w-full"
-                onClick={() => handleTemplateSelect(tmplId, inboxItem.id)}
-                disabled={isProcessing}
-              >
-                <Paperclip className="mr-2 h-4 w-4" />
-                Bokför som {template.name_sv}
-              </Button>
-            )
-          })()}
 
           {/* Invoice match button - primary action when there's a match */}
           {currentTransaction.potential_invoice && onMatchInvoice && (

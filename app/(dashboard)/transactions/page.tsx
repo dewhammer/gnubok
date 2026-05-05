@@ -32,7 +32,7 @@ import type { TransactionWithInvoice, ViewMode, CategorizeHandler } from '@/comp
 import { useCompany } from '@/contexts/CompanyContext'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, VatTreatment, InvoiceInboxItem, EntityType, LinePatternEntry } from '@/types'
+import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, VatTreatment, EntityType, LinePatternEntry } from '@/types'
 import type { SuggestedCategory, SuggestedTemplate } from '@/lib/transactions/category-suggestions'
 
 interface QuickReviewState {
@@ -137,19 +137,9 @@ export default function TransactionsPage() {
       .filter((t) => t.potential_invoice_id)
       .map((t) => t.potential_invoice_id)
 
-    const unbookedTxIds = (txData || [])
-      .filter((t) => !t.journal_entry_id && t.is_business === null)
-      .map((t) => t.id)
-
-    // Fetch invoices and inbox items in parallel
-    const [invoiceResult, inboxResult] = await Promise.all([
-      potentialInvoiceIds.length > 0
-        ? supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
-        : Promise.resolve({ data: null }),
-      unbookedTxIds.length > 0
-        ? supabase.from('invoice_inbox_items').select('*').in('matched_transaction_id', unbookedTxIds).in('status', ['ready', 'processing'])
-        : Promise.resolve({ data: null }),
-    ])
+    const invoiceResult = potentialInvoiceIds.length > 0
+      ? await supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
+      : { data: null }
 
     let invoiceMap: Record<string, Invoice & { customer?: Customer }> = {}
     if (invoiceResult.data) {
@@ -159,20 +149,9 @@ export default function TransactionsPage() {
       }, {} as Record<string, Invoice & { customer?: Customer }>)
     }
 
-    let inboxItemMap: Record<string, InvoiceInboxItem> = {}
-    if (inboxResult.data) {
-      inboxItemMap = inboxResult.data.reduce((acc, item) => {
-        if (item.matched_transaction_id) {
-          acc[item.matched_transaction_id] = item as InvoiceInboxItem
-        }
-        return acc
-      }, {} as Record<string, InvoiceInboxItem>)
-    }
-
     const transactionsWithInvoices: TransactionWithInvoice[] = (txData || []).map((t) => ({
       ...t,
       potential_invoice: t.potential_invoice_id ? invoiceMap[t.potential_invoice_id] : undefined,
-      matched_inbox_item: inboxItemMap[t.id] || undefined,
     }))
 
     setTransactions(transactionsWithInvoices)
@@ -203,18 +182,9 @@ export default function TransactionsPage() {
       .filter((t) => t.potential_invoice_id)
       .map((t) => t.potential_invoice_id)
 
-    const unbookedTxIds = txData
-      .filter((t) => !t.journal_entry_id && t.is_business === null)
-      .map((t) => t.id)
-
-    const [invoiceResult, inboxResult] = await Promise.all([
-      potentialInvoiceIds.length > 0
-        ? supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
-        : Promise.resolve({ data: null }),
-      unbookedTxIds.length > 0
-        ? supabase.from('invoice_inbox_items').select('*').in('matched_transaction_id', unbookedTxIds).in('status', ['ready', 'processing'])
-        : Promise.resolve({ data: null }),
-    ])
+    const invoiceResult = potentialInvoiceIds.length > 0
+      ? await supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
+      : { data: null }
 
     let invoiceMap: Record<string, Invoice & { customer?: Customer }> = {}
     if (invoiceResult.data) {
@@ -224,20 +194,9 @@ export default function TransactionsPage() {
       }, {} as Record<string, Invoice & { customer?: Customer }>)
     }
 
-    let inboxItemMap: Record<string, InvoiceInboxItem> = {}
-    if (inboxResult.data) {
-      inboxItemMap = inboxResult.data.reduce((acc, item) => {
-        if (item.matched_transaction_id) {
-          acc[item.matched_transaction_id] = item as InvoiceInboxItem
-        }
-        return acc
-      }, {} as Record<string, InvoiceInboxItem>)
-    }
-
     const newTransactions: TransactionWithInvoice[] = txData.map((t) => ({
       ...t,
       potential_invoice: t.potential_invoice_id ? invoiceMap[t.potential_invoice_id] : undefined,
-      matched_inbox_item: inboxItemMap[t.id] || undefined,
     }))
 
     setTransactions((prev) => [...prev, ...newTransactions])
@@ -651,16 +610,6 @@ export default function TransactionsPage() {
         .then((r) => r.json())
         .then((data) => {
           if (data.matched > 0) fetchTransactions()
-        })
-    } catch {
-      // Non-critical
-    }
-    try {
-      // Run document matching sweep for latest inbox matches
-      await fetch('/api/documents/match-sweep', { method: 'POST' })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.data?.matched > 0) fetchTransactions()
         })
     } catch {
       // Non-critical

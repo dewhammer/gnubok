@@ -1,10 +1,9 @@
-import type { Transaction, TransactionCategory, Invoice, Customer, SupplierInvoice, VatTreatment, InvoiceInboxItem } from '@/types'
+import type { Transaction, TransactionCategory, Invoice, Customer, SupplierInvoice, VatTreatment } from '@/types'
 
 // Shared transaction type with potential invoice data
 export interface TransactionWithInvoice extends Transaction {
   potential_invoice?: Invoice & { customer?: Customer }
   potential_supplier_invoice?: SupplierInvoice
-  matched_inbox_item?: InvoiceInboxItem
 }
 
 // Page view modes

@@ -28,7 +28,7 @@ export function RecaptIdentify({
 }) {
   useEffect(() => {
     const interval = setInterval(() => {
-      if (window.Recapt) {
+      if (typeof window.Recapt?.session?.setIdentity === 'function') {
         window.Recapt.session.setIdentity({
           uid: userId,
           email: email,

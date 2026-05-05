@@ -30,13 +30,26 @@ export default function BankingSettingsPanel() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [connectingBankName, setConnectingBankName] = useState<string | null>(null)
   const connectingRef = useRef(false)
+  const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [showCsvFallback, setShowCsvFallback] = useState(false)
   const [psuType, setPsuType] = useState<'personal' | 'business'>('business')
 
+  // Must match STALE_THRESHOLD_MS in extensions/general/enable-banking/index.ts
+  const PENDING_LOCK_MS = 30 * 1000
+
   useEffect(() => {
     fetchConnections()
+    return () => {
+      if (releaseTimerRef.current) clearTimeout(releaseTimerRef.current)
+    }
   }, [])
+
+  function releaseConnectingLock() {
+    connectingRef.current = false
+    setIsConnecting(false)
+    setConnectingBankName(null)
+  }
 
   async function fetchConnections() {
     setIsLoading(true)
@@ -51,6 +64,22 @@ export default function BankingSettingsPanel() {
       .order('created_at', { ascending: false })
 
     setBankConnections(connections || [])
+
+    // If a pending connection exists from a recent attempt (e.g. user bounced back from
+    // the bank's auth page), keep the connect button disabled until the server-side lock expires.
+    const freshPending = (connections || []).find((c) => c.status === 'pending')
+    if (freshPending) {
+      const age = Date.now() - new Date(freshPending.created_at).getTime()
+      const remaining = PENDING_LOCK_MS - age
+      if (remaining > 0) {
+        connectingRef.current = true
+        setIsConnecting(true)
+        setConnectingBankName(freshPending.bank_name)
+        if (releaseTimerRef.current) clearTimeout(releaseTimerRef.current)
+        releaseTimerRef.current = setTimeout(releaseConnectingLock, remaining)
+      }
+    }
+
     setIsLoading(false)
   }
 

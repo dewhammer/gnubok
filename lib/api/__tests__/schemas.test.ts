@@ -1033,12 +1033,20 @@ describe('UpdateSettingsSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('rejects aktiebolag with kontantmetoden (BFNAR 2006:1)', () => {
+  it('allows aktiebolag with kontantmetoden (BFL 5 kap. 2 §)', () => {
     const result = UpdateSettingsSchema.safeParse({
       entity_type: 'aktiebolag',
       accounting_method: 'cash',
     })
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+  })
+
+  it('allows aktiebolag with faktureringsmetoden', () => {
+    const result = UpdateSettingsSchema.safeParse({
+      entity_type: 'aktiebolag',
+      accounting_method: 'accrual',
+    })
+    expect(result.success).toBe(true)
   })
 
   it('allows enskild firma with kontantmetoden', () => {

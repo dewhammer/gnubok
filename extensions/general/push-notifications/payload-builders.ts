@@ -89,7 +89,7 @@ export function createReceiptExtractedPayload(
     badge: '/icons/badge-72.png',
     tag: `receipt-extracted-${receiptId}`,
     data: {
-      url: '/receipts',
+      url: '/transactions',
       type: 'receipt_extracted',
       id: receiptId,
     },
@@ -107,7 +107,7 @@ export function createReceiptMatchedPayload(
     badge: '/icons/badge-72.png',
     tag: `receipt-matched-${receiptId}`,
     data: {
-      url: '/receipts',
+      url: '/transactions',
       type: 'receipt_matched',
       id: receiptId,
     },

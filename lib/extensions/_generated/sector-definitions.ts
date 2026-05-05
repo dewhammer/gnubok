@@ -90,5 +90,20 @@ export const EXTENSION_DEFINITIONS: Record<string, ExtensionDefinition[]> = {
           "description": "Skicka momsdeklaration direkt till Skatteverket via BankID.",
           "longDescription": "Anslut till Skatteverket med BankID och skicka din momsdeklaration direkt från gnubok. Spara utkast, validera, lås och signera — utan att lämna appen."
     },
+    {
+          "slug": "invoice-inbox",
+          "name": "Dokumentinkorg",
+          "sector": "general",
+          "category": "import",
+          "icon": "Inbox",
+          "dataPattern": "both",
+          "description": "Vidarebefordra leverantörsfakturor till en unik adress – dokumenten landar här med extraherade fält",
+          "longDescription": "Varje bolag får en unik fakturainkorg-adress. Fakturor som skickas dit fångas automatiskt och fält som org.nr, OCR, bankgiro, belopp och förfallodatum extraheras deterministiskt från PDF-texten. Inga AI-anrop, inga molntjänster utöver Resend för e-postmottagning.",
+          "readsCoreTables": [
+                "document_attachments",
+                "suppliers"
+          ],
+          "hasOwnData": true
+    },
   ],
 }

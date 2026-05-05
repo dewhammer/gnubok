@@ -134,7 +134,7 @@ export const enableBankingExtension: Extension = {
 
           if (recentPending) {
             const pendingAge = Date.now() - new Date(recentPending.created_at).getTime()
-            const STALE_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
+            const STALE_THRESHOLD_MS = 30 * 1000 // 30 seconds — long enough to cover the redirect handoff, short enough that an abandoned attempt doesn't block the user
 
             if (pendingAge < STALE_THRESHOLD_MS) {
               log.info('[enable-banking] Rejecting duplicate connect — recent pending exists', {

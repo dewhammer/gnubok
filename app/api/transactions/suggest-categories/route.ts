@@ -113,50 +113,6 @@ export async function POST(request: Request) {
     template_suggestions[tx.id] = [cpSuggestion, ...existing]
   }
 
-  // Inject document template suggestions from matched inbox items
-  try {
-    const { data: matchedInboxItems } = await supabase
-      .from('invoice_inbox_items')
-      .select('matched_transaction_id, suggested_template_id, suggested_template_confidence')
-      .eq('company_id', companyId)
-      .in('matched_transaction_id', ids)
-      .not('suggested_template_id', 'is', null)
-
-    if (matchedInboxItems && matchedInboxItems.length > 0) {
-      console.log(`[suggest-categories] Found ${matchedInboxItems.length} matched inbox items with template suggestions`)
-      const { getTemplateById } = await import('@/lib/bookkeeping/booking-templates')
-
-      for (const item of matchedInboxItems) {
-        const txId = item.matched_transaction_id as string
-        const templateId = item.suggested_template_id as string
-        const template = getTemplateById(templateId)
-        if (!template) {
-          console.log(`[suggest-categories] Template "${templateId}" not found, skipping`)
-          continue
-        }
-
-        console.log(`[suggest-categories] Injecting document template: tx=${txId} → ${templateId} (${template.name_sv}, debit=${template.debit_account}, confidence=${item.suggested_template_confidence})`)
-
-        // Add to template_suggestions at the top with boosted confidence
-        const existing = template_suggestions[txId] || []
-        const docTemplate: SuggestedTemplate = {
-          template_id: templateId,
-          name_sv: template.name_sv,
-          name_en: template.name_en,
-          group: template.group,
-          debit_account: template.debit_account,
-          credit_account: template.credit_account,
-          confidence: Math.min((item.suggested_template_confidence as number) || 0.8, 1),
-          description_sv: template.description_sv,
-          risk_level: template.risk_level,
-          requires_review: template.requires_review,
-        }
-        template_suggestions[txId] = [docTemplate, ...existing.filter((t) => t.template_id !== templateId)]
-      }
-    }
-  } catch {
-    // Non-blocking
-  }
 
   return NextResponse.json({ suggestions, template_suggestions })
 }

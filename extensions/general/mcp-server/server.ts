@@ -56,7 +56,7 @@ import {
   generateInvoiceEmailSubject,
 } from '@/lib/email/invoice-templates'
 import { uploadDocument, MAX_DOCUMENT_SIZE } from '@/lib/core/documents/document-service'
-// classifyDocument is dynamically imported from invoice-inbox (may not be enabled)
+import { extractInvoiceFields } from '@/extensions/general/invoice-inbox/lib/extract-invoice-fields'
 // ensureInitialized() is called by the extension router (ext/[...path]/route.ts)
 // which dispatches to this handler — no duplicate call needed here.
 import type { Transaction, TransactionCategory, EntityType, VatTreatment, Invoice, Currency, CompanySettings, Customer, InvoiceItem } from '@/types'
@@ -2298,15 +2298,14 @@ const tools: McpTool[] = [
   {
     name: 'gnubok_upload_document',
     description:
-      'Upload a document (invoice, receipt) to the inbox for AI classification.\n\n' +
+      'Upload a document (invoice, receipt) to the inbox. Runs deterministic field extraction (pdfjs + regex) on text-based PDFs.\n\n' +
       'Args:\n' +
       '  - file_name (string, required): File name with extension (e.g. "faktura.pdf")\n' +
       '  - file_content_base64 (string, required): Base64-encoded file content\n' +
       '  - mime_type (string, optional): MIME type. Inferred from extension if omitted.\n\n' +
       'Returns JSON:\n' +
-      '  { document_id, inbox_item_id, status, document_type, extracted_data, confidence }\n\n' +
-      'Supported types: PDF, JPEG, PNG, HEIC, WebP. Max 20 MB.\n' +
-      'Classification runs synchronously (~2-5 seconds).',
+      '  { document_id, inbox_item_id, status, extracted_data }\n\n' +
+      'Supported types: PDF, JPEG, PNG, HEIC, WebP. Max 20 MB.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2353,53 +2352,42 @@ const tools: McpTool[] = [
         throw new Error(`File too large (max ${MAX_DOCUMENT_SIZE / 1024 / 1024} MB)`)
       }
 
-      // Store in WORM archive
       const doc = await uploadDocument(supabase, userId, companyId, {
         name: fileName,
         buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
         type: mimeType,
       }, { upload_source: 'api' })
 
-      // Classify — skipped when invoice-inbox extension is not enabled
-      // (dynamic import of classify-document pulls @aws-sdk/client-bedrock-runtime which breaks the build)
-      let classificationResult: { documentType?: string; extractedData?: unknown; rawResponse?: unknown; confidence?: number } | undefined
-      let classificationError: string | null = null
-      classificationError = 'invoice-inbox extension not enabled'
+      const { data: extracted } = await extractInvoiceFields({
+        buffer,
+        mimeType,
+        fileName,
+      })
 
-      // Supplier matching
       let matchedSupplierId: string | null = null
-      if (classificationResult?.documentType === 'supplier_invoice' && classificationResult.extractedData) {
-        const extractedData = classificationResult.extractedData as { supplier?: { orgNumber?: string | null } }
-        const orgNumber = extractedData.supplier?.orgNumber
-        if (orgNumber) {
-          const { data: s } = await supabase
-            .from('suppliers')
-            .select('id')
-            .eq('company_id', companyId)
-            .eq('org_number', orgNumber.replace(/\D/g, ''))
-            .limit(1)
-            .maybeSingle()
-          if (s) matchedSupplierId = s.id
-        }
+      if (extracted.supplier.orgNumber) {
+        const { data: s } = await supabase
+          .from('suppliers')
+          .select('id')
+          .eq('company_id', companyId)
+          .eq('org_number', extracted.supplier.orgNumber)
+          .limit(1)
+          .maybeSingle()
+        if (s) matchedSupplierId = s.id
       }
 
-      // Create inbox item
       const { data: inbox, error: inboxError } = await supabase
         .from('invoice_inbox_items')
         .insert({
           company_id: companyId,
           user_id: userId,
-          status: classificationError ? 'error' : 'ready',
+          status: 'received',
           source: 'upload',
           document_id: doc.id,
-          document_type: classificationResult?.documentType || 'unknown',
-          extracted_data: classificationResult?.extractedData || null,
-          raw_llm_response: classificationResult?.rawResponse || null,
-          confidence: classificationResult?.confidence ? classificationResult.confidence / 100 : null,
+          extracted_data: extracted as unknown as Record<string, unknown>,
           matched_supplier_id: matchedSupplierId,
-          error_message: classificationError,
         })
-        .select('id, status, document_type, confidence')
+        .select('id, status')
         .single()
 
       if (inboxError) throw new Error(`Failed to create inbox item: ${inboxError.message}`)
@@ -2408,10 +2396,8 @@ const tools: McpTool[] = [
         document_id: doc.id,
         inbox_item_id: inbox.id,
         status: inbox.status,
-        document_type: inbox.document_type,
-        extracted_data: classificationResult?.extractedData || null,
-        confidence: inbox.confidence,
-        error_message: classificationError,
+        extracted_data: extracted,
+        matched_supplier_id: matchedSupplierId,
       }
     },
   },
@@ -2419,27 +2405,21 @@ const tools: McpTool[] = [
   {
     name: 'gnubok_list_inbox_items',
     description:
-      'List document inbox items (classified invoices, receipts, etc.).\n\n' +
+      'List document inbox items (received supplier-invoice documents).\n\n' +
       'Args:\n' +
-      '  - status (string, optional): Filter by status (pending, processing, ready, confirmed, rejected, error)\n' +
-      '  - document_type (string, optional): Filter by type (supplier_invoice, receipt, government_letter, unknown)\n' +
+      '  - status (string, optional): Filter by status (received, error)\n' +
       '  - limit (number, optional): Max results, 1–50 (default 20)\n\n' +
       'Returns JSON:\n' +
-      '  { items: [{ id, status, document_type, confidence, source, created_at,\n' +
-      '              vendor_name, amount, invoice_date, matched_supplier_id }],\n' +
+      '  { items: [{ id, status, source, created_at, vendor_name, amount,\n' +
+      '              invoice_date, matched_supplier_id, created_supplier_invoice_id }],\n' +
       '    count: number }',
     inputSchema: {
       type: 'object',
       properties: {
         status: {
           type: 'string',
-          enum: ['pending', 'processing', 'ready', 'confirmed', 'rejected', 'error'],
+          enum: ['received', 'error'],
           description: 'Filter by status',
-        },
-        document_type: {
-          type: 'string',
-          enum: ['supplier_invoice', 'receipt', 'government_letter', 'unknown'],
-          description: 'Filter by document type',
         },
         limit: {
           type: 'number',
@@ -2456,53 +2436,44 @@ const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase) {
       const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50)
       const status = args.status as string | undefined
-      const documentType = args.document_type as string | undefined
 
       let query = supabase
         .from('invoice_inbox_items')
-        .select('id, status, document_type, confidence, source, created_at, extracted_data, matched_supplier_id, email_from, email_subject, error_message')
+        .select('id, status, source, created_at, extracted_data, matched_supplier_id, created_supplier_invoice_id, email_from, email_subject, error_message')
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .limit(limit)
 
       if (status) query = query.eq('status', status)
-      if (documentType) query = query.eq('document_type', documentType)
 
       const { data, error } = await query
       if (error) throw new Error(`Database error: ${error.message}`)
 
-      // Extract key fields from extracted_data for summary
       const items = (data || []).map((item) => {
         const extracted = item.extracted_data as Record<string, unknown> | null
         let vendorName: string | null = null
         let amount: number | null = null
         let invoiceDate: string | null = null
 
-        if (extracted && item.document_type === 'supplier_invoice') {
+        if (extracted) {
           const supplier = extracted.supplier as Record<string, unknown> | undefined
           const invoice = extracted.invoice as Record<string, unknown> | undefined
           const totals = extracted.totals as Record<string, unknown> | undefined
           vendorName = (supplier?.name as string) || null
           amount = (totals?.total as number) || null
           invoiceDate = (invoice?.invoiceDate as string) || null
-        } else if (extracted && item.document_type === 'receipt') {
-          const merchant = extracted.merchant as Record<string, unknown> | undefined
-          const totals = extracted.totals as Record<string, unknown> | undefined
-          vendorName = (merchant?.name as string) || null
-          amount = (totals?.total as number) || null
         }
 
         return {
           id: item.id,
           status: item.status,
-          document_type: item.document_type,
-          confidence: item.confidence,
           source: item.source,
           created_at: item.created_at,
           vendor_name: vendorName,
           amount,
           invoice_date: invoiceDate,
           matched_supplier_id: item.matched_supplier_id,
+          created_supplier_invoice_id: item.created_supplier_invoice_id,
           email_from: item.email_from,
           email_subject: item.email_subject,
           error_message: item.error_message,
@@ -2520,8 +2491,8 @@ const tools: McpTool[] = [
       'Args:\n' +
       '  - inbox_item_id (string, required): UUID of the inbox item\n\n' +
       'Returns JSON:\n' +
-      '  Full inbox item with id, status, document_type, confidence, source,\n' +
-      '  extracted_data (complete), matched_supplier_id, email metadata, timestamps.',
+      '  Full inbox item with id, status, source, extracted_data (complete),\n' +
+      '  matched_supplier_id, created_supplier_invoice_id, email metadata, timestamps.',
     inputSchema: {
       type: 'object',
       properties: {

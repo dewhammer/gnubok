@@ -28,7 +28,7 @@ const SCOPE_GROUPS = [
     domain: 'transactions',
     label: 'Transaktioner',
     read: 'transactions:read' as const,
-    readLabel: 'Läs — lista transaktioner, mallförslag, kategoriförslag',
+    readLabel: 'Läs — lista transaktioner, mallar, kategorier',
     readTools: 3,
     write: 'transactions:write' as const,
     writeLabel: 'Skriv — kategorisera, kvittomatchning, koppling mot faktura',

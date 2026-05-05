@@ -411,18 +411,6 @@ export const UpdateSettingsSchema = z.object({
     message: 'Enskild firma must have fiscal year starting in January (BFL 3 kap.)',
     path: ['fiscal_year_start_month'],
   }
-).refine(
-  (data) => {
-    // BFNAR 2006:1: Aktiebolag must use accrual accounting (faktureringsmetoden)
-    if (data.entity_type === 'aktiebolag' && data.accounting_method !== undefined) {
-      return data.accounting_method === 'accrual'
-    }
-    return true
-  },
-  {
-    message: 'Aktiebolag måste använda faktureringsmetoden (BFNAR 2006:1)',
-    path: ['accounting_method'],
-  }
 )
 
 // ============================================================

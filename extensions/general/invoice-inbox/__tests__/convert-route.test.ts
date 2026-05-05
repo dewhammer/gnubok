@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { invoiceInboxExtension } from '@/extensions/general/invoice-inbox'
 import {
   createQueuedMockSupabase,
@@ -38,7 +38,6 @@ function buildCtx(supabase: unknown, overrides: Partial<ExtensionContext> = {}):
 }
 
 const SUPPLIER_UUID = '00000000-0000-4000-8000-000000000001'
-const ITEM_UUID = '00000000-0000-4000-8000-000000000002'
 
 const VALID_CONVERT_BODY = {
   supplier_id: SUPPLIER_UUID,
@@ -68,7 +67,7 @@ describe('POST /items/:id/convert', () => {
 
   it('returns 404 when item not found', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: null, error: { message: 'Not found' } }) // fetch inbox item
+    enqueue({ data: null, error: { message: 'Not found' } })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
@@ -81,9 +80,14 @@ describe('POST /items/:id/convert', () => {
     expect(status).toBe(404)
   })
 
-  it('returns 409 when item status is not ready', async () => {
+  it('returns 409 when item already linked to a supplier invoice', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: makeInvoiceInboxItem({ status: 'confirmed' }) }) // fetch inbox item
+    enqueue({
+      data: makeInvoiceInboxItem({
+        status: 'received',
+        created_supplier_invoice_id: 'existing-1',
+      }),
+    })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
@@ -98,12 +102,12 @@ describe('POST /items/:id/convert', () => {
 
   it('returns 400 when required fields missing', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: makeInvoiceInboxItem({ status: 'ready' }) }) // fetch inbox item
+    enqueue({ data: makeInvoiceInboxItem({ status: 'received' }) })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
       method: 'POST',
-      body: { items: [] }, // missing required fields
+      body: { items: [] },
       searchParams: { _id: 'item-1' },
     })
     const res = await route.handler(request, ctx)
@@ -113,8 +117,8 @@ describe('POST /items/:id/convert', () => {
 
   it('returns 404 when supplier not found in company', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: makeInvoiceInboxItem({ status: 'ready' }) }) // fetch inbox item
-    enqueue({ data: null, error: { message: 'Not found' } }) // fetch supplier
+    enqueue({ data: makeInvoiceInboxItem({ status: 'received' }) })
+    enqueue({ data: null, error: { message: 'Not found' } })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
@@ -129,7 +133,7 @@ describe('POST /items/:id/convert', () => {
 
   it('successfully converts inbox item to supplier invoice', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    const inboxItem = makeInvoiceInboxItem({ status: 'ready', document_id: 'doc-1' })
+    const inboxItem = makeInvoiceInboxItem({ status: 'received', document_id: 'doc-1' })
     const supplier = makeSupplier({ id: 'supplier-1' })
     const createdInvoice = {
       id: 'invoice-1',
@@ -142,13 +146,13 @@ describe('POST /items/:id/convert', () => {
       status: 'registered',
     }
 
-    enqueue({ data: inboxItem }) // fetch inbox item
-    enqueue({ data: supplier }) // fetch supplier
-    enqueue({ data: 42 }) // get_next_arrival_number RPC
-    enqueue({ data: createdInvoice }) // insert supplier_invoices
-    enqueue({ data: null, error: null }) // insert supplier_invoice_items
-    enqueue({ data: makeCompanySettings({ accounting_method: 'cash' }) }) // company_settings
-    enqueue({ data: null, error: null }) // update inbox item
+    enqueue({ data: inboxItem })
+    enqueue({ data: supplier })
+    enqueue({ data: 42 })
+    enqueue({ data: createdInvoice })
+    enqueue({ data: null, error: null })
+    enqueue({ data: makeCompanySettings({ accounting_method: 'cash' }) })
+    enqueue({ data: null, error: null })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
@@ -166,13 +170,13 @@ describe('POST /items/:id/convert', () => {
 
   it('emits supplier_invoice.registered and supplier_invoice.confirmed events', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: makeInvoiceInboxItem({ status: 'ready' }) })
+    enqueue({ data: makeInvoiceInboxItem({ status: 'received' }) })
     enqueue({ data: makeSupplier({ id: SUPPLIER_UUID }) })
-    enqueue({ data: 42 }) // arrival number
-    enqueue({ data: { id: 'invoice-1', status: 'registered' } }) // insert
-    enqueue({ data: null, error: null }) // insert items
+    enqueue({ data: 42 })
+    enqueue({ data: { id: 'invoice-1', status: 'registered' } })
+    enqueue({ data: null, error: null })
     enqueue({ data: makeCompanySettings({ accounting_method: 'cash' }) })
-    enqueue({ data: null, error: null }) // update inbox item
+    enqueue({ data: null, error: null })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
@@ -192,14 +196,14 @@ describe('POST /items/:id/convert', () => {
     const { createSupplierInvoiceRegistrationEntry } = await import('@/lib/bookkeeping/supplier-invoice-entries')
 
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: makeInvoiceInboxItem({ status: 'ready' }) })
+    enqueue({ data: makeInvoiceInboxItem({ status: 'received' }) })
     enqueue({ data: makeSupplier({ id: SUPPLIER_UUID }) })
-    enqueue({ data: 42 }) // arrival number
-    enqueue({ data: { id: 'invoice-1', status: 'registered' } }) // insert invoice
-    enqueue({ data: null, error: null }) // insert items
+    enqueue({ data: 42 })
+    enqueue({ data: { id: 'invoice-1', status: 'registered' } })
+    enqueue({ data: null, error: null })
     enqueue({ data: makeCompanySettings({ accounting_method: 'accrual' }) })
-    enqueue({ data: null, error: null }) // update registration_journal_entry_id
-    enqueue({ data: null, error: null }) // update inbox item
+    enqueue({ data: null, error: null })
+    enqueue({ data: null, error: null })
 
     const ctx = buildCtx(supabase)
     const request = createMockRequest('/items/item-1/convert', {
@@ -213,25 +217,17 @@ describe('POST /items/:id/convert', () => {
     expect(status).toBe(200)
     expect(body.data.registration_journal_entry_id).toBe('je-1')
     expect(createSupplierInvoiceRegistrationEntry).toHaveBeenCalled()
-
-    // The emitted supplier_invoice.confirmed payload must reflect the just-written
-    // registration_journal_entry_id so the core handler's payload-level guard
-    // short-circuits instead of double-posting.
-    const emitCalls = (ctx.emit as ReturnType<typeof vi.fn>).mock.calls
-    const confirmed = emitCalls.find((c) => c[0].type === 'supplier_invoice.confirmed')
-    expect(confirmed).toBeDefined()
-    expect(confirmed![0].payload.supplierInvoice.registration_journal_entry_id).toBe('je-1')
   })
 })
 
-// ── PATCH /items/:id/reject ──────────────────────────────────
+// ── DELETE /items/:id ────────────────────────────────────────
 
-describe('PATCH /items/:id/reject', () => {
-  const route = findRoute('PATCH', '/items/:id/reject')
+describe('DELETE /items/:id', () => {
+  const route = findRoute('DELETE', '/items/:id')
 
   it('returns 401 when no context', async () => {
-    const request = createMockRequest('/items/item-1/reject', {
-      method: 'PATCH',
+    const request = createMockRequest('/items/item-1', {
+      method: 'DELETE',
       searchParams: { _id: 'item-1' },
     })
     const res = await route.handler(request, undefined)
@@ -241,11 +237,11 @@ describe('PATCH /items/:id/reject', () => {
 
   it('returns 404 when item not found', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: null, error: { message: 'Not found' } })
+    enqueue({ data: null })
 
     const ctx = buildCtx(supabase)
-    const request = createMockRequest('/items/item-1/reject', {
-      method: 'PATCH',
+    const request = createMockRequest('/items/item-1', {
+      method: 'DELETE',
       searchParams: { _id: 'item-1' },
     })
     const res = await route.handler(request, ctx)
@@ -253,13 +249,13 @@ describe('PATCH /items/:id/reject', () => {
     expect(status).toBe(404)
   })
 
-  it('returns 409 when item already confirmed', async () => {
+  it('returns 409 when item is linked to a supplier invoice', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: { id: 'item-1', status: 'confirmed' } })
+    enqueue({ data: { id: 'item-1', created_supplier_invoice_id: 'inv-1' } })
 
     const ctx = buildCtx(supabase)
-    const request = createMockRequest('/items/item-1/reject', {
-      method: 'PATCH',
+    const request = createMockRequest('/items/item-1', {
+      method: 'DELETE',
       searchParams: { _id: 'item-1' },
     })
     const res = await route.handler(request, ctx)
@@ -267,20 +263,19 @@ describe('PATCH /items/:id/reject', () => {
     expect(status).toBe(409)
   })
 
-  it('updates item status to rejected', async () => {
+  it('deletes a free-standing inbox item', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
-    enqueue({ data: { id: 'item-1', status: 'ready' } }) // fetch
-    enqueue({ data: null, error: null }) // update
+    enqueue({ data: { id: 'item-1', created_supplier_invoice_id: null } })
+    enqueue({ data: null, error: null })
 
     const ctx = buildCtx(supabase)
-    const request = createMockRequest('/items/item-1/reject', {
-      method: 'PATCH',
+    const request = createMockRequest('/items/item-1', {
+      method: 'DELETE',
       searchParams: { _id: 'item-1' },
     })
     const res = await route.handler(request, ctx)
-    const { status, body } = await parseJsonResponse<{ data: { id: string; status: string } }>(res)
-
+    const { status, body } = await parseJsonResponse<{ data: { deleted: boolean } }>(res)
     expect(status).toBe(200)
-    expect(body.data.status).toBe('rejected')
+    expect(body.data.deleted).toBe(true)
   })
 })

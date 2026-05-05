@@ -7,17 +7,13 @@ import { PeriodLockingSettings } from '@/components/settings/PeriodLockingSettin
 import { VoucherSeriesManager } from '@/components/settings/VoucherSeriesManager'
 import { useSettings } from '@/components/settings/useSettings'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { ExternalLink, Sparkles } from 'lucide-react'
-import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
-import { isAgentInboxEnabled } from '@/lib/ai/feature-flag'
+import { ExternalLink } from 'lucide-react'
 import type { CompanySettings } from '@/types'
 
 const SERIES_OPTIONS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
 
 export default function BookkeepingSettingsPage() {
   const { settings, isLoading, updateSettings } = useSettings()
-  const aiAgentAvailable = ENABLED_EXTENSION_IDS.has('ai-agent') && isAgentInboxEnabled()
 
   if (isLoading || !settings) return <SettingsLoadingSkeleton />
 
@@ -26,16 +22,12 @@ export default function BookkeepingSettingsPage() {
     const lockedThrough = (formData.get('bookkeeping_locked_through') as string) || null
     const accountingMethod = (formData.get('accounting_method') as string) || 'accrual'
     const defaultVoucherSeries = (formData.get('default_voucher_series') as string) || 'A'
-    const aiFlowEnabled = formData.get('ai_flow_enabled') === 'on'
 
     const updates: Record<string, unknown> = {
       bookkeeping_locked_through: lockedThrough,
       auto_lock_period_days: autoLockValue === 'none' ? null : parseInt(autoLockValue),
       accounting_method: accountingMethod,
       default_voucher_series: defaultVoucherSeries,
-    }
-    if (aiAgentAvailable) {
-      updates.ai_flow_enabled = aiFlowEnabled
     }
     return {
       updates,
@@ -65,9 +57,9 @@ export default function BookkeepingSettingsPage() {
               <option value="cash">Kontantmetoden</option>
             </select>
             <p className="text-xs text-muted-foreground">
-              {settings.entity_type === 'aktiebolag'
-                ? 'Aktiebolag med omsättning över 3 MSEK måste använda faktureringsmetoden.'
-                : 'Kontantmetoden är tillgänglig för enskild firma med omsättning under 3 MSEK.'}
+              Kontantmetoden får användas om årlig nettoomsättning normalt är högst
+              3 MSEK (BFL 5 kap. 2 §). Obetalda fordringar och skulder ska bokföras
+              vid räkenskapsårets utgång.
             </p>
           </div>
         </section>
@@ -101,34 +93,6 @@ export default function BookkeepingSettingsPage() {
         <div className="border-t border-border/8 pt-8">
           <PeriodLockingSettings settings={settings} />
         </div>
-
-        {/* AI agent (beta) — gated on extension availability */}
-        {aiAgentAvailable && (
-          <div className="border-t border-border/8 pt-8">
-            <section className="space-y-4">
-              <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5" />
-                AI-agent (beta)
-              </h2>
-              <div className="flex items-start gap-3">
-                <Switch
-                  id="ai_flow_enabled"
-                  name="ai_flow_enabled"
-                  defaultChecked={Boolean(settings.ai_flow_enabled)}
-                />
-                <div className="space-y-1">
-                  <Label htmlFor="ai_flow_enabled">Aktivera agent-inkorgen</Label>
-                  <p className="text-xs text-muted-foreground max-w-prose">
-                    När aktiv: varje ny banktransaktion blir ett AI-förslag du granskar i
-                    <Link href="/agent-inbox" className="underline ml-1">agent-inkorgen</Link>.
-                    Den automatiska bokföringen (≥80% regelmatchning) stängs av — inget bokförs
-                    utan din bekräftelse.
-                  </p>
-                </div>
-              </div>
-            </section>
-          </div>
-        )}
       </SettingsFormWrapper>
 
       {/* Voucher series — read-only display */}

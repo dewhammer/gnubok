@@ -219,9 +219,16 @@ export default async function DashboardLayout({
           extensionNavItems={getExtensionNavItems()}
         />
         <main id="main-content" className="safe-area-main-padding md:!pb-0 md:pl-[232px]" role="main">
-          <div key={companyId} className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
-            {children}
-          </div>
+          {pathname.startsWith('/e/') ? (
+            // Extension workspaces opt out of the centered max-w-5xl chrome
+            // because their content (file viewers, dashboards) wants the full
+            // viewport width.
+            <div key={companyId} className="h-full">{children}</div>
+          ) : (
+            <div key={companyId} className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
+              {children}
+            </div>
+          )}
         </main>
         {!isSandbox && (
           <RecaptIdentify

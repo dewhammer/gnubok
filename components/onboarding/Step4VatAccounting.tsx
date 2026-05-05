@@ -263,11 +263,10 @@ export default function Step4VatAccounting({
                       ? 'Intäkter och kostnader bokförs när fakturan skickas eller tas emot, oavsett när betalningen sker. Detta ger en mer rättvisande bild av verksamhetens ekonomi.'
                       : 'Intäkter och kostnader bokförs först när betalningen faktiskt sker. Enklare att hantera men ger en mindre exakt bild av verksamhetens ekonomi vid varje given tidpunkt.'}
                   </p>
-                  {entityType === 'aktiebolag' && (
-                    <p className="text-xs text-amber-800 dark:text-amber-200 bg-warning/10 rounded px-2 py-1">
-                      Aktiebolag med omsättning över 3 MSEK per år måste använda faktureringsmetoden.
-                    </p>
-                  )}
+                  <p className="text-xs text-amber-800 dark:text-amber-200 bg-warning/10 rounded px-2 py-1">
+                    Kontantmetoden får användas om årlig nettoomsättning normalt är högst
+                    3 MSEK (BFL 5 kap. 2 §).
+                  </p>
                 </div>
               </div>
             </div>

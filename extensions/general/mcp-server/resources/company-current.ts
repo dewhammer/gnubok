@@ -26,7 +26,7 @@ export const companyCurrentResource: McpResource = {
         accounting_method, default_voucher_series,
         bookkeeping_locked_through, auto_lock_period_days,
         invoice_prefix, next_invoice_number, invoice_default_days,
-        is_sandbox, ai_flow_enabled
+        is_sandbox
       `)
       .eq('company_id', companyId)
       .maybeSingle()

@@ -360,21 +360,15 @@ export async function POST(
     }
   }
 
-  // Confirm matched inbox item and link its document to the journal entry
+  // Link the matched inbox item's document to the journal entry
   if (body.inbox_item_id) {
     try {
-      await supabase
-        .from('invoice_inbox_items')
-        .update({ status: 'confirmed' })
-        .eq('id', body.inbox_item_id)
-        .eq('company_id', companyId)
-
-      // Link inbox item's document to the journal entry
       if (journalEntryId) {
         const { data: inboxItem } = await supabase
           .from('invoice_inbox_items')
           .select('document_id')
           .eq('id', body.inbox_item_id)
+          .eq('company_id', companyId)
           .single()
 
         if (inboxItem?.document_id) {

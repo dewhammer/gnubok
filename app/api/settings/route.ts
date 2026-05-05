@@ -84,14 +84,6 @@ export async function PUT(request: Request) {
     )
   }
 
-  // Validate: aktiebolag must use accrual accounting (BFNAR 2006:1)
-  if (effectiveEntityType === 'aktiebolag' && body.accounting_method === 'cash') {
-    return NextResponse.json(
-      { error: 'Aktiebolag måste använda faktureringsmetoden (BFNAR 2006:1)' },
-      { status: 400 }
-    )
-  }
-
   // Validate: VAT-registered must have VAT number (ML 11 kap. 8§) and moms period (SFL 26 kap.)
   const effectiveVatRegistered = body.vat_registered ?? oldSettings?.vat_registered
   if (effectiveVatRegistered === true) {

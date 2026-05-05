@@ -298,7 +298,7 @@ export default function PendingOperationsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Granskning"
-        description="Operationer från din AI-agent som väntar på godkännande"
+        description="Operationer som väntar på godkännande"
       />
 
       {newAutoCommits.length > 0 && (
@@ -382,8 +382,8 @@ export default function PendingOperationsPage() {
             </p>
             <p className="text-sm text-muted-foreground mt-1">
               {activeTab === 'pending'
-                ? 'När din AI-agent skapar bokföring visas den här för granskning.'
-                : 'Historik för AI-agentens operationer visas här.'}
+                ? 'När en operation kräver godkännande visas den här för granskning.'
+                : 'Operationer du har godkänt eller avvisat visas här.'}
             </p>
           </CardContent>
         </Card>

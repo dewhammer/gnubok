@@ -8,4 +8,5 @@ export const WORKSPACES: Record<string, ComponentType<WorkspaceComponentProps>> 
   'general/arcim-migration': dynamic(() => import('@/components/extensions/general/ArcimMigrationWorkspace')),
   'general/tic': dynamic(() => import('@/components/extensions/general/TicWorkspace')),
   'general/cloud-backup': dynamic(() => import('@/components/extensions/general/CloudBackupWorkspace')),
+  'general/invoice-inbox': dynamic(() => import('@/components/extensions/general/InvoiceInboxWorkspace')),
 }

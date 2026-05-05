@@ -8,4 +8,5 @@ export const ENABLED_EXTENSION_IDS: ReadonlySet<string> = new Set([
   'mcp-server',
   'cloud-backup',
   'skatteverket',
+  'invoice-inbox',
 ])

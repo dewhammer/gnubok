@@ -260,7 +260,7 @@ describe('createCompanyFromTicRole', () => {
     expect(settings.entity_type).toBe('enskild_firma')
     expect(settings.vat_registered).toBe(false)
     expect(settings.moms_period).toBeNull()
-    // EF entities default to cash per K1/BFNAR 2013:2; AB must use accrual (K2/K3).
+    // Default for EF is kontantmetoden (BFL 5 kap. 2 §); AB defaults to accrual but may switch.
     expect(settings.accounting_method).toBe('cash')
   })
 })

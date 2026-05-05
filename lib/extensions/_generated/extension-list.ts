@@ -7,6 +7,7 @@ import { ticExtension } from '@/extensions/general/tic'
 import { mcpServerExtension } from '@/extensions/general/mcp-server'
 import { cloudBackupExtension } from '@/extensions/general/cloud-backup'
 import { skatteverketExtension } from '@/extensions/general/skatteverket'
+import { invoiceInboxExtension } from '@/extensions/general/invoice-inbox'
 
 export const FIRST_PARTY_EXTENSIONS: Extension[] = [
   enableBankingExtension,
@@ -16,4 +17,5 @@ export const FIRST_PARTY_EXTENSIONS: Extension[] = [
   mcpServerExtension,
   cloudBackupExtension,
   skatteverketExtension,
+  invoiceInboxExtension,
 ]

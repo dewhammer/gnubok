@@ -132,8 +132,6 @@ export type ProcessingHistoryAggregateType =
   | 'Period'
   | 'Migration'
   | 'System'
-  | 'AIProposal'
-  | 'AIRequest'
 
 export interface ProcessingHistoryEvent {
   event_id: string
@@ -255,12 +253,6 @@ export interface CompanySettings {
 
   // Sandbox
   is_sandbox: boolean
-
-  // AI agent (receipts v1). When ai_flow_enabled is true, the auto-book
-  // path in lib/transactions/ingest.ts is disabled and every uncategorized
-  // transaction becomes an AI proposal the user must accept.
-  ai_flow_enabled: boolean
-  ai_backfill_cancel_requested: boolean
 
   // Agent auto-commit. When enabled, low-risk pending_operations staged by
   // trusted agents (api_key, mcp_oauth) skip human review. High-risk ops
@@ -996,8 +988,6 @@ export interface JournalEntry {
   rubric_version: string | null
   source_voucher_series: string | null
   source_voucher_number: number | null
-  created_via: CreatedVia
-  source_proposal_id: string | null
   created_at: string
   updated_at: string
   // Relations
@@ -1289,10 +1279,6 @@ export interface CreateJournalEntryInput {
   voucher_series?: string
   notes?: string
   lines: CreateJournalEntryLineInput[]
-  // AI agent provenance — set on the draft INSERT, then frozen at commit.
-  // Manual/imported/system callers omit these; the engine defaults created_via to 'manual'.
-  created_via?: CreatedVia
-  source_proposal_id?: string
 }
 
 export interface CreateJournalEntryLineInput {
@@ -1668,11 +1654,8 @@ export interface SIEAccountMapping {
 // Invoice Inbox Types
 // ============================================================
 
-export type InboxItemStatus = 'pending' | 'processing' | 'ready' | 'confirmed' | 'rejected' | 'error'
+export type InboxItemStatus = 'received' | 'error'
 export type InboxItemSource = 'email' | 'upload'
-
-// Document classification type for unified inbox routing
-export type DocumentClassificationType = 'supplier_invoice' | 'receipt' | 'government_letter' | 'unknown'
 
 export type CompanyInboxStatus = 'active' | 'deprecated' | 'blocked'
 
@@ -1701,25 +1684,10 @@ export interface InvoiceInboxItem {
   resend_attachment_id: string | null
   document_id: string | null
   extracted_data: Record<string, unknown> | null
-  confidence: number | null
   matched_supplier_id: string | null
   created_supplier_invoice_id: string | null
   error_message: string | null
-
-  // Unified document inbox fields
-  document_type: DocumentClassificationType
-  linked_receipt_id: string | null
   raw_email_payload: Record<string, unknown> | null
-
-  // AI template suggestion
-  suggested_template_id: string | null
-  suggested_template_confidence: number | null
-
-  // Transaction matching
-  matched_transaction_id: string | null
-  match_confidence: number | null
-  match_method: 'payment_reference' | 'amount_date' | 'amount_merchant' | 'receipt_match' | 'llm' | 'pending_transaction' | null
-  match_reasoning: string | null
 
   // Audit chain (processing_history correlation)
   correlation_id: string | null
@@ -1731,7 +1699,6 @@ export interface InvoiceInboxItem {
   document?: DocumentAttachment
   supplier?: Supplier
   supplier_invoice?: SupplierInvoice
-  receipt?: Receipt
 }
 
 // ============================================================
@@ -2678,136 +2645,5 @@ export interface AGIDeclaration {
   corrects_agi_id: string | null
   created_at: string
   updated_at: string
-}
-
-// ============================================================================
-// AI agent flow (receipts v1)
-// ============================================================================
-
-// How was a journal entry created? `source_type` describes the business event;
-// `created_via` describes the method.
-export type CreatedVia = 'manual' | 'ai_proposed' | 'imported' | 'system'
-
-// The only subject type in v1 is inbox_item; invoices and bare transactions come later.
-export type AISubjectType = 'inbox_item'
-
-// Proposal step in the agent pipeline. A receipt goes match -> booking.
-export type AIProposalStepType = 'match' | 'booking'
-
-// Proposal lifecycle. Next step chains on accepted/skipped; rejected terminates the chain.
-export type AIProposalStatus =
-  | 'pending'
-  | 'accepted'
-  | 'rejected'
-  | 'skipped'        // user went manual on this step
-  | 'invalidated'   // re-validation failed or superseded
-
-// Structured requests the AI makes when it can't produce a proposal.
-export type AIRequestType =
-  | 'reupload_document'
-  | 'pick_transaction'
-  | 'specify_vat'
-  | 'clarify_business_private'
-  | 'needs_manual'
-
-export type AIRequestStatus = 'open' | 'resolved' | 'dismissed'
-
-// Proposal payload shapes (what lives in ai_proposals.proposal_json).
-
-export interface MatchProposalAlternative {
-  transaction_id: string
-  confidence: number
-  reasoning: string
-}
-
-export interface MatchProposalPayload {
-  matched_transaction_id: string
-  alternatives: MatchProposalAlternative[]
-  top_confidence: number
-}
-
-export interface BookingProposalLine {
-  account_number: string
-  debit_amount: number
-  credit_amount: number
-  description: string
-}
-
-export interface BookingProposalCounterpartyTemplate {
-  counterparty_name: string
-  debit_account: string
-  credit_account: string
-  vat_treatment: VatTreatment | null
-  category: TransactionCategory | null
-}
-
-export interface BookingProposalPayload {
-  lines: BookingProposalLine[]
-  vat_treatment: VatTreatment | null
-  default_private: boolean
-  counterparty_template_proposal: BookingProposalCounterpartyTemplate | null
-  fiscal_period_id: string
-  entry_date: string
-  description: string
-}
-
-export type AIProposalPayload = MatchProposalPayload | BookingProposalPayload
-
-// AI proposal row (ai_proposals table)
-export interface AIProposal {
-  id: string
-  company_id: string
-  user_id: string
-  subject_type: AISubjectType
-  subject_id: string
-  step_type: AIProposalStepType
-  status: AIProposalStatus
-  version: number
-  proposal_json: AIProposalPayload
-  confidence: number | null
-  reasoning: string | null
-  ai_request_id: string | null
-  model: string
-  prompt_version: string
-  input_token_count: number
-  output_token_count: number
-  edit_diff: Record<string, unknown> | null
-  applied_entry_id: string | null
-  invalidated_reason: string | null
-  created_at: string
-  accepted_at: string | null
-  accepted_by_user_id: string | null
-  rejected_at: string | null
-  updated_at: string
-}
-
-// AI request row (ai_requests table)
-export interface AIRequest {
-  id: string
-  company_id: string
-  subject_type: AISubjectType
-  subject_id: string
-  request_type: AIRequestType
-  message: string
-  required_fields: Record<string, unknown> | null
-  options: Record<string, unknown> | null
-  status: AIRequestStatus
-  response_json: Record<string, unknown> | null
-  resolved_at: string | null
-  resolved_by_user_id: string | null
-  model: string | null
-  prompt_version: string | null
-  created_at: string
-  updated_at: string
-}
-
-// Candidate transaction summary used in pick_transaction requests' options array.
-export interface PickTransactionOption {
-  transaction_id: string
-  date: string
-  description: string
-  amount: number
-  currency: string
-  merchant_name: string | null
 }
 

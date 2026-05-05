@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { evaluateMappingRules } from '@/lib/bookkeeping/mapping-engine'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
-import { isAutoBookEnabled } from '@/lib/ai/feature-flag'
 import { upsertCounterpartyTemplate } from '@/lib/bookkeeping/counterparty-templates'
 import { getBestInvoiceMatch } from '@/lib/invoices/invoice-matching'
 import { findSupplierInvoiceMatch } from '@/lib/invoices/supplier-invoice-matching'
@@ -118,28 +117,6 @@ export async function ingestTransactions(
   // enable_banking rows catch reconnect duplicates but are only consumed
   // by incoming enable_banking rows to avoid blocking unrelated CSV imports.
   const existingMaps = await buildExistingTransactionMaps(supabase, companyId, rawTransactions)
-
-  // AI agent gate: when the company has opted into the agent flow, every
-  // uncategorized transaction becomes a review proposal — no silent auto-book.
-  // Matching/suggestion still runs (it only sets potential_*_id fields), but
-  // the mapping-rule auto-categorize branch below is disabled. Fetched lazily
-  // the first time the auto-categorize branch is about to run, and cached for
-  // the rest of the batch so we don't hit the DB per-transaction.
-  let aiFlowEnabledCache: boolean | null = null
-  const isAiFlowEnabled = async (): Promise<boolean> => {
-    if (aiFlowEnabledCache !== null) return aiFlowEnabledCache
-    try {
-      const { data: aiSettings } = await supabase
-        .from('company_settings')
-        .select('ai_flow_enabled')
-        .eq('company_id', companyId)
-        .maybeSingle()
-      aiFlowEnabledCache = Boolean(aiSettings?.ai_flow_enabled)
-    } catch {
-      aiFlowEnabledCache = false
-    }
-    return aiFlowEnabledCache
-  }
 
   // When rawInsertOnly is set (viewer imports), skip pre-fetching supplier
   // invoices and exchange rates — they are not used.
@@ -363,12 +340,11 @@ export async function ingestTransactions(
     }
 
     // 4. Evaluate mapping rules for auto-categorization
-    // Production-disabled: auto-booking only runs in local dev (isAutoBookEnabled).
+    // Production-disabled: auto-booking only runs in local dev (and tests).
     // Users must explicitly book each transaction on the deployed app.
-    // Also skipped when the company has opted into the AI agent flow (proposals)
-    // and when SIE-imported entries overlap the sync range (prevents double-book).
     // Reconciliation (step 2.5) still links transactions to existing GL lines.
-    if (isAutoBookEnabled() && !options?.skipAutoCategorization && !(await isAiFlowEnabled())) {
+    const autoBookEnabled = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test'
+    if (autoBookEnabled && !options?.skipAutoCategorization) {
       try {
         const mappingResult = await evaluateMappingRules(
           supabase,

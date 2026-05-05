@@ -38,6 +38,7 @@ export default function ExpenseDetailPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isPayDialogOpen, setIsPayDialogOpen] = useState(false)
   const [payAmount, setPayAmount] = useState('')
+  const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().split('T')[0])
   const [isProcessing, setIsProcessing] = useState(false)
   const { dialogProps: confirmDialogProps, confirm: confirmAction } = useDestructiveConfirm()
 
@@ -50,6 +51,7 @@ export default function ExpenseDetailPage() {
     } else {
       setInvoice(data)
       setPayAmount(String(data.remaining_amount))
+      setPaymentDate(new Date().toISOString().split('T')[0])
     }
     setIsLoading(false)
   }
@@ -89,7 +91,7 @@ export default function ExpenseDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}/mark-paid`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: parseFloat(payAmount) }),
+      body: JSON.stringify({ amount: parseFloat(payAmount), payment_date: paymentDate }),
     })
     const result = await res.json()
     if (!res.ok) {
@@ -473,8 +475,20 @@ export default function ExpenseDetailPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>Belopp att betala</Label>
+              <Label htmlFor="payment-date">Betalningsdatum</Label>
               <Input
+                id="payment-date"
+                type="date"
+                value={paymentDate}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={(e) => setPaymentDate(e.target.value)}
+                className="w-full sm:w-48"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="payment-amount">Belopp att betala</Label>
+              <Input
+                id="payment-amount"
                 type="number"
                 step="0.01"
                 value={payAmount}

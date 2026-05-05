@@ -223,8 +223,6 @@ export async function createDraftEntry(
       source_id: input.source_id || null,
       notes: input.notes || null,
       status: 'draft',
-      created_via: input.created_via || 'manual',
-      source_proposal_id: input.source_proposal_id || null,
     })
     .select()
     .single()

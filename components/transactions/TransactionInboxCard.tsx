@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
-import { ArrowUpRight, ArrowDownRight, FileText, Loader2, Paperclip, Trash2 } from 'lucide-react'
+import { ArrowUpRight, ArrowDownRight, FileText, Loader2, Trash2 } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/info-tooltip'
 import { getAccountName, formatAccountWithName } from '@/lib/bookkeeping/client-account-names'
 import { getTemplateById } from '@/lib/bookkeeping/booking-templates'
@@ -59,7 +59,6 @@ export default function TransactionInboxCard({
   const topSuggestion = suggestions?.[0]
   const isUncategorized = transaction.is_business === null && !transaction.journal_entry_id
   const showCheckbox = isBatchMode && isUncategorized
-  const hasDocumentMatch = !!transaction.matched_inbox_item
   const isDeletable = !transaction.journal_entry_id
 
   function handleSuggestionClick(suggestion: SuggestedCategory) {
@@ -116,16 +115,7 @@ export default function TransactionInboxCard({
               </div>
               <div className="min-w-0">
                 <p className="font-medium truncate">{transaction.description}</p>
-                <div className="flex items-center gap-2">
-                  <p className="text-sm text-muted-foreground">{formatDate(transaction.date)}</p>
-                  {hasDocumentMatch && (
-                    <Badge variant="secondary" className="text-xs gap-1">
-                      <Paperclip className="h-3 w-3" />
-                      {transaction.matched_inbox_item!.document_type === 'receipt' ? 'Kvitto' :
-                       transaction.matched_inbox_item!.document_type === 'supplier_invoice' ? 'Faktura' : 'Dokument'}
-                    </Badge>
-                  )}
-                </div>
+                <p className="text-sm text-muted-foreground">{formatDate(transaction.date)}</p>
               </div>
             </div>
 

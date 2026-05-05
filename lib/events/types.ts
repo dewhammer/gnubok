@@ -10,8 +10,6 @@ import type {
   ReconciliationMethod,
   InvoiceInboxItem,
   SupplierInvoice,
-  AIProposal,
-  AIRequest,
 } from '@/types'
 
 // ============================================================
@@ -78,8 +76,6 @@ export type CoreEvent =
   | { type: 'supplier_invoice.received'; payload: { inboxItem: InvoiceInboxItem; userId: string; companyId: string } }
   | { type: 'supplier_invoice.extracted'; payload: { inboxItem: InvoiceInboxItem; confidence: number; userId: string; companyId: string } }
   | { type: 'supplier_invoice.confirmed'; payload: { inboxItem: InvoiceInboxItem; supplierInvoice: SupplierInvoice; userId: string; companyId: string } }
-  // Generic inbox classification (fires for all document_types after classify)
-  | { type: 'inbox_item.classified'; payload: { inboxItem: InvoiceInboxItem; documentType: 'supplier_invoice' | 'receipt' | 'government_letter' | 'unknown'; confidence: number | null; correlationId: string; userId: string; companyId: string } }
   // Salary
   | { type: 'salary_run.created'; payload: { salaryRunId: string; periodYear: number; periodMonth: number; userId: string; companyId: string } }
   | { type: 'salary_run.approved'; payload: { salaryRunId: string; approvedBy: string; userId: string; companyId: string } }
@@ -94,11 +90,6 @@ export type CoreEvent =
   // Company & account lifecycle
   | { type: 'company.deleted'; payload: { companyId: string; userId: string; archivedAt: string } }
   | { type: 'account.deleted'; payload: { userId: string; deletedAt: string } }
-  // AI agent flow (receipts v1)
-  | { type: 'ai_proposal.generated'; payload: { proposal: AIProposal; userId: string; companyId: string } }
-  | { type: 'ai_proposal.accepted'; payload: { proposal: AIProposal; appliedEntry: JournalEntry | null; userId: string; companyId: string } }
-  | { type: 'ai_proposal.rejected'; payload: { proposal: AIProposal; userId: string; companyId: string } }
-  | { type: 'ai_request.created'; payload: { request: AIRequest; userId: string; companyId: string } }
 
 // ============================================================
 // Helper Types

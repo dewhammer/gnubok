@@ -303,11 +303,9 @@ export async function createCompanyFromTicRole(params: {
   // under SFL.
   const momsPeriod = vatRegistered ? 'quarterly' : null
 
-  // EF ≤3 MSEK may use kontantmetoden under K1/BFNAR 2013:2; above that
-  // threshold, BFNAR 2017:3 requires bokföringsmässiga grunder. We default
-  // to cash because the vast majority of EF users are small; users above
-  // the threshold can switch in /settings/bookkeeping. Aktiebolag must use
-  // accrual under K2/K3.
+  // Default by entity_type: EF → kontantmetoden, AB → faktureringsmetoden.
+  // Both forms may use either method under BFL 5 kap. 2 § when annual net
+  // turnover is normally ≤ 3 MSEK; users can change in /settings/bookkeeping.
   const accountingMethod = entityType === 'enskild_firma' ? 'cash' : 'accrual'
 
   const settings: Record<string, unknown> = {

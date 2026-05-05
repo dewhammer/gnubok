@@ -12,7 +12,6 @@ import {
   ArrowLeftRight,
   ChevronDown,
   ChevronRight,
-  Camera,
   Users,
   Landmark,
   CheckCircle2,
@@ -154,28 +153,6 @@ export default function DashboardContent({ firstName, companyId, settings, summa
                 <p className="font-medium text-sm">Transaktioner</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {summary.uncategorizedCount} obokförda
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </Link>
-    )
-  }
-
-  if (process.env.NODE_ENV === 'development' && summary.receiptQueue && (summary.receiptQueue.pending_review_count > 0 || summary.receiptQueue.unmatched_receipts_count > 0)) {
-    alertItems.push(
-      <Link key="receipts" href="/receipts" className="group">
-        <Card className="h-full border-primary/30 hover:bg-primary/[0.03] transition-colors">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <Camera className="h-4 w-4 text-primary flex-shrink-0" />
-              <div>
-                <p className="font-medium text-sm">Kvitton</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {summary.receiptQueue.pending_review_count > 0
-                    ? `${summary.receiptQueue.pending_review_count} att granska`
-                    : `${summary.receiptQueue.unmatched_receipts_count} omatchade`}
                 </p>
               </div>
             </div>

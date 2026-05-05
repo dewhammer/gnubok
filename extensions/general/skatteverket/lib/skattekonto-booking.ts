@@ -243,7 +243,6 @@ export async function bokforSkattekontoTransaction(
     source_id: tx.id,
     notes: `Genererad från skattekonto-synk. Skatteverket-id: ${tx.transaktionsidentitet ?? '–'}`,
     lines,
-    created_via: 'manual',
   }
 
   const entry = await createDraftEntry(supabase, companyId, userId, input)
