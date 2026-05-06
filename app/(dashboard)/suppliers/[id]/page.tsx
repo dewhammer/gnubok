@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { ArrowLeft, Edit, Trash2, FileText, Lock } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import SupplierForm from '@/components/suppliers/SupplierForm'
@@ -70,8 +71,7 @@ export default function SupplierDetailPage() {
     })
     const result = await res.json()
     if (!res.ok) {
-      const fieldErrors = result.errors?.map((e: { field: string; message: string }) => `${e.field}: ${e.message}`).join(', ')
-      toast({ title: 'Kunde inte uppdatera leverantör', description: fieldErrors || result.error || 'Försök igen.', variant: 'destructive' })
+      toast({ title: 'Kunde inte uppdatera leverantör', description: getErrorMessage(result, { context: 'supplier' }), variant: 'destructive' })
     } else {
       toast({ title: 'Sparat', description: 'Leverantören har uppdaterats' })
       setSupplier({ ...result.data, stats: supplier?.stats })
@@ -92,7 +92,7 @@ export default function SupplierDetailPage() {
     const res = await fetch(`/api/suppliers/${params.id}`, { method: 'DELETE' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Kunde inte ta bort leverantör', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kunde inte ta bort leverantör', description: getErrorMessage(result, { context: 'supplier' }), variant: 'destructive' })
     } else {
       toast({ title: 'Borttagen', description: 'Leverantören har tagits bort' })
       router.push('/suppliers')

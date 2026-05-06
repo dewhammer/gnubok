@@ -1,33 +1,37 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { lockPeriod } from '@/lib/core/bookkeeping/period-service'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id } = await params
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+export const POST = withRouteContext(
+  'period.lock',
+  async (_request, ctx, { params }: { params: Promise<{ id: string }> }) => {
+    const { id } = await params
+    const { user, supabase, companyId, log, requestId } = ctx
+    const opLog = log.child({ periodId: id })
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  try {
-    const period = await lockPeriod(supabase, companyId, user.id, id)
-    return NextResponse.json({ data: period })
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to lock period' },
-      { status: 400 }
-    )
-  }
-}
+    try {
+      const period = await lockPeriod(supabase, companyId!, user.id, id)
+      return NextResponse.json({ data: period })
+    } catch (err) {
+      opLog.error('failed to lock period', err as Error)
+      // The service throws plain Error with messages like "Period not found"
+      // or "Period contains drafts" — translate to envelope codes.
+      const message = err instanceof Error ? err.message : ''
+      if (/not found/i.test(message)) {
+        return errorResponseFromCode('PERIOD_NOT_FOUND', opLog, { requestId })
+      }
+      if (/already locked|already closed/i.test(message)) {
+        return errorResponseFromCode('PERIOD_LOCK_ALREADY_LOCKED', opLog, { requestId })
+      }
+      if (/draft/i.test(message)) {
+        return errorResponseFromCode('PERIOD_LOCK_HAS_DRAFTS', opLog, {
+          requestId,
+          details: { reason: message },
+        })
+      }
+      return errorResponse(err, opLog, { requestId })
+    }
+  },
+  { requireWrite: true },
+)

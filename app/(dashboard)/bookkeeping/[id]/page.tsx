@@ -15,6 +15,7 @@ import CorrectionEntryDialog from '@/components/bookkeeping/CorrectionEntryDialo
 import CorrectionChain from '@/components/bookkeeping/CorrectionChain'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { JournalEntry, JournalEntryLine } from '@/types'
 
 export default function JournalEntryDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -89,7 +90,7 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
         })
         router.push('/bookkeeping')
       } else {
-        toast({ title: 'Kunde inte radera', description: result.error, variant: 'destructive' })
+        toast({ title: 'Kunde inte radera', description: getErrorMessage(result, { context: 'journal_entry' }), variant: 'destructive' })
         setShowDeleteConfirm(false)
       }
     } catch {

@@ -44,6 +44,14 @@ describe('BAS_REFERENCE data integrity', () => {
     expect(withoutDesc).toEqual([])
   })
 
+  it('no account name or description has a concatenated group header', () => {
+    const headerSuffix = /\s\d{2,}\s+[A-ZÅÄÖ]{2,}/
+    const corrupted = BAS_REFERENCE.filter(
+      (a) => headerSuffix.test(a.account_name) || headerSuffix.test(a.description ?? ''),
+    )
+    expect(corrupted).toEqual([])
+  })
+
   it('every account has a valid account_type', () => {
     const validTypes = ['asset', 'liability', 'equity', 'revenue', 'expense', 'untaxed_reserves']
     for (const account of BAS_REFERENCE) {

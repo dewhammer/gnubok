@@ -21,6 +21,7 @@ vi.mock('@/lib/auth/require-write', () => ({
 
 vi.mock('@/lib/company/context', () => ({
   requireCompanyId: vi.fn().mockResolvedValue('company-1'),
+  getActiveCompanyId: vi.fn().mockResolvedValue('company-1'),
 }))
 
 const mockCreateJournalEntry = vi.fn()
@@ -101,7 +102,7 @@ describe('POST /api/import/opening-balance/execute', () => {
     const { status, body } = await parseJsonResponse(res)
 
     expect(status).toBe(404)
-    expect(body.error).toContain('hittades inte')
+    expect((body.error as unknown as { code: string }).code).toBe('OB_PERIOD_NOT_FOUND')
   })
 
   it('returns 409 if period already has opening balances', async () => {
@@ -127,7 +128,10 @@ describe('POST /api/import/opening-balance/execute', () => {
     const { status, body } = await parseJsonResponse(res)
 
     expect(status).toBe(409)
-    expect(body.existing_entry_id).toBe('entry-existing')
+    expect((body.error as unknown as { code: string }).code).toBe('OB_PERIOD_ALREADY_HAS_BALANCES')
+    expect(
+      (body.error as unknown as { details: { existingEntryId: string } }).details.existingEntryId,
+    ).toBe('entry-existing')
   })
 
   it('returns 400 for unbalanced lines', async () => {
@@ -152,7 +156,7 @@ describe('POST /api/import/opening-balance/execute', () => {
     const { status, body } = await parseJsonResponse(res)
 
     expect(status).toBe(400)
-    expect(body.error).toContain('balanserar inte')
+    expect((body.error as unknown as { code: string }).code).toBe('OB_UNBALANCED')
   })
 
   it('returns 400 for P&L accounts', async () => {
@@ -177,7 +181,7 @@ describe('POST /api/import/opening-balance/execute', () => {
     const { status, body } = await parseJsonResponse(res)
 
     expect(status).toBe(400)
-    expect(body.error).toContain('Resultatkonton')
+    expect((body.error as unknown as { code: string }).code).toBe('OB_PNL_ACCOUNT')
   })
 
   it('creates journal entry on success', async () => {

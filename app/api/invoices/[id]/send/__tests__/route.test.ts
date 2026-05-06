@@ -128,7 +128,7 @@ describe('POST /api/invoices/[id]/send', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Fakturan hittades inte')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_PAID_NOT_FOUND')
   })
 
   it('returns 400 when customer has no email', async () => {
@@ -144,7 +144,7 @@ describe('POST /api/invoices/[id]/send', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toContain('e-postadress')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_SEND_NO_CUSTOMER_EMAIL')
   })
 
   it('returns 404 when company settings not found', async () => {
@@ -156,7 +156,7 @@ describe('POST /api/invoices/[id]/send', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Företagsinställningar saknas')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_SEND_COMPANY_SETTINGS_MISSING')
   })
 
   it('sends invoice email, updates status, creates journal entry for accrual', async () => {
@@ -313,7 +313,11 @@ describe('POST /api/invoices/[id]/send', () => {
     const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
-    expect(status).toBe(500)
-    expect(body.error).toContain('SMTP error')
+    // Provider errors map to 502 PROVIDER_FAILED with the provider message in details.
+    expect(status).toBe(502)
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_SEND_PROVIDER_FAILED')
+    expect(
+      (body.error as unknown as { details?: { providerError?: string } }).details?.providerError,
+    ).toContain('SMTP error')
   })
 })

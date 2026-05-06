@@ -49,6 +49,7 @@ export const SCOPE_GROUPS = [
 export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // Transactions
   gnubok_list_uncategorized_transactions: 'transactions:read',
+  gnubok_create_transactions:             'transactions:write',
   gnubok_categorize_transaction:          'transactions:write',
   gnubok_receipt_matcher:                 'transactions:write',
   gnubok_get_counterparty_templates:      'transactions:read',

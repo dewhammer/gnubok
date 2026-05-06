@@ -74,7 +74,7 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Not found')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_NOT_FOUND')
   })
 
   it('returns 400 when invoice is in wrong status', async () => {
@@ -94,7 +94,7 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Fakturan kan inte markeras som betald i nuvarande status')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_PAID_NOT_PAYABLE')
   })
 
   it('marks as fully paid with accrual method', async () => {
@@ -261,7 +261,7 @@ describe('POST /api/supplier-invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('Kunde inte bokföra betalningen')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_PAID_FAILED')
   })
 
   it('emits supplier_invoice.paid event', async () => {

@@ -126,6 +126,74 @@ describe('commitPendingOperation: unlock_period', () => {
   })
 })
 
+// ─── create_transaction ─────────────────────────────────────────────
+
+describe('commitPendingOperation: create_transaction', () => {
+  it('happy path: inserts a transactions row with import_source=mcp and returns the id', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: { id: 'tx-42' }, error: null }) // executor insert
+    enqueue({ data: null, error: null }) // dispatcher's update
+
+    const op = makePendingOp({
+      operation_type: 'create_transaction',
+      params: {
+        date: '2026-05-01',
+        amount: -129.5,
+        description: 'AWS subscription',
+        currency: 'USD',
+        external_id: 'recAirtable123',
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(result.data).toMatchObject({ transaction_id: 'tx-42' })
+  })
+
+  it('rejects with 400 when required fields are missing', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's reject update
+
+    const op = makePendingOp({
+      operation_type: 'create_transaction',
+      params: { date: '2026-05-01' }, // missing amount + description
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('failed')
+    expect(result.http_status).toBe(400)
+  })
+
+  it('returns 409 when external_id collides with an existing row', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: { code: '23505', message: 'duplicate key' } as never }) // executor insert
+    enqueue({ data: null, error: null }) // dispatcher's reject update
+
+    const op = makePendingOp({
+      operation_type: 'create_transaction',
+      params: {
+        date: '2026-05-01',
+        amount: 100,
+        description: 'test',
+        external_id: 'recAirtable123',
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    // 409 collisions are treated as auto-rejected by the dispatcher.
+    expect(result.status).toBe('rejected')
+    expect(result.auto_rejected).toBe(true)
+    expect(result.http_status).toBe(409)
+    expect(result.error).toMatch(/already exists/)
+  })
+})
+
 // ─── import_sie ─────────────────────────────────────────────────────
 
 describe('commitPendingOperation: import_sie', () => {

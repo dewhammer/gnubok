@@ -1,0 +1,1232 @@
+/**
+ * Canonical registry of structured error codes used by both REST routes and
+ * the MCP server.
+ *
+ * Each entry defines:
+ *   - httpStatus: status returned by errorResponse() for this code
+ *   - message_sv: Swedish user-facing message (consumed by toast)
+ *   - message_en: English message for agents and developer logs
+ *   - remediation: optional pointer to a fix (tool/resource/description)
+ *
+ * Adding a new code = add a row here. The error-code-matrix in
+ * `.claude/plans/for-all-of-those-mutable-sunset.md` lists the codes per
+ * operation; keep that document and this file in sync.
+ *
+ * Codes follow `<DOMAIN>_<OPERATION>_<CAUSE>` naming. Stable forever once
+ * shipped — agents pattern-match on them.
+ */
+
+export interface StructuredErrorRemediation {
+  description: string
+  tool?: string
+  args?: Record<string, unknown>
+  resource?: string
+}
+
+export interface StructuredErrorEntry {
+  httpStatus: number
+  message_sv: string
+  message_en: string
+  remediation?: StructuredErrorRemediation
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Generic / cross-cutting codes
+// ─────────────────────────────────────────────────────────────────
+
+const GENERIC: Record<string, StructuredErrorEntry> = {
+  UNKNOWN_ERROR: {
+    httpStatus: 500,
+    message_sv: 'Något gick fel. Försök igen.',
+    message_en: 'An unexpected error occurred.',
+  },
+  INTERNAL_ERROR: {
+    httpStatus: 500,
+    message_sv: 'Ett oväntat serverfel uppstod. Försök igen senare.',
+    message_en: 'Internal server error.',
+  },
+  VALIDATION_ERROR: {
+    httpStatus: 400,
+    message_sv: 'Förfrågan innehåller ogiltiga uppgifter.',
+    message_en: 'Validation error.',
+  },
+  UNAUTHORIZED: {
+    httpStatus: 401,
+    message_sv: 'Din session har gått ut. Logga in igen.',
+    message_en: 'Authentication required.',
+  },
+  MFA_REQUIRED: {
+    httpStatus: 403,
+    message_sv: 'Tvåstegsverifiering krävs för att utföra åtgärden.',
+    message_en: 'MFA verification required.',
+  },
+  FORBIDDEN: {
+    httpStatus: 403,
+    message_sv: 'Du har inte behörighet att utföra denna åtgärd.',
+    message_en: 'Insufficient permissions.',
+  },
+  NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Resursen kunde inte hittas.',
+    message_en: 'Resource not found.',
+  },
+  CONFLICT: {
+    httpStatus: 409,
+    message_sv: 'En konflikt uppstod. Ladda om sidan och försök igen.',
+    message_en: 'Conflict.',
+  },
+  RATE_LIMITED: {
+    httpStatus: 429,
+    message_sv: 'För många förfrågningar. Vänta en stund och försök igen.',
+    message_en: 'Rate limit exceeded.',
+  },
+  COMPANY_CONTEXT_MISSING: {
+    httpStatus: 400,
+    message_sv: 'Ingen aktiv företagskontext. Välj ett företag och försök igen.',
+    message_en: 'No active company context resolved for the request.',
+  },
+  IDEMPOTENCY_KEY_REUSE: {
+    httpStatus: 409,
+    message_sv: 'Idempotensnyckeln har redan använts med en annan begäran.',
+    message_en: 'Idempotency key was previously used with a different request body.',
+    remediation: {
+      description:
+        'Use a fresh UUID for a new operation, or send the original request body to replay.',
+    },
+  },
+  INSUFFICIENT_SCOPE: {
+    httpStatus: 403,
+    message_sv: 'API-nyckeln saknar behörighet för denna åtgärd.',
+    message_en: 'The current API key does not have the required scope.',
+    remediation: {
+      description:
+        'Mint a new key with the missing scope or grant it through the API key settings.',
+      resource: 'gnubok://capabilities',
+    },
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Bookkeeping engine codes (already used by lib/bookkeeping/errors.ts)
+// ─────────────────────────────────────────────────────────────────
+
+const BOOKKEEPING: Record<string, StructuredErrorEntry> = {
+  ACCOUNTS_NOT_IN_CHART: {
+    httpStatus: 400,
+    message_sv: 'Konton saknas i kontoplanen.',
+    message_en: 'One or more BAS accounts are not active in the chart of accounts.',
+    remediation: {
+      description:
+        'Activate the missing accounts via bookkeeping settings, or use a different category.',
+      resource: 'gnubok://chart-of-accounts',
+    },
+  },
+  JOURNAL_ENTRY_NOT_BALANCED: {
+    httpStatus: 400,
+    message_sv: 'Verifikationen balanserar inte.',
+    message_en: 'Debits and credits do not match.',
+    remediation: {
+      description: 'Recalculate the lines so totals are equal before retrying.',
+    },
+  },
+  FISCAL_PERIOD_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Räkenskapsperioden kunde inte hittas.',
+    message_en: 'No fiscal period covers the entry date.',
+    remediation: {
+      description: 'Create or extend the relevant fiscal period before retrying.',
+      resource: 'gnubok://period/active',
+    },
+  },
+  ENTRY_DATE_OUTSIDE_FISCAL_PERIOD: {
+    httpStatus: 400,
+    message_sv: 'Datumet ligger utanför det valda räkenskapsåret.',
+    message_en: 'Entry date is outside the active fiscal period.',
+    remediation: {
+      description: 'Use a date inside an open period or create one that covers it.',
+      resource: 'gnubok://period/active',
+    },
+  },
+  JOURNAL_ENTRY_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Verifikationen kunde inte hittas.',
+    message_en: 'Journal entry not found.',
+  },
+  CANNOT_REVERSE_NON_POSTED: {
+    httpStatus: 400,
+    message_sv: 'Endast bokförda verifikationer kan stornas.',
+    message_en: 'Only posted entries can be reversed.',
+  },
+  CANNOT_CORRECT_NON_POSTED: {
+    httpStatus: 400,
+    message_sv: 'Endast bokförda verifikationer kan rättas.',
+    message_en: 'Only posted entries can be corrected.',
+  },
+  ENTRY_ALREADY_REVERSED: {
+    httpStatus: 409,
+    message_sv:
+      'Verifikationen har redan stornats av en annan användare. Ladda om sidan och försök igen.',
+    message_en: 'Entry was already reversed by a concurrent operation.',
+  },
+  CURRENCY_REVALUATION_ALREADY_EXISTS: {
+    httpStatus: 409,
+    message_sv: 'En valutaomvärdering finns redan för denna period.',
+    message_en: 'Currency revaluation already exists for this period.',
+  },
+  INVALID_MAPPING_RESULT: {
+    httpStatus: 400,
+    message_sv: 'Kontering saknas för transaktionen. Kontrollera bokföringsreglerna.',
+    message_en: 'Mapping rules produced an invalid debit/credit account pair.',
+  },
+  BOOKKEEPING_DATABASE_ERROR: {
+    httpStatus: 500,
+    message_sv: 'Verifikationen kunde inte sparas. Försök igen.',
+    message_en: 'Bookkeeping database operation failed.',
+  },
+  PERIOD_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Bokföringen är låst för denna period.',
+    message_en: 'Period is locked or closed; entries cannot be added.',
+  },
+  PERIOD_NOT_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Perioden måste först låsas innan den kan stängas.',
+    message_en: 'Period must be locked before it can be closed.',
+    remediation: {
+      description: 'Call gnubok_lock_period before closing.',
+      tool: 'gnubok_lock_period',
+    },
+  },
+  PERIOD_HAS_UNBOOKED_TRANSACTIONS: {
+    httpStatus: 400,
+    message_sv:
+      'Perioden innehåller okategoriserade affärstransaktioner. Bokför eller markera dem som privata innan låsning.',
+    message_en: 'The period contains uncategorized business transactions.',
+    remediation: {
+      description: 'Categorize or mark uncategorized transactions before locking.',
+      tool: 'gnubok_list_uncategorized_transactions',
+    },
+  },
+  YEAR_END_NOT_RUN: {
+    httpStatus: 400,
+    message_sv: 'Bokslutsåtgärder måste utföras innan perioden kan stängas.',
+    message_en: 'Year-end closing must be executed before the period can be closed.',
+  },
+  TRANSACTION_ALREADY_CATEGORIZED: {
+    httpStatus: 409,
+    message_sv:
+      'Transaktionen är redan bokförd. Ångra kategoriseringen om du vill ändra den.',
+    message_en: 'The transaction already has a journal entry.',
+    remediation: {
+      description:
+        'Use gnubok_uncategorize_transaction first if you need to recategorize.',
+      tool: 'gnubok_uncategorize_transaction',
+    },
+  },
+  INVOICE_ALREADY_SENT: {
+    httpStatus: 409,
+    message_sv: 'Fakturan har redan skickats eller betalats.',
+    message_en: 'The invoice is already sent or paid.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Wave 1: invoicing & transactions
+// ─────────────────────────────────────────────────────────────────
+
+const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
+  TX_CATEGORIZE_TX_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Transaktionen kunde inte hittas.',
+    message_en: 'Transaction not found.',
+  },
+  TX_CATEGORIZE_INVALID_ACCOUNT: {
+    httpStatus: 400,
+    message_sv: 'Det valda kontot finns inte i kontoplanen.',
+    message_en: 'The supplied account does not exist in the chart of accounts.',
+    remediation: {
+      description: 'Activate the account in the chart of accounts or pick a different one.',
+      resource: 'gnubok://chart-of-accounts',
+    },
+  },
+  TX_CATEGORIZE_INVALID_TEMPLATE: {
+    httpStatus: 400,
+    message_sv: 'Bokföringsmallen är ogiltig eller passar inte din bolagsform.',
+    message_en: 'The supplied booking template is invalid or does not match the entity type.',
+  },
+  TX_CATEGORIZE_INVALID_MAPPING: {
+    httpStatus: 400,
+    message_sv: 'Konteringen saknar debet- eller kreditkonto.',
+    message_en: 'Mapping result is missing a debit or credit account.',
+  },
+  TX_CATEGORIZE_RACE: {
+    httpStatus: 409,
+    message_sv: 'Transaktionen kategoriserades av en annan förfrågan. Ladda om och försök igen.',
+    message_en: 'Transaction was already categorized by another request.',
+  },
+  TX_UNCATEGORIZE_NO_LINKED_ENTRY: {
+    httpStatus: 400,
+    message_sv: 'Transaktionen har ingen kopplad verifikation att stornera.',
+    message_en: 'Transaction has no linked journal entry to reverse.',
+  },
+}
+
+const MATCH_INVOICE: Record<string, StructuredErrorEntry> = {
+  MATCH_INVOICE_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Fakturan kunde inte hittas.',
+    message_en: 'Invoice not found.',
+  },
+  MATCH_INVOICE_NOT_INCOME: {
+    httpStatus: 400,
+    message_sv: 'Endast intäktstransaktioner kan matchas mot kundfakturor.',
+    message_en: 'Only income transactions can be matched to customer invoices.',
+  },
+  MATCH_INVOICE_TX_ALREADY_LINKED: {
+    httpStatus: 400,
+    message_sv: 'Transaktionen är redan kopplad till en faktura.',
+    message_en: 'Transaction is already linked to an invoice.',
+  },
+  MATCH_INVOICE_NOT_OPEN: {
+    httpStatus: 400,
+    message_sv: 'Fakturan är inte i ett obetalt läge och kan inte matchas.',
+    message_en: 'Invoice is not in an unpaid state.',
+  },
+  MATCH_INVOICE_ALREADY_PAID: {
+    httpStatus: 409,
+    message_sv: 'Fakturan har redan slutbetalats av en annan förfrågan.',
+    message_en: 'Invoice has already been fully paid or is no longer matchable.',
+  },
+  MATCH_INVOICE_DUPLICATE_PAYMENT: {
+    httpStatus: 409,
+    message_sv: 'Den här transaktionen är redan matchad mot fakturan.',
+    message_en: 'This transaction is already matched to this invoice.',
+  },
+  MATCH_INVOICE_RECORD_PAYMENT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte registrera fakturabetalningen.',
+    message_en: 'Failed to record invoice payment.',
+  },
+  MATCH_INVOICE_LINK_TX_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte koppla transaktionen till fakturan.',
+    message_en: 'Failed to link transaction to invoice.',
+  },
+  MATCH_INVOICE_PARTIAL: {
+    httpStatus: 200,
+    message_sv: 'Matchningen registrerades men verifikationen kunde inte skapas.',
+    message_en: 'Match recorded but the journal entry could not be created.',
+  },
+}
+
+const MATCH_SI: Record<string, StructuredErrorEntry> = {
+  MATCH_SI_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Leverantörsfakturan kunde inte hittas.',
+    message_en: 'Supplier invoice not found.',
+  },
+  MATCH_SI_NOT_EXPENSE: {
+    httpStatus: 400,
+    message_sv: 'Endast utgiftstransaktioner kan matchas mot leverantörsfakturor.',
+    message_en: 'Only expense transactions can be matched to supplier invoices.',
+  },
+  MATCH_SI_TX_ALREADY_LINKED: {
+    httpStatus: 400,
+    message_sv: 'Transaktionen är redan kopplad till en leverantörsfaktura.',
+    message_en: 'Transaction is already linked to a supplier invoice.',
+  },
+  MATCH_SI_ALREADY_PAID: {
+    httpStatus: 400,
+    message_sv: 'Leverantörsfakturan är redan betald eller krediterad.',
+    message_en: 'Supplier invoice is already paid or credited.',
+  },
+  MATCH_SI_NOT_OPEN: {
+    httpStatus: 409,
+    message_sv: 'Leverantörsfakturan har redan slutbetalats av en annan förfrågan.',
+    message_en: 'Supplier invoice has already been fully paid or is no longer matchable.',
+  },
+  MATCH_SI_DUPLICATE_PAYMENT: {
+    httpStatus: 409,
+    message_sv: 'Den här transaktionen är redan matchad mot leverantörsfakturan.',
+    message_en: 'This transaction is already matched to this supplier invoice.',
+  },
+  MATCH_SI_RECORD_PAYMENT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte registrera leverantörsfakturabetalningen.',
+    message_en: 'Failed to record supplier invoice payment.',
+  },
+  MATCH_SI_LINK_TX_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte koppla transaktionen till leverantörsfakturan.',
+    message_en: 'Failed to link transaction to supplier invoice.',
+  },
+}
+
+const INVOICE: Record<string, StructuredErrorEntry> = {
+  INVOICE_CUSTOMER_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Kunden kunde inte hittas.',
+    message_en: 'Customer not found.',
+  },
+  INVOICE_CREATE_VAT_RULE_VIOLATION: {
+    httpStatus: 400,
+    message_sv: 'Momssatsen är inte tillåten för denna kundtyp.',
+    message_en: 'The VAT rate is not allowed for this customer type.',
+  },
+  INVOICE_CREATE_INSERT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Fakturan kunde inte sparas.',
+    message_en: 'Invoice insert failed.',
+  },
+  INVOICE_CREATE_ITEMS_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Fakturaraderna kunde inte sparas.',
+    message_en: 'Invoice items insert failed.',
+  },
+  INVOICE_CREDIT_ORIGINAL_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Ursprungsfakturan kunde inte hittas.',
+    message_en: 'Original invoice not found.',
+  },
+  INVOICE_CREDIT_NOT_INVOICE: {
+    httpStatus: 400,
+    message_sv: 'Kreditfakturor kan endast skapas från riktiga fakturor.',
+    message_en: 'Credit notes can only be created from standard invoices.',
+  },
+  INVOICE_CREDIT_ALREADY_CREDITED: {
+    httpStatus: 400,
+    message_sv: 'Fakturan har redan krediterats.',
+    message_en: 'Invoice has already been credited.',
+  },
+  INVOICE_CREDIT_NOT_SENT: {
+    httpStatus: 400,
+    message_sv: 'Endast skickade, betalda eller förfallna fakturor kan krediteras.',
+    message_en: 'Only sent, paid, or overdue invoices can be credited.',
+  },
+  INVOICE_SEND_EMAIL_NOT_CONFIGURED: {
+    httpStatus: 503,
+    message_sv:
+      'E-posttjänsten är inte konfigurerad. Kontrollera att RESEND_API_KEY och RESEND_FROM_EMAIL är satta.',
+    message_en: 'Email service is not configured.',
+    remediation: {
+      description: 'Set RESEND_API_KEY and RESEND_FROM_EMAIL in the deployment environment.',
+    },
+  },
+  INVOICE_SEND_NO_CUSTOMER_EMAIL: {
+    httpStatus: 400,
+    message_sv: 'Kunden saknar e-postadress. Uppdatera kunduppgifterna först.',
+    message_en: 'Customer has no email address.',
+    remediation: { description: 'Add an email address on the customer record before sending.' },
+  },
+  INVOICE_SEND_COMPANY_SETTINGS_MISSING: {
+    httpStatus: 404,
+    message_sv: 'Företagsinställningar saknas.',
+    message_en: 'Company settings are missing.',
+  },
+  INVOICE_SEND_NUMBER_ASSIGN_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte tilldela fakturanummer.',
+    message_en: 'Failed to assign invoice number on send.',
+  },
+  INVOICE_SEND_PROVIDER_FAILED: {
+    httpStatus: 502,
+    message_sv: 'E-postleverantören kunde inte skicka meddelandet.',
+    message_en: 'The email provider could not deliver the message.',
+  },
+  INVOICE_SEND_PARTIAL: {
+    httpStatus: 200,
+    message_sv:
+      'Fakturan skickades men en efterföljande åtgärd misslyckades (verifikation eller PDF-bilaga).',
+    message_en: 'Invoice was sent but a follow-up step (journal entry or PDF) failed.',
+  },
+  INVOICE_PAID_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Fakturan kunde inte hittas.',
+    message_en: 'Invoice not found.',
+  },
+  INVOICE_PAID_NOT_PAYABLE: {
+    httpStatus: 400,
+    message_sv: 'Fakturan kan inte markeras som betald i nuvarande status.',
+    message_en: 'Invoice is not in a payable status.',
+  },
+  INVOICE_PAID_LINES_UNBALANCED: {
+    httpStatus: 400,
+    message_sv: 'Verifikationsraderna är inte balanserade (debet ≠ kredit).',
+    message_en: 'Custom journal lines do not balance.',
+  },
+  INVOICE_PAID_NO_FISCAL_PERIOD: {
+    httpStatus: 400,
+    message_sv: 'Ingen öppen räkenskapsperiod för betalningsdatumet.',
+    message_en: 'No open fiscal period covers the payment date.',
+  },
+  INVOICE_PAID_RACE: {
+    httpStatus: 409,
+    message_sv: 'Fakturan har redan betalats av en annan förfrågan.',
+    message_en: 'Invoice was already paid by another request.',
+  },
+  INVOICE_PAID_BOOK_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte bokföra betalningen.',
+    message_en: 'Failed to create payment journal entry.',
+  },
+}
+
+const SUPPLIER_INVOICE: Record<string, StructuredErrorEntry> = {
+  SI_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Leverantörsfakturan kunde inte hittas.',
+    message_en: 'Supplier invoice not found.',
+  },
+  SI_APPROVE_NOT_REGISTERED: {
+    httpStatus: 400,
+    message_sv: 'Endast registrerade fakturor kan godkännas.',
+    message_en: 'Only invoices in registered status can be approved.',
+  },
+  SI_APPROVE_UPDATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte godkänna leverantörsfakturan.',
+    message_en: 'Failed to update supplier invoice status to approved.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Wave 2: periods, year-end, reports
+// ─────────────────────────────────────────────────────────────────
+
+const PERIOD: Record<string, StructuredErrorEntry> = {
+  PERIOD_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Räkenskapsperioden kunde inte hittas.',
+    message_en: 'Fiscal period not found.',
+  },
+  PERIOD_LOCK_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Perioden kunde inte låsas.',
+    message_en: 'Failed to lock period.',
+  },
+  PERIOD_LOCK_HAS_DRAFTS: {
+    httpStatus: 400,
+    message_sv: 'Perioden innehåller verifikationsutkast som måste bokföras eller raderas innan låsning.',
+    message_en: 'Period contains draft journal entries.',
+  },
+  PERIOD_LOCK_ALREADY_LOCKED: {
+    httpStatus: 409,
+    message_sv: 'Perioden är redan låst.',
+    message_en: 'Period is already locked.',
+  },
+}
+
+const YEAR_END: Record<string, StructuredErrorEntry> = {
+  YEAR_END_PREVIEW_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Bokslutsförhandsgranskningen misslyckades.',
+    message_en: 'Failed to preview year-end closing.',
+  },
+  YEAR_END_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Bokslutet kunde inte verkställas.',
+    message_en: 'Failed to execute year-end closing.',
+  },
+  YEAR_END_PRIOR_PERIOD_OPEN: {
+    httpStatus: 400,
+    message_sv: 'En tidigare period är fortfarande öppen. Stäng den först.',
+    message_en: 'A prior fiscal period is still open.',
+  },
+  YEAR_END_UNBALANCED_TRIAL: {
+    httpStatus: 400,
+    message_sv: 'Resultaträkningens debet och kredit balanserar inte. Granska verifikationerna innan bokslut.',
+    message_en: 'Trial balance does not balance.',
+  },
+}
+
+const OPENING_BAL: Record<string, StructuredErrorEntry> = {
+  OPENING_BAL_PERIOD_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Räkenskapsperioden kunde inte hittas.',
+    message_en: 'Fiscal period not found.',
+  },
+}
+
+const FX: Record<string, StructuredErrorEntry> = {
+  FX_PERIOD_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Räkenskapsperioden kunde inte hittas.',
+    message_en: 'Fiscal period not found.',
+  },
+  FX_PERIOD_CLOSED: {
+    httpStatus: 400,
+    message_sv: 'Perioden är redan stängd. Valutaomvärdering kan inte köras.',
+    message_en: 'Period is already closed; currency revaluation cannot be run.',
+  },
+  FX_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Valutaomvärderingen misslyckades.',
+    message_en: 'Currency revaluation failed.',
+  },
+}
+
+const REPORT: Record<string, StructuredErrorEntry> = {
+  REPORT_PERIOD_REQUIRED: {
+    httpStatus: 400,
+    message_sv: 'period_id krävs.',
+    message_en: 'period_id query parameter is required.',
+  },
+  REPORT_GENERATION_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Rapporten kunde inte genereras.',
+    message_en: 'Failed to generate the report.',
+  },
+}
+
+const VAT_REPORT: Record<string, StructuredErrorEntry> = {
+  VAT_REPORT_MISSING_PARAMS: {
+    httpStatus: 400,
+    message_sv: 'periodType, year och period krävs.',
+    message_en: 'periodType, year and period query parameters are required.',
+  },
+  VAT_REPORT_INVALID_PERIOD_TYPE: {
+    httpStatus: 400,
+    message_sv: 'periodType måste vara monthly, quarterly eller yearly.',
+    message_en: 'periodType must be one of monthly, quarterly, yearly.',
+  },
+  VAT_REPORT_INVALID_YEAR: {
+    httpStatus: 400,
+    message_sv: 'year måste vara ett giltigt årtal mellan 2000 och 2100.',
+    message_en: 'year must be a number between 2000 and 2100.',
+  },
+  VAT_REPORT_INVALID_PERIOD: {
+    httpStatus: 400,
+    message_sv: 'period är ogiltig för vald periodtyp.',
+    message_en: 'period is invalid for the chosen period type.',
+  },
+  VAT_REPORT_GENERATION_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Momsdeklarationen kunde inte beräknas.',
+    message_en: 'Failed to calculate VAT declaration.',
+  },
+}
+
+const SIE_EXPORT: Record<string, StructuredErrorEntry> = {
+  SIE_EXPORT_COMPANY_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Företagsinställningar saknas — SIE-exporten kan inte skapas.',
+    message_en: 'Company settings missing; SIE export cannot be generated.',
+  },
+  SIE_EXPORT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'SIE-exporten misslyckades.',
+    message_en: 'Failed to generate SIE export.',
+  },
+}
+
+const TAX_DECL: Record<string, StructuredErrorEntry> = {
+  TAX_DECL_GENERATION_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Skattedeklarationen kunde inte genereras.',
+    message_en: 'Failed to generate tax declaration.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Wave 3: imports (SIE, bank-file, opening-balance)
+// ─────────────────────────────────────────────────────────────────
+
+const SIE_IMPORT: Record<string, StructuredErrorEntry> = {
+  SIE_PARSE_NO_FILE: {
+    httpStatus: 400,
+    message_sv: 'Ingen fil bifogad i förfrågan.',
+    message_en: 'No file attached to the request.',
+  },
+  SIE_PARSE_INVALID_TYPE: {
+    httpStatus: 400,
+    message_sv: 'Filtypen stöds inte. Ladda upp en fil med ändelsen .sie eller .se.',
+    message_en: 'Unsupported file type; upload a .sie or .se file.',
+  },
+  SIE_PARSE_FILE_TOO_LARGE: {
+    httpStatus: 400,
+    message_sv: 'Filen är för stor. Maxstorlek är 50 MB.',
+    message_en: 'File exceeds the 50 MB size limit.',
+  },
+  SIE_PARSE_EMPTY: {
+    httpStatus: 400,
+    message_sv: 'Filen är tom (0 bytes). Kontrollera exporten från bokföringsprogrammet.',
+    message_en: 'File is empty.',
+  },
+  SIE_PARSE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte tolka SIE-filen. Filen kan vara skadad eller i ett format som inte stöds.',
+    message_en: 'Failed to parse the SIE file.',
+  },
+  SIE_PARSE_VALIDATION_FAILED: {
+    httpStatus: 400,
+    message_sv: 'SIE-filen innehåller valideringsfel som måste åtgärdas innan import.',
+    message_en: 'SIE file failed validation.',
+  },
+  SIE_DUPLICATE_FILE: {
+    httpStatus: 409,
+    message_sv: 'Den här filen har redan importerats.',
+    message_en: 'File has already been imported.',
+  },
+  SIE_DUPLICATE_PERIOD: {
+    httpStatus: 409,
+    message_sv: 'En SIE-import för ett överlappande räkenskapsår finns redan.',
+    message_en: 'An SIE import for an overlapping fiscal period already exists.',
+  },
+  SIE_IMPORT_UNMAPPED_ACCOUNTS: {
+    httpStatus: 400,
+    message_sv: 'Vissa konton saknar mappning. Gå tillbaka till kontomappningssteget och koppla alla konton.',
+    message_en: 'One or more accounts have no mapping target.',
+    remediation: { description: 'Map every source account to a BAS account before importing.' },
+  },
+  SIE_IMPORT_ACCOUNT_ACTIVATION_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte aktivera konton i kontoplanen. Kontrollera att kontona inte redan finns med andra inställningar.',
+    message_en: 'Failed to activate mapped accounts in the chart of accounts.',
+  },
+  SIE_IMPORT_FAILED: {
+    httpStatus: 400,
+    message_sv: 'Importen slutfördes med fel. Se detaljerna nedan.',
+    message_en: 'SIE import completed with errors.',
+  },
+  SIE_IMPORT_UNEXPECTED: {
+    httpStatus: 500,
+    message_sv: 'Importen avbröts oväntat. Ingen data har sparats.',
+    message_en: 'Unexpected error during SIE import; no data was committed.',
+  },
+  SIE_REPLACE_FAILED: {
+    httpStatus: 400,
+    message_sv: 'SIE-importen kunde inte ersättas.',
+    message_en: 'Failed to replace SIE import.',
+  },
+}
+
+const BANK_FILE: Record<string, StructuredErrorEntry> = {
+  BANK_FILE_NO_FILE: {
+    httpStatus: 400,
+    message_sv: 'Ingen fil bifogad i förfrågan.',
+    message_en: 'No file attached to the request.',
+  },
+  BANK_FILE_TOO_LARGE: {
+    httpStatus: 400,
+    message_sv: 'Filen är för stor. Maxstorlek är 10 MB.',
+    message_en: 'File exceeds the 10 MB size limit.',
+  },
+  BANK_FILE_DUPLICATE: {
+    httpStatus: 409,
+    message_sv: 'Den här filen har redan importerats.',
+    message_en: 'Bank file has already been imported.',
+  },
+  BANK_FILE_PARSE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte tolka bankfilen.',
+    message_en: 'Failed to parse the bank file.',
+  },
+  BANK_FILE_NO_TRANSACTIONS: {
+    httpStatus: 400,
+    message_sv: 'Bankfilen innehåller inga transaktioner att importera.',
+    message_en: 'No transactions to import.',
+  },
+  BANK_FILE_IMPORT_RECORD_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte skapa importpost.',
+    message_en: 'Failed to create the bank file import record.',
+  },
+  BANK_FILE_EXECUTE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Bankfilsimporten misslyckades.',
+    message_en: 'Bank file import failed.',
+  },
+}
+
+const OPENING_BALANCE_IMPORT: Record<string, StructuredErrorEntry> = {
+  OB_NO_FILE: {
+    httpStatus: 400,
+    message_sv: 'Ingen fil bifogad.',
+    message_en: 'No file attached.',
+  },
+  OB_FILE_TOO_LARGE: {
+    httpStatus: 400,
+    message_sv: 'Filen är för stor. Maxstorlek är 10 MB.',
+    message_en: 'File exceeds the 10 MB size limit.',
+  },
+  OB_INVALID_FORMAT: {
+    httpStatus: 400,
+    message_sv: 'Filformatet stöds inte. Tillåtna format: .xlsx, .xls, .csv, .ods.',
+    message_en: 'Unsupported file format.',
+  },
+  OB_INVALID_COLUMN_OVERRIDES: {
+    httpStatus: 400,
+    message_sv: 'Ogiltig kolumnmappning.',
+    message_en: 'Invalid column overrides JSON.',
+  },
+  OB_PARSE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte tolka filen.',
+    message_en: 'Failed to parse the opening balance file.',
+  },
+  OB_PERIOD_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Räkenskapsperioden hittades inte.',
+    message_en: 'Fiscal period not found.',
+  },
+  OB_PERIOD_CLOSED: {
+    httpStatus: 400,
+    message_sv: 'Räkenskapsperioden är stängd.',
+    message_en: 'Fiscal period is closed.',
+  },
+  OB_PERIOD_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Räkenskapsperioden är låst.',
+    message_en: 'Fiscal period is locked.',
+  },
+  OB_PERIOD_ALREADY_HAS_BALANCES: {
+    httpStatus: 409,
+    message_sv: 'Räkenskapsperioden har redan ingående balanser.',
+    message_en: 'Fiscal period already has opening balances set.',
+  },
+  OB_TOO_FEW_LINES: {
+    httpStatus: 400,
+    message_sv: 'Minst två rader med belopp krävs.',
+    message_en: 'At least two lines with amounts are required.',
+  },
+  OB_PNL_ACCOUNT: {
+    httpStatus: 400,
+    message_sv: 'Resultatkonton (klass 3-8) kan inte användas i ingående balanser.',
+    message_en: 'Profit & loss accounts (class 3-8) are not allowed in opening balances.',
+  },
+  OB_UNBALANCED: {
+    httpStatus: 400,
+    message_sv: 'Debet och kredit balanserar inte.',
+    message_en: 'Opening balance debits and credits do not match.',
+  },
+  OB_ACCOUNT_ACTIVATION_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte aktivera konton i kontoplanen.',
+    message_en: 'Failed to activate accounts in the chart of accounts.',
+  },
+  OB_EXECUTE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Importen misslyckades.',
+    message_en: 'Opening balance import failed.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Wave 3 tail: provider migration extension codes
+// ─────────────────────────────────────────────────────────────────
+
+const PROVIDER_MIGRATION: Record<string, StructuredErrorEntry> = {
+  PROVIDER_INVALID: {
+    httpStatus: 400,
+    message_sv: 'Okänd leverantör.',
+    message_en: 'Unknown provider.',
+  },
+  PROVIDER_CONSENT_NOT_READY: {
+    httpStatus: 400,
+    message_sv: 'Anslutningen är inte klar. Slutför inloggningen först.',
+    message_en: 'Provider consent is not ready; finish authentication first.',
+  },
+  PROVIDER_CONSENT_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Anslutningen kunde inte hittas.',
+    message_en: 'Provider consent not found.',
+  },
+  PROVIDER_CONNECT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte starta anslutningen till leverantören.',
+    message_en: 'Failed to start provider connection flow.',
+  },
+  PROVIDER_TOKEN_REQUIRED: {
+    httpStatus: 400,
+    message_sv: 'API-token krävs för den här leverantören.',
+    message_en: 'apiToken is required for this provider.',
+  },
+  PROVIDER_COMPANY_ID_REQUIRED: {
+    httpStatus: 400,
+    message_sv: 'companyId krävs för den här leverantören.',
+    message_en: 'companyId is required for this provider.',
+  },
+  PROVIDER_TOKEN_SUBMIT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Tokensubmissionen misslyckades.',
+    message_en: 'Failed to submit provider token.',
+  },
+  PROVIDER_PREVIEW_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Förhandsgranskningen från leverantören misslyckades.',
+    message_en: 'Provider preview failed.',
+  },
+  PROVIDER_SIE_FETCH_FAILED: {
+    httpStatus: 502,
+    message_sv: 'Kunde inte hämta SIE-data från leverantören.',
+    message_en: 'Failed to fetch SIE data from the provider.',
+  },
+  PROVIDER_SIE_NO_YEARS: {
+    httpStatus: 404,
+    message_sv: 'Inga räkenskapsår 2024–2026 hittades hos leverantören.',
+    message_en: 'No fiscal years available for 2024–2026.',
+  },
+  PROVIDER_SIE_ONLY_FORTNOX: {
+    httpStatus: 400,
+    message_sv: 'SIE-export stöds för närvarande endast för Fortnox.',
+    message_en: 'SIE export is currently only supported for Fortnox.',
+  },
+  PROVIDER_MIGRATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Migrationen från leverantören misslyckades.',
+    message_en: 'Provider migration failed.',
+  },
+  PROVIDER_DISCONNECT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Frånkoppling från leverantören misslyckades.',
+    message_en: 'Provider disconnect failed.',
+  },
+  PROVIDER_ACCEPT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte slutföra anslutningen.',
+    message_en: 'Failed to accept consent.',
+  },
+  PROVIDER_STATUS_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte hämta status från leverantören.',
+    message_en: 'Failed to fetch provider status.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Wave 4: documents, masters, salary, company, API keys
+// ─────────────────────────────────────────────────────────────────
+
+const DOCUMENT: Record<string, StructuredErrorEntry> = {
+  DOC_UPLOAD_NO_FILE: {
+    httpStatus: 400,
+    message_sv: 'Ingen fil bifogad.',
+    message_en: 'No file attached.',
+  },
+  DOC_UPLOAD_TOO_LARGE: {
+    httpStatus: 400,
+    message_sv: 'Filen är för stor.',
+    message_en: 'Uploaded file exceeds the size limit.',
+  },
+  DOC_UPLOAD_UNSUPPORTED_TYPE: {
+    httpStatus: 400,
+    message_sv: 'Filtypen stöds inte.',
+    message_en: 'Unsupported file type.',
+  },
+  DOC_UPLOAD_STORAGE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Filen kunde inte sparas.',
+    message_en: 'Document storage failed.',
+  },
+  DOC_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Dokumentet kunde inte hittas.',
+    message_en: 'Document not found.',
+  },
+  DOC_LINK_ENTRY_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Verifikationen kunde inte hittas.',
+    message_en: 'Journal entry not found.',
+  },
+  DOC_LINK_ALREADY_LINKED: {
+    httpStatus: 409,
+    message_sv: 'Dokumentet är redan kopplat till en verifikation.',
+    message_en: 'Document is already linked to a journal entry.',
+  },
+  DOC_LINK_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kopplingen misslyckades.',
+    message_en: 'Failed to link document to journal entry.',
+  },
+}
+
+const CUSTOMER: Record<string, StructuredErrorEntry> = {
+  CUSTOMER_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Kunden kunde inte hittas.',
+    message_en: 'Customer not found.',
+  },
+  CUSTOMER_DUPLICATE_ORG_NUMBER: {
+    httpStatus: 409,
+    message_sv: 'En kund med samma organisationsnummer finns redan.',
+    message_en: 'A customer with that organisation number already exists.',
+  },
+  CUSTOMER_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunden kunde inte skapas.',
+    message_en: 'Failed to create customer.',
+  },
+  CUSTOMER_UPDATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunden kunde inte uppdateras.',
+    message_en: 'Failed to update customer.',
+  },
+  CUSTOMER_DELETE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunden kunde inte tas bort.',
+    message_en: 'Failed to delete customer.',
+  },
+  CUSTOMER_HAS_INVOICES: {
+    httpStatus: 409,
+    message_sv: 'Kunden har fakturor och kan inte tas bort.',
+    message_en: 'Customer cannot be deleted while invoices reference it.',
+  },
+}
+
+const SUPPLIER: Record<string, StructuredErrorEntry> = {
+  SUPPLIER_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Leverantören kunde inte hittas.',
+    message_en: 'Supplier not found.',
+  },
+  SUPPLIER_DUPLICATE_ORG_NUMBER: {
+    httpStatus: 409,
+    message_sv: 'En leverantör med samma organisationsnummer finns redan.',
+    message_en: 'A supplier with that organisation number already exists.',
+  },
+  SUPPLIER_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Leverantören kunde inte skapas.',
+    message_en: 'Failed to create supplier.',
+  },
+  SUPPLIER_UPDATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Leverantören kunde inte uppdateras.',
+    message_en: 'Failed to update supplier.',
+  },
+  SUPPLIER_DELETE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Leverantören kunde inte tas bort.',
+    message_en: 'Failed to delete supplier.',
+  },
+}
+
+const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
+  SI_CREATE_DUPLICATE_INVOICE_NUMBER: {
+    httpStatus: 409,
+    message_sv: 'En leverantörsfaktura med samma nummer finns redan.',
+    message_en: 'A supplier invoice with that number already exists.',
+  },
+  SI_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Leverantörsfakturan kunde inte skapas.',
+    message_en: 'Failed to create supplier invoice.',
+  },
+  SI_PAID_ALREADY: {
+    httpStatus: 409,
+    message_sv: 'Leverantörsfakturan är redan betald eller krediterad.',
+    message_en: 'Supplier invoice is already paid or credited.',
+  },
+  SI_PAID_NOT_PAYABLE: {
+    httpStatus: 400,
+    message_sv: 'Leverantörsfakturan kan inte markeras som betald i nuvarande status.',
+    message_en: 'Supplier invoice is not in a payable state.',
+  },
+  SI_PAID_PERIOD_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Bokföringen är låst. Betalningen kan inte registreras.',
+    message_en: 'Bookkeeping is locked; payment cannot be recorded.',
+  },
+  SI_PAID_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte registrera betalningen.',
+    message_en: 'Failed to record supplier invoice payment.',
+  },
+  SI_CREDIT_ALREADY_CREDITED: {
+    httpStatus: 409,
+    message_sv: 'Leverantörsfakturan har redan krediterats.',
+    message_en: 'Supplier invoice has already been credited.',
+  },
+  SI_CREDIT_PERIOD_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Bokföringen är låst. Krediteringen kan inte skapas.',
+    message_en: 'Bookkeeping is locked; credit note cannot be created.',
+  },
+  SI_CREDIT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte kreditera leverantörsfakturan.',
+    message_en: 'Failed to credit supplier invoice.',
+  },
+}
+
+const SALARY: Record<string, StructuredErrorEntry> = {
+  SALARY_RUN_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Lönekörningen kunde inte hittas.',
+    message_en: 'Salary run not found.',
+  },
+  SALARY_RUN_NO_EMPLOYEES: {
+    httpStatus: 400,
+    message_sv: 'Inga aktiva anställda finns i företaget.',
+    message_en: 'No active employees in the company.',
+  },
+  SALARY_RUN_TAX_TABLE_MISSING: {
+    httpStatus: 400,
+    message_sv: 'Skattetabellen saknas för perioden. Importera skattetabellen först.',
+    message_en: 'Tax table is missing for the period.',
+  },
+  SALARY_RUN_PERIOD_LOCKED: {
+    httpStatus: 400,
+    message_sv: 'Lönekörningen kan inte göras i en låst period.',
+    message_en: 'Salary run cannot be processed in a locked period.',
+  },
+  SALARY_RUN_NOT_CALCULATED: {
+    httpStatus: 400,
+    message_sv: 'Lönekörningen måste beräknas innan bokföring.',
+    message_en: 'Salary run must be calculated before booking.',
+  },
+  SALARY_RUN_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Lönekörningen kunde inte skapas.',
+    message_en: 'Failed to create salary run.',
+  },
+  SALARY_RUN_CALCULATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Lönekörningen kunde inte beräknas.',
+    message_en: 'Failed to calculate salary run.',
+  },
+  SALARY_RUN_BOOK_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Lönekörningen kunde inte bokföras.',
+    message_en: 'Failed to book salary run.',
+  },
+  AGI_NO_SALARY_RUN: {
+    httpStatus: 400,
+    message_sv: 'Det finns ingen lönekörning för perioden.',
+    message_en: 'No salary run exists for the period.',
+  },
+  AGI_FSKATT_VERIFICATION_FAILED: {
+    httpStatus: 400,
+    message_sv: 'F-skattekontrollen misslyckades. Kontrollera leverantörens F-skatt.',
+    message_en: 'F-skatt verification failed.',
+  },
+  AGI_GENERATION_FAILED: {
+    httpStatus: 500,
+    message_sv: 'AGI-deklarationen kunde inte genereras.',
+    message_en: 'Failed to generate AGI declaration.',
+  },
+}
+
+const COMPANY: Record<string, StructuredErrorEntry> = {
+  COMPANY_CREATE_DUPLICATE_ORG_NUMBER: {
+    httpStatus: 409,
+    message_sv: 'Ett företag med samma organisationsnummer finns redan.',
+    message_en: 'A company with that organisation number already exists.',
+  },
+  COMPANY_CREATE_BAS_SEED_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kontoplanen kunde inte skapas. Försök igen.',
+    message_en: 'Failed to seed the chart of accounts.',
+  },
+  COMPANY_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Företaget kunde inte skapas.',
+    message_en: 'Failed to create company.',
+  },
+}
+
+const API_KEY: Record<string, StructuredErrorEntry> = {
+  API_KEY_SCOPE_INVALID: {
+    httpStatus: 400,
+    message_sv: 'En eller flera scopes är ogiltiga.',
+    message_en: 'One or more requested scopes are invalid.',
+  },
+  API_KEY_QUOTA_EXCEEDED: {
+    httpStatus: 429,
+    message_sv: 'Du har nått maxgränsen för antal API-nycklar.',
+    message_en: 'API key quota exceeded.',
+  },
+  API_KEY_CREATE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'API-nyckeln kunde inte skapas.',
+    message_en: 'Failed to create API key.',
+  },
+  API_KEY_REVOKE_FAILED: {
+    httpStatus: 500,
+    message_sv: 'API-nyckeln kunde inte återkallas.',
+    message_en: 'Failed to revoke API key.',
+  },
+  API_KEY_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'API-nyckeln kunde inte hittas.',
+    message_en: 'API key not found.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Provider connection / external HTTP codes
+// ─────────────────────────────────────────────────────────────────
+
+const PROVIDER: Record<string, StructuredErrorEntry> = {
+  PROVIDER_AUTH_EXPIRED: {
+    httpStatus: 401,
+    message_sv: 'Anslutningen till leverantören har gått ut. Återanslut för att fortsätta.',
+    message_en: 'Provider authentication expired or refresh failed.',
+  },
+  PROVIDER_RATE_LIMITED: {
+    httpStatus: 429,
+    message_sv:
+      'Leverantören begränsar antalet anrop just nu. Vänta en stund och försök igen.',
+    message_en: 'Provider rate limit exceeded.',
+  },
+  PROVIDER_UNREACHABLE: {
+    httpStatus: 502,
+    message_sv: 'Leverantörens tjänst är inte tillgänglig just nu. Försök igen om en stund.',
+    message_en: 'Provider service is unreachable (network/DNS error).',
+  },
+  PROVIDER_UPSTREAM_ERROR: {
+    httpStatus: 502,
+    message_sv: 'Leverantören svarade med ett fel. Försök igen om en stund.',
+    message_en: 'Provider returned an upstream 5xx error.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Combined registry
+// ─────────────────────────────────────────────────────────────────
+
+const REGISTRY: Record<string, StructuredErrorEntry> = {
+  ...GENERIC,
+  ...BOOKKEEPING,
+  ...TRANSACTIONS,
+  ...MATCH_INVOICE,
+  ...MATCH_SI,
+  ...INVOICE,
+  ...SUPPLIER_INVOICE,
+  ...PERIOD,
+  ...YEAR_END,
+  ...OPENING_BAL,
+  ...FX,
+  ...REPORT,
+  ...VAT_REPORT,
+  ...SIE_EXPORT,
+  ...TAX_DECL,
+  ...SIE_IMPORT,
+  ...BANK_FILE,
+  ...OPENING_BALANCE_IMPORT,
+  ...PROVIDER_MIGRATION,
+  ...DOCUMENT,
+  ...CUSTOMER,
+  ...SUPPLIER,
+  ...SUPPLIER_INVOICE_WAVE4,
+  ...SALARY,
+  ...COMPANY,
+  ...API_KEY,
+  ...PROVIDER,
+}
+
+export function getErrorEntry(code: string): StructuredErrorEntry | undefined {
+  return REGISTRY[code]
+}
+
+export function hasErrorEntry(code: string): boolean {
+  return code in REGISTRY
+}
+
+/**
+ * Test-only: returns all registered codes. Used by the unit test that asserts
+ * the matrix in the plan file stays in sync with this registry.
+ */
+export function listErrorCodes(): string[] {
+  return Object.keys(REGISTRY)
+}

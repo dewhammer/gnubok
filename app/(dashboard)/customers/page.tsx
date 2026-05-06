@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { Plus, Search, Users, Lock } from 'lucide-react'
 import CustomerForm from '@/components/customers/CustomerForm'
 import { EmptyCustomers } from '@/components/ui/empty-state'
@@ -82,7 +83,7 @@ export default function CustomersPage() {
     if (!response.ok) {
       toast({
         title: 'Kunde inte skapa kund',
-        description: result.error || 'Försök igen.',
+        description: getErrorMessage(result, { context: 'customer' }),
         variant: 'destructive',
       })
     } else {

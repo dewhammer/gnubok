@@ -1,97 +1,109 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
 import { CreateSalaryRunSchema } from '@/lib/api/schemas'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
 import { eventBus } from '@/lib/events'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
 ensureInitialized()
 
-export async function GET(request: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+export const GET = withRouteContext(
+  'salary_run.list',
+  async (request, ctx) => {
+    const { supabase, companyId, log, requestId } = ctx
 
-  const companyId = await requireCompanyId(supabase, user.id)
+    const { searchParams } = new URL(request.url)
+    const year = searchParams.get('year')
 
-  const { searchParams } = new URL(request.url)
-  const year = searchParams.get('year')
+    let query = supabase
+      .from('salary_runs')
+      .select('*')
+      .eq('company_id', companyId)
 
-  let query = supabase
-    .from('salary_runs')
-    .select('*')
-    .eq('company_id', companyId)
+    if (year) {
+      query = query.eq('period_year', parseInt(year))
+    }
 
-  if (year) {
-    query = query.eq('period_year', parseInt(year))
-  }
+    const { data, error } = await query
+      .order('period_year', { ascending: false })
+      .order('period_month', { ascending: false })
 
-  const { data, error } = await query.order('period_year', { ascending: false }).order('period_month', { ascending: false })
+    if (error) {
+      log.error('salary run list failed', error)
+      return errorResponse(error, log, { requestId })
+    }
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+    return NextResponse.json({ data })
+  },
+)
 
-  return NextResponse.json({ data })
-}
+export const POST = withRouteContext(
+  'salary_run.create',
+  async (request, ctx) => {
+    const { user, supabase, companyId, log, requestId } = ctx
 
-export async function POST(request: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  const validation = await validateBody(request, CreateSalaryRunSchema)
-  if (!validation.success) return validation.response
-  const body = validation.data
-
-  // Check for existing run
-  const { data: existing } = await supabase
-    .from('salary_runs')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('period_year', body.period_year)
-    .eq('period_month', body.period_month)
-    .single()
-
-  if (existing) {
-    return NextResponse.json({ error: 'Det finns redan en lönekörning för denna period' }, { status: 409 })
-  }
-
-  const { data: run, error } = await supabase
-    .from('salary_runs')
-    .insert({
-      company_id: companyId,
-      user_id: user.id,
-      period_year: body.period_year,
-      period_month: body.period_month,
-      payment_date: body.payment_date,
-      voucher_series: body.voucher_series,
-      notes: body.notes || null,
+    const validation = await validateBody(request, CreateSalaryRunSchema, {
+      log,
+      operation: 'salary_run.create',
     })
-    .select()
-    .single()
+    if (!validation.success) return validation.response
+    const body = validation.data
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+    const { data: existing } = await supabase
+      .from('salary_runs')
+      .select('id')
+      .eq('company_id', companyId)
+      .eq('period_year', body.period_year)
+      .eq('period_month', body.period_month)
+      .single()
 
-  await eventBus.emit({
-    type: 'salary_run.created',
-    payload: {
-      salaryRunId: run.id,
-      periodYear: body.period_year,
-      periodMonth: body.period_month,
-      userId: user.id,
-      companyId,
-    },
-  })
+    if (existing) {
+      return errorResponseFromCode('CONFLICT', log, {
+        requestId,
+        details: {
+          reason: 'salary_run_exists_for_period',
+          existingId: existing.id,
+          periodYear: body.period_year,
+          periodMonth: body.period_month,
+        },
+      })
+    }
 
-  return NextResponse.json({ data: run }, { status: 201 })
-}
+    const { data: run, error } = await supabase
+      .from('salary_runs')
+      .insert({
+        company_id: companyId,
+        user_id: user.id,
+        period_year: body.period_year,
+        period_month: body.period_month,
+        payment_date: body.payment_date,
+        voucher_series: body.voucher_series,
+        notes: body.notes || null,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      log.error('salary run insert failed', error)
+      return errorResponseFromCode('SALARY_RUN_CREATE_FAILED', log, {
+        requestId,
+        details: { reason: error.message },
+      })
+    }
+
+    await eventBus.emit({
+      type: 'salary_run.created',
+      payload: {
+        salaryRunId: run.id,
+        periodYear: body.period_year,
+        periodMonth: body.period_month,
+        userId: user.id,
+        companyId: companyId!,
+      },
+    })
+
+    return NextResponse.json({ data: run }, { status: 201 })
+  },
+  { requireWrite: true },
+)

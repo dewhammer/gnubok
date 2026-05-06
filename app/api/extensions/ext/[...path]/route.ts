@@ -4,7 +4,63 @@ import { ensureInitialized } from '@/lib/init'
 import { extensionRegistry } from '@/lib/extensions/registry'
 import { createExtensionContext } from '@/lib/extensions/context-factory'
 import { requireCompanyId } from '@/lib/company/context'
+import { createLogger } from '@/lib/logger'
 import type { ApiRouteDefinition } from '@/lib/extensions/types'
+
+const dispatcherLog = createLogger('extension-dispatcher')
+
+function generateRequestId(): string {
+  return `req_${crypto.randomUUID()}`
+}
+
+/**
+ * Wrap a Response so support staff can find the inbound request in stdout
+ * logs by id:
+ *
+ *   1. set the `X-Request-Id` header if missing
+ *   2. for JSON error envelopes (`{ error: { code, ... } }`) that came back
+ *      without a requestId, inject one into the body so the toast can show
+ *      `Felreferens: req_…`
+ *
+ * Non-JSON responses (HTML for OAuth callbacks, file downloads) only get the
+ * header — body rewriting is reserved for the canonical envelope shape.
+ */
+async function decorateResponse(response: Response, requestId: string): Promise<Response> {
+  if (!response.headers.get('X-Request-Id')) {
+    response.headers.set('X-Request-Id', requestId)
+  }
+
+  if (!response.ok) {
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      try {
+        const cloned = response.clone()
+        const body = await cloned.json()
+        if (
+          body &&
+          typeof body === 'object' &&
+          body.error &&
+          typeof body.error === 'object' &&
+          typeof body.error.code === 'string' &&
+          !body.error.requestId
+        ) {
+          const augmented = {
+            ...body,
+            error: { ...body.error, requestId },
+          }
+          return new NextResponse(JSON.stringify(augmented), {
+            status: response.status,
+            headers: response.headers,
+          })
+        }
+      } catch {
+        // Body wasn't valid JSON — leave it alone.
+      }
+    }
+  }
+
+  return response
+}
 
 ensureInitialized()
 
@@ -75,20 +131,31 @@ async function handleRequest(
   request: Request,
   { params }: { params: Promise<{ path: string[] }> }
 ): Promise<Response> {
+  const requestId = generateRequestId()
+  const start = Date.now()
   const segments = await params
 
   if (!segments.path || segments.path.length < 1) {
-    return NextResponse.json({ error: 'Invalid extension route' }, { status: 400 })
+    return decorateResponse(
+      NextResponse.json({ error: 'Invalid extension route' }, { status: 400 }),
+      requestId,
+    )
   }
 
   const [extensionId, ...rest] = segments.path
   const routePath = '/' + rest.join('/')
   const method = request.method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
 
+  const log = dispatcherLog.child({ requestId, extensionId, routePath, method })
+
   // Look up extension
   const extension = extensionRegistry.get(extensionId)
   if (!extension || !extension.apiRoutes || extension.apiRoutes.length === 0) {
-    return NextResponse.json({ error: 'Extension not found' }, { status: 404 })
+    log.warn('extension not found')
+    return decorateResponse(
+      NextResponse.json({ error: 'Extension not found' }, { status: 404 }),
+      requestId,
+    )
   }
 
   // Per-extension feature flags. Lets us toggle a single integration off
@@ -97,9 +164,12 @@ async function handleRequest(
   // render an "extension disabled" empty state.
   const flag = EXTENSION_FEATURE_FLAGS[extensionId]
   if (flag && process.env[flag.envVar] !== 'true') {
-    return NextResponse.json(
-      { error: flag.disabledMessage, code: 'EXTENSION_DISABLED' },
-      { status: 503 },
+    return decorateResponse(
+      NextResponse.json(
+        { error: flag.disabledMessage, code: 'EXTENSION_DISABLED' },
+        { status: 503 },
+      ),
+      requestId,
     )
   }
 
@@ -119,7 +189,10 @@ async function handleRequest(
   }
 
   if (!matchedRoute) {
-    return NextResponse.json({ error: 'Route not found' }, { status: 404 })
+    return decorateResponse(
+      NextResponse.json({ error: 'Route not found' }, { status: 404 }),
+      requestId,
+    )
   }
 
   // Config sanity check: these flags are orthogonal and the combination is
@@ -129,12 +202,11 @@ async function handleRequest(
   // the auth requirement would be silently dropped (skipAuth fires first
   // below). Fail loudly instead of masking the mistake.
   if (matchedRoute.skipAuth && matchedRoute.skipCompanyContext) {
-    console.error('[extension-dispatcher] route misconfigured: skipAuth + skipCompanyContext are mutually exclusive', {
-      extensionId,
-      routePath,
-      method,
-    })
-    return NextResponse.json({ error: 'Route misconfigured' }, { status: 500 })
+    log.error('route misconfigured: skipAuth + skipCompanyContext are mutually exclusive', undefined)
+    return decorateResponse(
+      NextResponse.json({ error: 'Route misconfigured' }, { status: 500 }),
+      requestId,
+    )
   }
 
   // For skipAuth routes (e.g. OAuth callbacks from external providers),
@@ -155,7 +227,9 @@ async function handleRequest(
         duplex: 'half',
       })
     }
-    return matchedRoute.handler(handlerRequest)
+    const response = await matchedRoute.handler(handlerRequest)
+    log.info('extension call completed', { durationMs: Date.now() - start, status: response.status })
+    return decorateResponse(response, requestId)
   }
 
   // Auth check
@@ -163,7 +237,10 @@ async function handleRequest(
   const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return decorateResponse(
+      NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+      requestId,
+    )
   }
 
   // If path params were extracted, create a new Request with them as search params
@@ -188,14 +265,27 @@ async function handleRequest(
   // /lookup during onboarding, for example) opt out of company resolution.
   // Dispatch without a context — handlers that opt in must not rely on ctx.
   if (matchedRoute.skipCompanyContext) {
-    return matchedRoute.handler(handlerRequest)
+    const response = await matchedRoute.handler(handlerRequest)
+    log.info('extension call completed', {
+      durationMs: Date.now() - start,
+      status: response.status,
+      userId: user.id,
+    })
+    return decorateResponse(response, requestId)
   }
 
   const companyId = await requireCompanyId(supabase, user.id)
 
   // Build context and dispatch
-  const ctx = createExtensionContext(supabase, user.id, companyId, extensionId)
-  return matchedRoute.handler(handlerRequest, ctx)
+  const ctx = createExtensionContext(supabase, user.id, companyId, extensionId, requestId)
+  const response = await matchedRoute.handler(handlerRequest, ctx)
+  log.info('extension call completed', {
+    durationMs: Date.now() - start,
+    status: response.status,
+    userId: user.id,
+    companyId,
+  })
+  return decorateResponse(response, requestId)
 }
 
 export const GET = handleRequest

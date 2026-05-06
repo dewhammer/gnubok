@@ -306,6 +306,52 @@ async function commitCreateCustomer(
   return { data: { customer_id: data.id } }
 }
 
+async function commitCreateTransaction(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  const date = params.date as string
+  const amount = Number(params.amount)
+  const description = (params.description as string) ?? ''
+  const currency = ((params.currency as string) || 'SEK') as Currency
+  const bankConnectionId = (params.bank_connection_id as string) || null
+  const externalId = (params.external_id as string) || null
+
+  if (!date || !description.trim() || !Number.isFinite(amount)) {
+    return { error: 'date, description, and amount are required', status: 400 }
+  }
+
+  const { data, error } = await supabase
+    .from('transactions')
+    .insert({
+      user_id: userId,
+      company_id: companyId,
+      bank_connection_id: bankConnectionId,
+      external_id: externalId,
+      date,
+      description: description.trim(),
+      amount,
+      currency,
+      import_source: 'mcp',
+    })
+    .select('id')
+    .single()
+
+  if (error) {
+    const isDuplicate = error.code === '23505'
+    return {
+      error: isDuplicate
+        ? `A transaction with external_id "${externalId}" already exists.`
+        : error.message,
+      status: isDuplicate ? 409 : 500,
+    }
+  }
+
+  return { data: { transaction_id: data.id } }
+}
+
 async function commitCreateInvoice(
   supabase: SupabaseClient,
   userId: string,
@@ -1599,6 +1645,9 @@ export async function commitPendingOperation(
         break
       case 'create_invoice':
         result = await commitCreateInvoice(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'create_transaction':
+        result = await commitCreateTransaction(supabase, userId, companyId, pendingOp.params)
         break
       case 'mark_invoice_paid':
         result = await commitMarkInvoicePaid(supabase, userId, companyId, pendingOp.params)

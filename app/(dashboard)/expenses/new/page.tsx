@@ -227,7 +227,7 @@ export default function NewExpensePage() {
     const result = await res.json()
 
     if (!res.ok) {
-      toast({ title: 'Kunde inte skapa leverantör', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kunde inte skapa leverantör', description: getErrorMessage(result, { context: 'supplier' }), variant: 'destructive' })
     } else {
       const created = result.data as Supplier
       setSuppliers((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))

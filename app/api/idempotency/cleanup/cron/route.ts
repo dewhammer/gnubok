@@ -1,31 +1,21 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { cleanupExpiredIdempotencyKeys } from '@/lib/api/idempotency'
+import { withCronContext } from '@/lib/api/with-cron-context'
+import { errorResponse } from '@/lib/errors/get-structured-error'
 
 /**
- * GET /api/idempotency/cleanup/cron
- *
- * Sweeps idempotency_keys rows past their 24h TTL. Cron runs hourly so the
- * working set stays small even under heavy agent retry traffic.
+ * GET /api/idempotency/cleanup/cron — hourly.
+ * Sweeps idempotency_keys past their 24h TTL.
  */
-export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
+export const GET = withCronContext('cron.idempotency_cleanup', async (_request, ctx) => {
   try {
     const supabase = await createServiceClient()
     const deleted = await cleanupExpiredIdempotencyKeys(supabase)
-    console.log(`Idempotency keys cleanup completed: ${deleted} rows removed`)
+    ctx.log.info('idempotency cleanup summary', { deleted })
     return NextResponse.json({ success: true, deleted })
-  } catch (error) {
-    console.error('Error in idempotency cleanup cron:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to clean up idempotency keys' },
-      { status: 500 }
-    )
+  } catch (err) {
+    ctx.log.error('idempotency cleanup failed', err as Error)
+    return errorResponse(err, ctx.log, { requestId: ctx.requestId })
   }
-}
+})

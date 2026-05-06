@@ -116,7 +116,8 @@ describe('GET /api/invoices', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('DB error')
+    // GET passes through errorResponse which maps unknown DB errors to INTERNAL_ERROR
+    expect((body.error as unknown as { code: string }).code).toBe('INTERNAL_ERROR')
   })
 })
 
@@ -164,7 +165,7 @@ describe('POST /api/invoices (create invoice)', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Customer not found')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CUSTOMER_NOT_FOUND')
   })
 
   it('creates invoice with items and emits event', async () => {
@@ -255,7 +256,7 @@ describe('POST /api/invoices (create invoice)', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('Items insert failed')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREATE_ITEMS_FAILED')
   })
 })
 
@@ -280,7 +281,7 @@ describe('POST /api/invoices (create credit note)', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Original invoice not found')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREDIT_ORIGINAL_NOT_FOUND')
   })
 
   it('returns 400 when invoice is already credited', async () => {
@@ -295,7 +296,7 @@ describe('POST /api/invoices (create credit note)', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Invoice has already been credited')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREDIT_ALREADY_CREDITED')
   })
 
   it('returns 400 when invoice is in draft status', async () => {
@@ -310,7 +311,7 @@ describe('POST /api/invoices (create credit note)', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Only sent, paid, or overdue invoices can be credited')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREDIT_NOT_SENT')
   })
 
   it('creates credit note with negated amounts and emits event', async () => {
@@ -416,6 +417,6 @@ describe('POST /api/invoices (create credit note)', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('Items insert failed')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREATE_ITEMS_FAILED')
   })
 })

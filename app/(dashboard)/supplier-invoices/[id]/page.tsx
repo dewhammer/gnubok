@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { ArrowLeft, CheckCircle, CreditCard, FileText, Trash2, Lock, Undo2, Info } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import Link from 'next/link'
@@ -78,7 +79,7 @@ export default function SupplierInvoiceDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}/approve`, { method: 'POST' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Godkännande misslyckades', description: result.error, variant: 'destructive' })
+      toast({ title: 'Godkännande misslyckades', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({ title: 'Godkänd', description: 'Fakturan har godkänts' })
       fetchInvoice()
@@ -95,7 +96,7 @@ export default function SupplierInvoiceDetailPage() {
     })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Betalning misslyckades', description: result.error, variant: 'destructive' })
+      toast({ title: 'Betalning misslyckades', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({
         title: result.status === 'paid' ? 'Betald' : 'Delbetalning registrerad',
@@ -119,7 +120,7 @@ export default function SupplierInvoiceDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}/credit`, { method: 'POST' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Kreditering misslyckades', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kreditering misslyckades', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({ title: 'Kreditfaktura registrerad' })
       fetchInvoice()
@@ -138,7 +139,7 @@ export default function SupplierInvoiceDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}`, { method: 'DELETE' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Kunde inte ta bort faktura', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kunde inte ta bort faktura', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({ title: 'Borttagen' })
       router.push('/supplier-invoices')
@@ -160,7 +161,7 @@ export default function SupplierInvoiceDetailPage() {
     if (!res.ok) {
       toast({
         title: 'Kunde inte ångra kreditering',
-        description: result.error || 'Försök igen',
+        description: getErrorMessage(result, { context: 'supplier_invoice' }),
         variant: 'destructive',
       })
     } else {

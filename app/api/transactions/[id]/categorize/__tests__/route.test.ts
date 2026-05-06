@@ -96,7 +96,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Transaction not found')
+    expect((body.error as unknown as { code: string }).code).toBe('TX_CATEGORIZE_TX_NOT_FOUND')
   })
 
   it('updates category only when transaction already has journal entry', async () => {
@@ -241,7 +241,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('Failed to update transaction')
+    expect((body.error as unknown as { code: string }).code).toBe('INTERNAL_ERROR')
   })
 
   it('returns 400 when mapping result has empty debit_account', async () => {
@@ -267,7 +267,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Invalid account mapping: debit and credit accounts are required')
+    expect((body.error as unknown as { code: string }).code).toBe('TX_CATEGORIZE_INVALID_MAPPING')
     expect(mockCreateTransactionJournalEntry).not.toHaveBeenCalled()
   })
 

@@ -1323,6 +1323,8 @@ export type PendingOperationType =
   | 'uncategorize_transaction'
   // Document inbox: pin doc to bank transaction
   | 'attach_document_to_transaction'
+  // Manual transaction ingestion (uncategorized row, reversible by delete)
+  | 'create_transaction'
   // Stream 1 Phase 1: supplier invoice lifecycle
   | 'approve_supplier_invoice'
   | 'credit_supplier_invoice'

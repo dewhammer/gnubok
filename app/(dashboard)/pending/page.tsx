@@ -26,6 +26,7 @@ const operationLabels: Record<string, { label: string; icon: typeof ArrowLeftRig
   categorize_transaction: { label: 'Kategorisering', icon: ArrowLeftRight, variant: 'default' },
   create_customer: { label: 'Ny kund', icon: Users, variant: 'secondary' },
   create_invoice: { label: 'Ny faktura', icon: Receipt, variant: 'outline' },
+  create_transaction: { label: 'Ny transaktion', icon: ArrowLeftRight, variant: 'secondary' },
   mark_invoice_paid: { label: 'Betald faktura', icon: Receipt, variant: 'default' },
   send_invoice: { label: 'Skicka faktura', icon: Receipt, variant: 'outline' },
   mark_invoice_sent: { label: 'Markera skickad', icon: Receipt, variant: 'outline' },
@@ -138,6 +139,30 @@ function InvoicePreview({ data }: { data: Record<string, unknown> }) {
   )
 }
 
+function CreateTransactionPreview({ data }: { data: Record<string, unknown> }) {
+  const amount = data.amount as number
+  const currency = (data.currency as string) || 'SEK'
+
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+      <span className="text-muted-foreground">Datum</span>
+      <span className="font-mono">{String(data.date ?? '')}</span>
+      <span className="text-muted-foreground">Beskrivning</span>
+      <span className="truncate">{String(data.description ?? '')}</span>
+      <span className="text-muted-foreground">Belopp</span>
+      <span className="font-mono tabular-nums">
+        {formatCurrency(amount, currency)}
+      </span>
+      {data.external_id ? (
+        <>
+          <span className="text-muted-foreground">Extern referens</span>
+          <span className="font-mono text-xs truncate">{String(data.external_id)}</span>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 function GenericPreview({ data }: { data: Record<string, unknown> }) {
   const entries = Object.entries(data).filter(([, v]) => v != null && v !== '')
   return (
@@ -162,6 +187,8 @@ function OperationPreview({ op }: { op: PendingOperation }) {
       return <CustomerPreview data={op.preview_data} />
     case 'create_invoice':
       return <InvoicePreview data={op.preview_data} />
+    case 'create_transaction':
+      return <CreateTransactionPreview data={op.preview_data} />
     default:
       return <GenericPreview data={op.preview_data} />
   }

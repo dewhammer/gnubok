@@ -58,7 +58,7 @@ describe('POST /api/supplier-invoices/[id]/approve', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Not found')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_NOT_FOUND')
   })
 
   it('returns 400 when invoice is not in registered status', async () => {
@@ -69,7 +69,7 @@ describe('POST /api/supplier-invoices/[id]/approve', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Kan bara godkänna registrerade fakturor')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_APPROVE_NOT_REGISTERED')
   })
 
   it('approves registered invoice', async () => {

@@ -1,51 +1,38 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { updateDeadlineStatuses } from '@/lib/deadlines/status-engine'
-import { verifyCronSecret } from '@/lib/auth/cron'
+import { withCronContext } from '@/lib/api/with-cron-context'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
 /**
- * GET /api/deadlines/status/cron
- * Daily cron job to update deadline statuses
- * Runs at 06:00 every day
- *
- * Vercel Cron: "0 6 * * *"
+ * GET /api/deadlines/status/cron — daily 06:00 UTC.
+ * Updates deadline statuses across all companies.
  */
-export async function GET(request: Request) {
-  const authError = verifyCronSecret(request)
-  if (authError) return authError
-
-  // Create a service role client for accessing all user data
+export const GET = withCronContext('cron.deadlines_status', async (_request, ctx) => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    return NextResponse.json(
-      { error: 'Missing Supabase configuration' },
-      { status: 500 }
-    )
+    return errorResponseFromCode('INTERNAL_ERROR', ctx.log, {
+      requestId: ctx.requestId,
+      details: { reason: 'Missing Supabase configuration' },
+    })
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-  try {
-    const result = await updateDeadlineStatuses(supabase)
+  const result = await updateDeadlineStatuses(supabase)
 
-    console.log(
-      `Deadline status cron completed: ${result.updated} updated, ` +
-        `${result.newlyOverdue} newly overdue, ${result.newlyActionNeeded} newly action_needed`
-    )
+  ctx.log.info('deadline status cron summary', {
+    updated: result.updated,
+    newlyOverdue: result.newlyOverdue,
+    newlyActionNeeded: result.newlyActionNeeded,
+  })
 
-    return NextResponse.json({
-      success: true,
-      updated: result.updated,
-      newlyOverdue: result.newlyOverdue,
-      newlyActionNeeded: result.newlyActionNeeded,
-    })
-  } catch (error) {
-    console.error('Error in deadline status cron:', error)
-    return NextResponse.json(
-      { error: 'Failed to update deadline statuses' },
-      { status: 500 }
-    )
-  }
-}
+  return NextResponse.json({
+    success: true,
+    updated: result.updated,
+    newlyOverdue: result.newlyOverdue,
+    newlyActionNeeded: result.newlyActionNeeded,
+  })
+})

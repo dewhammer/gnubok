@@ -1,84 +1,85 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { validateBody } from '@/lib/api/validate'
 import { CreateSupplierSchema } from '@/lib/api/schemas'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
-export async function GET() {
-  const supabase = await createClient()
+export const GET = withRouteContext(
+  'supplier.list',
+  async (_request, ctx) => {
+    const { supabase, companyId, log, requestId } = ctx
 
-  const { data: { user } } = await supabase.auth.getUser()
+    const { data, error } = await supabase
+      .from('suppliers')
+      .select('*')
+      .eq('company_id', companyId)
+      .order('name', { ascending: true })
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+    if (error) {
+      log.error('supplier list failed', error)
+      return errorResponse(error, log, { requestId })
+    }
 
-  const companyId = await requireCompanyId(supabase, user.id)
+    return NextResponse.json({ data })
+  },
+)
 
-  const { data, error } = await supabase
-    .from('suppliers')
-    .select('*')
-    .eq('company_id', companyId)
-    .order('name', { ascending: true })
+export const POST = withRouteContext(
+  'supplier.create',
+  async (request, ctx) => {
+    const { user, supabase, companyId, log, requestId } = ctx
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  return NextResponse.json({ data })
-}
-
-export async function POST(request: Request) {
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  const result = await validateBody(request, CreateSupplierSchema)
-  if (!result.success) return result.response
-  const body = result.data
-
-  const { data, error } = await supabase
-    .from('suppliers')
-    .insert({
-      user_id: user.id,
-      company_id: companyId,
-      name: body.name,
-      supplier_type: body.supplier_type,
-      email: body.email,
-      phone: body.phone,
-      address_line1: body.address_line1,
-      address_line2: body.address_line2,
-      postal_code: body.postal_code,
-      city: body.city,
-      country: body.country || 'SE',
-      org_number: body.org_number,
-      vat_number: body.vat_number,
-      bankgiro: body.bankgiro,
-      plusgiro: body.plusgiro,
-      bank_account: body.bank_account,
-      iban: body.iban,
-      bic: body.bic,
-      default_expense_account: body.default_expense_account,
-      default_payment_terms: body.default_payment_terms || 30,
-      default_currency: body.default_currency || 'SEK',
-      notes: body.notes,
+    const result = await validateBody(request, CreateSupplierSchema, {
+      log,
+      operation: 'supplier.create',
     })
-    .select()
-    .single()
+    if (!result.success) return result.response
+    const body = result.data
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+    const { data, error } = await supabase
+      .from('suppliers')
+      .insert({
+        user_id: user.id,
+        company_id: companyId,
+        name: body.name,
+        supplier_type: body.supplier_type,
+        email: body.email,
+        phone: body.phone,
+        address_line1: body.address_line1,
+        address_line2: body.address_line2,
+        postal_code: body.postal_code,
+        city: body.city,
+        country: body.country || 'SE',
+        org_number: body.org_number,
+        vat_number: body.vat_number,
+        bankgiro: body.bankgiro,
+        plusgiro: body.plusgiro,
+        bank_account: body.bank_account,
+        iban: body.iban,
+        bic: body.bic,
+        default_expense_account: body.default_expense_account,
+        default_payment_terms: body.default_payment_terms || 30,
+        default_currency: body.default_currency || 'SEK',
+        notes: body.notes,
+      })
+      .select()
+      .single()
 
-  return NextResponse.json({ data })
-}
+    if (error) {
+      if (error.code === '23505') {
+        return errorResponseFromCode('SUPPLIER_DUPLICATE_ORG_NUMBER', log, {
+          requestId,
+          details: { orgNumber: body.org_number },
+        })
+      }
+      log.error('supplier insert failed', error)
+      return errorResponseFromCode('SUPPLIER_CREATE_FAILED', log, {
+        requestId,
+        details: { reason: error.message },
+      })
+    }
+
+    return NextResponse.json({ data })
+  },
+  { requireWrite: true },
+)

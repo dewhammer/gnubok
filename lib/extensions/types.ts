@@ -168,6 +168,12 @@ export interface ExtensionContext {
   userId: string
   companyId: string
   extensionId: string
+  /**
+   * Stable id for the inbound HTTP request — `req_<uuid>`.
+   * Included in the response envelope and in the `X-Request-Id` header so
+   * support staff can grep stdout logs by it.
+   */
+  requestId?: string
   supabase: SupabaseClient
   emit(event: CoreEvent): Promise<void>
   settings: ExtensionSettings

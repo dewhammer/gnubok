@@ -123,11 +123,22 @@ describe('Supplier Invoice Core Handler', () => {
       },
     })
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      '[supplier-invoice-handler]',
-      'Failed to create registration journal entry:',
-      expect.any(Error)
-    )
+    // Logger emits a structured error line; assert the handler logged the
+    // failure with the right module prefix and an Error somewhere in the args.
+    const calls = consoleSpy.mock.calls
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.some((c) => String(c[0]).includes('[supplier-invoice-handler]'))).toBe(true)
+    expect(
+      calls.some((c) =>
+        c.some(
+          (arg) =>
+            arg instanceof Error ||
+            (typeof arg === 'object' &&
+              arg !== null &&
+              (arg as { message?: unknown }).message === 'No fiscal period'),
+        ),
+      ),
+    ).toBe(true)
 
     consoleSpy.mockRestore()
   })

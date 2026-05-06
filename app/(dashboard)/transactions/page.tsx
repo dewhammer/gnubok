@@ -374,7 +374,7 @@ export default function TransactionsPage() {
       })
       const result = await response.json()
       if (!response.ok) {
-        toast({ title: 'Fakturamatchning misslyckades', description: result.error || 'Försök igen.', variant: 'destructive' })
+        toast({ title: 'Fakturamatchning misslyckades', description: getErrorMessage(result, { context: 'transaction' }), variant: 'destructive' })
         setIsConfirmingMatch(false)
         return
       }
@@ -426,7 +426,7 @@ export default function TransactionsPage() {
       })
       const result = await response.json()
       if (!response.ok) {
-        toast({ title: 'Fakturamatchning misslyckades', description: result.error || 'Försök igen.', variant: 'destructive' })
+        toast({ title: 'Fakturamatchning misslyckades', description: getErrorMessage(result, { context: 'transaction' }), variant: 'destructive' })
         return false
       }
 
@@ -510,7 +510,7 @@ export default function TransactionsPage() {
         const result = await response.json()
         toast({
           title: 'Kunde inte ta bort',
-          description: result.error || 'Försök igen.',
+          description: getErrorMessage(result, { context: 'transaction' }),
           variant: 'destructive',
         })
         return
@@ -712,7 +712,7 @@ export default function TransactionsPage() {
       })
       const result = await response.json()
       if (!response.ok) {
-        toast({ title: 'Kategorisering misslyckades', description: result.error || 'Försök igen.', variant: 'destructive' })
+        toast({ title: 'Kategorisering misslyckades', description: getErrorMessage(result, { context: 'transaction' }), variant: 'destructive' })
         return null
       }
       setExitingIds((prev) => new Set(prev).add(id))

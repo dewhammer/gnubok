@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
-import { verifyCronSecret } from '@/lib/auth/cron'
+import { withCronContext } from '@/lib/api/with-cron-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import {
   performSync,
   SCHEDULE_KEY,
@@ -20,18 +21,15 @@ import type { GoogleDriveSchedule } from '@/extensions/general/cloud-backup/type
  * `extension_data` carries its own `user_id` (the user who configured the
  * schedule), which we use as the "actor" when writing back the sync result.
  */
-export async function GET(request: Request) {
-  const authError = verifyCronSecret(request)
-  if (authError) return authError
-
+export const GET = withCronContext('cron.cloud_backup_auto_sync', async (_request, ctx) => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    return NextResponse.json(
-      { error: 'Missing Supabase configuration' },
-      { status: 500 }
-    )
+    return errorResponseFromCode('INTERNAL_ERROR', ctx.log, {
+      requestId: ctx.requestId,
+      details: { reason: 'Missing Supabase configuration' },
+    })
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
@@ -45,11 +43,11 @@ export async function GET(request: Request) {
     .eq('key', SCHEDULE_KEY)
 
   if (error) {
-    console.error('[cloud-backup-cron] Failed to fetch schedules', {
+    ctx.log.error('failed to fetch schedules', error, {
       message: error.message,
       code: error.code,
     })
-    return NextResponse.json({ error: 'Failed to fetch schedules' }, { status: 500 })
+    return errorResponse(error, ctx.log, { requestId: ctx.requestId })
   }
 
   if (!rows || rows.length === 0) {
@@ -86,9 +84,10 @@ export async function GET(request: Request) {
 
   for (const row of candidates) {
     if (Date.now() - startTime > TIME_BUDGET_MS) {
-      console.log(
-        `[cloud-backup-cron] Time budget reached after ${results.length} companies; ${candidates.length - results.length} skipped until next run`
-      )
+      ctx.log.info('time budget reached', {
+        processedSoFar: results.length,
+        skipped: candidates.length - results.length,
+      })
       break
     }
 
@@ -120,9 +119,8 @@ export async function GET(request: Request) {
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
-      console.error('[cloud-backup-cron] Sync failed for company', {
+      ctx.log.error('cloud backup sync failed for company', err as Error, {
         companyId,
-        message,
       })
 
       const updated: GoogleDriveSchedule = {
@@ -133,8 +131,8 @@ export async function GET(request: Request) {
       }
       await saveExtensionData(supabase, companyId, userId, SCHEDULE_KEY, updated).catch(
         (persistErr) => {
-          console.error('[cloud-backup-cron] Failed to persist failure state', persistErr)
-        }
+          ctx.log.error('failed to persist failure state', persistErr as Error, { companyId })
+        },
       )
 
       results.push({ companyId, status: 'error', error: message })
@@ -144,9 +142,11 @@ export async function GET(request: Request) {
   const successCount = results.filter((r) => r.status === 'success').length
   const errorCount = results.filter((r) => r.status === 'error').length
 
-  console.log(
-    `[cloud-backup-cron] Processed ${results.length} companies: ${successCount} succeeded, ${errorCount} failed`
-  )
+  ctx.log.info('cloud backup cron summary', {
+    processed: results.length,
+    succeeded: successCount,
+    failed: errorCount,
+  })
 
   return NextResponse.json({
     checked: rows.length,
@@ -156,4 +156,4 @@ export async function GET(request: Request) {
     errors: errorCount,
     results,
   })
-}
+})

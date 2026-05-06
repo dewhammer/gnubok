@@ -105,7 +105,7 @@ describe('GET /api/supplier-invoices', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('DB error')
+    expect((body.error as unknown as { code: string }).code).toBe('INTERNAL_ERROR')
   })
 })
 
@@ -153,7 +153,7 @@ describe('POST /api/supplier-invoices', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Supplier not found')
+    expect((body.error as unknown as { code: string }).code).toBe('SUPPLIER_NOT_FOUND')
   })
 
   it('creates supplier invoice with items and arrival number', async () => {
@@ -299,7 +299,7 @@ describe('POST /api/supplier-invoices', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('Items insert failed')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_CREATE_FAILED')
   })
 
   it('returns 409 with credit chain on duplicate supplier_invoice_number for credited original', async () => {
@@ -342,15 +342,12 @@ describe('POST /api/supplier-invoices', () => {
     })
     const response = await POST(request)
     const { status, body } = await parseJsonResponse<{
-      error: string
-      message: string
-      existing: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string }
+      error: { code: string; details: { existing: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string } } }
     }>(response)
 
     expect(status).toBe(409)
-    expect(body.error).toBe('duplicate_supplier_invoice_number')
-    expect(body.message).toMatch(/krediterad/i)
-    expect(body.existing).toEqual({
+    expect(body.error.code).toBe('SI_CREATE_DUPLICATE_INVOICE_NUMBER')
+    expect(body.error.details.existing).toEqual({
       id: 'existing-1',
       supplier_invoice_number: 'LF-DUP',
       status: 'credited',
@@ -392,15 +389,13 @@ describe('POST /api/supplier-invoices', () => {
     })
     const response = await POST(request)
     const { status, body } = await parseJsonResponse<{
-      error: string
-      message: string
-      existing: { id: string; status: string; credit_note_id: string | null }
+      error: { code: string; details: { existing: { id: string; status: string; credit_note_id: string | null } } }
     }>(response)
 
     expect(status).toBe(409)
-    expect(body.error).toBe('duplicate_supplier_invoice_number')
-    expect(body.existing.status).toBe('approved')
-    expect(body.existing.credit_note_id).toBeNull()
+    expect(body.error.code).toBe('SI_CREATE_DUPLICATE_INVOICE_NUMBER')
+    expect(body.error.details.existing.status).toBe('approved')
+    expect(body.error.details.existing.credit_note_id).toBeNull()
   })
 
   it('returns generic 409 when existing row lookup races to nothing', async () => {
@@ -430,11 +425,13 @@ describe('POST /api/supplier-invoices', () => {
       },
     })
     const response = await POST(request)
-    const { status, body } = await parseJsonResponse<{ error: string; message: string; existing?: unknown }>(response)
+    const { status, body } = await parseJsonResponse<{
+      error: { code: string; details?: { existing?: unknown } }
+    }>(response)
 
     expect(status).toBe(409)
-    expect(body.error).toBe('duplicate_supplier_invoice_number')
-    expect(body.existing).toBeUndefined()
+    expect(body.error.code).toBe('SI_CREATE_DUPLICATE_INVOICE_NUMBER')
+    expect(body.error.details?.existing).toBeNull()
   })
 
   it('falls through to 500 for non-23505 insert errors', async () => {
@@ -458,6 +455,6 @@ describe('POST /api/supplier-invoices', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('NOT NULL violation')
+    expect((body.error as unknown as { code: string }).code).toBe('SI_CREATE_FAILED')
   })
 })

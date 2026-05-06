@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, Scale } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -362,24 +363,39 @@ function SIEImportWizard() {
       const data = await res.json()
 
       if (!res.ok) {
-        const type = data.error as typeof errorType
-        if (type === 'duplicate' || type === 'duplicate_period') {
-          setErrorType(type)
-          setError(data.message)
-          if (data.importId) {
-            setDuplicateImportId(data.importId)
+        const code = data?.error?.code as string | undefined
+        const message = getErrorMessage(data)
+        const details = (data?.error?.details ?? {}) as {
+          importId?: string
+          errors?: string[]
+          warnings?: string[]
+        }
+        if (code === 'SIE_DUPLICATE_FILE' || code === 'SIE_DUPLICATE_PERIOD') {
+          const isPeriod = code === 'SIE_DUPLICATE_PERIOD'
+          setErrorType(isPeriod ? 'duplicate_period' : 'duplicate')
+          setError(message)
+          if (details.importId) {
+            setDuplicateImportId(details.importId)
           }
-          toast({ title: type === 'duplicate' ? 'Filen har redan importerats' : 'Överlappande räkenskapsår', description: data.message, variant: 'destructive' })
-        } else if (type === 'validation') {
+          toast({
+            title: isPeriod ? 'Överlappande räkenskapsår' : 'Filen har redan importerats',
+            description: message,
+            variant: 'destructive',
+          })
+        } else if (code === 'SIE_PARSE_VALIDATION_FAILED') {
           setErrorType('validation')
-          setError(data.message || 'SIE-filen innehåller valideringsfel.')
-          setValidationErrors(data.errors || [])
-          setValidationWarnings(data.warnings || [])
-          toast({ title: 'Valideringsfel i SIE-filen', description: `${(data.errors || []).length} fel hittades som måste åtgärdas.`, variant: 'destructive' })
+          setError(message)
+          setValidationErrors(details.errors || [])
+          setValidationWarnings(details.warnings || [])
+          toast({
+            title: 'Valideringsfel i SIE-filen',
+            description: `${(details.errors || []).length} fel hittades som måste åtgärdas.`,
+            variant: 'destructive',
+          })
         } else {
           setErrorType('parse')
-          setError(data.message || data.error || 'Kunde inte tolka filen.')
-          toast({ title: 'Kunde inte läsa filen', description: data.message || data.error || 'Kontrollera att filen är en giltig SIE-fil.', variant: 'destructive' })
+          setError(message)
+          toast({ title: 'Kunde inte läsa filen', description: message, variant: 'destructive' })
         }
         return
       }
@@ -433,7 +449,7 @@ function SIEImportWizard() {
       const data = await res.json()
 
       if (!res.ok) {
-        toast({ title: 'Kunde inte ersätta import', description: data.error || 'Ett fel uppstod', variant: 'destructive' })
+        toast({ title: 'Kunde inte ersätta import', description: getErrorMessage(data), variant: 'destructive' })
         return
       }
 
@@ -498,7 +514,7 @@ function SIEImportWizard() {
       const data = await res.json()
 
       if (!res.ok) {
-        toast({ title: 'Kunde inte skapa konton', description: data.error || 'Försök igen.', variant: 'destructive' })
+        toast({ title: 'Kunde inte skapa konton', description: getErrorMessage(data), variant: 'destructive' })
         return
       }
 

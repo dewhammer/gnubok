@@ -6,41 +6,30 @@ import {
   sendInvoiceNotifications,
   sendMissingUnderlagNotifications,
 } from '@/extensions/general/push-notifications/notification-scheduler'
+import { withCronContext } from '@/lib/api/with-cron-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
 /**
- * GET /api/extensions/push-notifications/cron
- * Daily cron job to send push notifications
- * Runs at 09:00 every day
- *
- * Vercel Cron: "0 9 * * *"
+ * GET /api/extensions/push-notifications/cron — daily 09:00 UTC.
+ * Sends due tax, invoice and missing-underlag push notifications.
  */
-export async function GET(request: Request) {
-  // Ensure extensions are loaded so event handlers are registered
+export const GET = withCronContext('cron.push_notifications', async (_request, ctx) => {
+  // Ensure extensions are loaded so event handlers are registered.
   loadExtensions()
 
-  // Verify cron secret for security
-  const authHeader = request.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  // Create a service role client for accessing all user data
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    return NextResponse.json(
-      { error: 'Missing Supabase configuration' },
-      { status: 500 }
-    )
+    return errorResponseFromCode('INTERNAL_ERROR', ctx.log, {
+      requestId: ctx.requestId,
+      details: { reason: 'Missing Supabase configuration' },
+    })
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
   try {
-    // Send all notification types in parallel
     const [taxResult, invoiceResult, underlagResult] = await Promise.all([
       sendTaxDeadlineNotifications(supabase),
       sendInvoiceNotifications(supabase),
@@ -50,18 +39,13 @@ export async function GET(request: Request) {
     const totalSent = taxResult.sent + invoiceResult.sent + underlagResult.sent
     const totalSkipped = taxResult.skipped + invoiceResult.skipped + underlagResult.skipped
 
-    console.log(
-      `Push notification cron completed: ${totalSent} sent, ${totalSkipped} skipped`
-    )
-    console.log(
-      `  Tax: ${taxResult.sent} sent, ${taxResult.skipped} skipped`
-    )
-    console.log(
-      `  Invoice: ${invoiceResult.sent} sent, ${invoiceResult.skipped} skipped`
-    )
-    console.log(
-      `  Missing underlag: ${underlagResult.sent} sent, ${underlagResult.skipped} skipped`
-    )
+    ctx.log.info('push notification cron summary', {
+      totalSent,
+      totalSkipped,
+      taxSent: taxResult.sent,
+      invoiceSent: invoiceResult.sent,
+      underlagSent: underlagResult.sent,
+    })
 
     return NextResponse.json({
       success: true,
@@ -73,11 +57,8 @@ export async function GET(request: Request) {
         missingUnderlag: underlagResult,
       },
     })
-  } catch (error) {
-    console.error('Error in push notification cron:', error)
-    return NextResponse.json(
-      { error: 'Failed to send push notifications' },
-      { status: 500 }
-    )
+  } catch (err) {
+    ctx.log.error('push notification cron failed', err as Error)
+    return errorResponse(err, ctx.log, { requestId: ctx.requestId })
   }
-}
+})

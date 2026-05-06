@@ -231,6 +231,14 @@ export function getErrorMessage(
   if (typeof error === 'object' && error !== null) {
     const obj = error as Record<string, unknown>
 
+    // Bare envelope inner-error shape: { code, message, ... }. Happens when a
+    // caller forwards `result.error` (the inner object) instead of the whole
+    // `result`. Treat it the same as the wrapped form so we always end up with
+    // the registry's Swedish message in the toast — never `[object Object]`.
+    if (typeof obj.code === 'string' && typeof obj.message === 'string' && obj.message.trim()) {
+      return obj.message
+    }
+
     // Structured application error: { error: { code, message, ... } }
     if (typeof obj.error === 'object' && obj.error !== null) {
       const structured = obj.error as {

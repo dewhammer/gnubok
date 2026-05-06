@@ -209,7 +209,7 @@ export default function NewInvoicePage() {
     if (!response.ok) {
       toast({
         title: 'Kunde inte skapa kund',
-        description: result.error || 'Försök igen.',
+        description: getErrorMessage(result, { context: 'customer' }),
         variant: 'destructive',
       })
     } else {

@@ -1,63 +1,57 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
 ensureInitialized()
 
 /**
- * POST /api/documents/:id/link
- * Link a document to a journal entry (verifikation)
+ * POST /api/documents/[id]/link — link a document to a journal entry.
  *
- * Request body:
- * - journal_entry_id: string (required)
- * - journal_entry_line_id: string (optional)
+ * Body: { journal_entry_id: string, journal_entry_line_id?: string }
  */
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
+export const POST = withRouteContext(
+  'document.link',
+  async (request, ctx, { params }: { params: Promise<{ id: string }> }) => {
+    const { id } = await params
+    const { supabase, companyId, log, requestId } = ctx
+    const opLog = log.child({ documentId: id })
 
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  const { id } = await params
-
-  try {
-    const body = await request.json()
+    const body = await request.json().catch(() => ({}))
 
     if (!body.journal_entry_id) {
-      return NextResponse.json(
-        { error: 'journal_entry_id is required' },
-        { status: 400 }
-      )
+      return errorResponseFromCode('VALIDATION_ERROR', opLog, {
+        requestId,
+        details: { field: 'journal_entry_id', reason: 'required' },
+      })
     }
 
-    const document = await linkToJournalEntry(
-      supabase,
-      companyId,
-      id,
-      body.journal_entry_id,
-      body.journal_entry_line_id
-    )
-
-    return NextResponse.json({ data: document })
-  } catch (error) {
-    console.error('[documents/link/POST] Link failed:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Link failed' },
-      { status: 500 }
-    )
-  }
-}
+    try {
+      const document = await linkToJournalEntry(
+        supabase,
+        companyId!,
+        id,
+        body.journal_entry_id,
+        body.journal_entry_line_id,
+      )
+      return NextResponse.json({ data: document })
+    } catch (err) {
+      opLog.error('document link failed', err as Error, {
+        journalEntryId: body.journal_entry_id,
+      })
+      const message = err instanceof Error ? err.message : ''
+      if (/journal entry not found/i.test(message)) {
+        return errorResponseFromCode('DOC_LINK_ENTRY_NOT_FOUND', opLog, { requestId })
+      }
+      if (/already linked/i.test(message)) {
+        return errorResponseFromCode('DOC_LINK_ALREADY_LINKED', opLog, { requestId })
+      }
+      return errorResponseFromCode('DOC_LINK_FAILED', opLog, {
+        requestId,
+        details: { reason: message || 'unknown' },
+      })
+    }
+  },
+  { requireWrite: true },
+)

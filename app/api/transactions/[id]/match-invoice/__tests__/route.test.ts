@@ -100,7 +100,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Transaction not found')
+    expect((body.error as unknown as { code: string }).code).toBe('TX_CATEGORIZE_TX_NOT_FOUND')
   })
 
   it('returns 400 when transaction is an expense (amount <= 0)', async () => {
@@ -115,7 +115,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Only income transactions can be matched to invoices')
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_NOT_INCOME')
   })
 
   it('returns 400 when transaction is already linked to an invoice', async () => {
@@ -130,7 +130,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Transaction is already linked to an invoice')
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_TX_ALREADY_LINKED')
   })
 
   it('returns 404 when invoice not found', async () => {
@@ -146,7 +146,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Invoice not found')
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_NOT_FOUND')
   })
 
   it('returns 400 when invoice is not in unpaid state', async () => {
@@ -163,7 +163,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Invoice is not in an unpaid state')
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_NOT_OPEN')
   })
 
   it('matches transaction to invoice with accrual method (full payment)', async () => {
@@ -305,7 +305,9 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(500)
-    expect(body.error).toBe('Failed to reverse conflicting journal entry')
+    // Storno failures bubble up through the bookkeeping engine; the wrapper
+    // routes any non-typed error to INTERNAL_ERROR.
+    expect((body.error as unknown as { code: string }).code).toBe('INTERNAL_ERROR')
     // Invoice should NOT have been updated — no further DB calls after storno failure
     expect(mockCreateInvoicePaymentJournalEntry).not.toHaveBeenCalled()
   })
@@ -417,7 +419,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(409)
-    expect(body.error).toContain('already been fully paid')
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_ALREADY_PAID')
   })
 
   it('returns 409 on duplicate invoice_payment (unique constraint)', async () => {
@@ -447,7 +449,7 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(409)
-    expect(body.error).toContain('already matched')
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_DUPLICATE_PAYMENT')
   })
 
   it('returns success with journal_entry_error when journal entry fails (non-blocking)', async () => {

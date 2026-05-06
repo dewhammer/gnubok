@@ -1,13 +1,12 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { ensureInitialized } from '@/lib/init'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
 import { calculateSalary } from '@/lib/salary/calculation-engine'
 import { loadPayrollConfig, serializePayrollConfig } from '@/lib/salary/payroll-config'
 import { fetchAllTaxTableRatesForRun, TaxTableUnavailableError } from '@/lib/salary/tax-tables'
 import { loadAndDeriveAbsence } from '@/lib/salary/derive-absence-line-items'
 import { getLineItemAccount } from '@/lib/salary/account-mapping'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { SalaryLineItemType } from '@/types'
 
 const DERIVED_ABSENCE_TYPES: SalaryLineItemType[] = [
@@ -20,19 +19,12 @@ const DERIVED_ABSENCE_TYPES: SalaryLineItemType[] = [
 
 ensureInitialized()
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export const POST = withRouteContext(
+  'salary_run.calculate',
+  async (_request, ctx, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
+  const { user, supabase, companyId, log, requestId } = ctx
+  const opLog = log.child({ salaryRunId: id })
 
   // Verify run is draft
   const { data: run, error: runError } = await supabase
@@ -43,10 +35,13 @@ export async function POST(
     .single()
 
   if (runError || !run) {
-    return NextResponse.json({ error: 'Lönekörning hittades inte' }, { status: 404 })
+    return errorResponseFromCode('SALARY_RUN_NOT_FOUND', opLog, { requestId })
   }
   if (run.status !== 'draft') {
-    return NextResponse.json({ error: 'Kan bara beräkna utkast' }, { status: 400 })
+    return errorResponseFromCode('SALARY_RUN_CALCULATE_FAILED', opLog, {
+      requestId,
+      details: { currentStatus: run.status, reason: 'not_draft' },
+    })
   }
 
   const paymentYear = parseInt(run.payment_date.split('-')[0])
@@ -61,7 +56,7 @@ export async function POST(
     .eq('salary_run_id', id)
 
   if (empError || !runEmployees || runEmployees.length === 0) {
-    return NextResponse.json({ error: 'Inga anställda i lönekörningen' }, { status: 400 })
+    return errorResponseFromCode('SALARY_RUN_NO_EMPLOYEES', opLog, { requestId })
   }
 
   // Pre-calculation validation — ensure employees have required data
@@ -82,10 +77,10 @@ export async function POST(
     }
   }
   if (validationErrors.length > 0) {
-    return NextResponse.json({
-      error: 'Valideringsfel — korrigera anställda innan beräkning',
-      details: validationErrors,
-    }, { status: 400 })
+    return errorResponseFromCode('VALIDATION_ERROR', opLog, {
+      requestId,
+      details: { issues: validationErrors, reason: 'employee_data_incomplete' },
+    })
   }
 
   // Fetch tax table rates from Skatteverket API for all needed tables/columns
@@ -104,7 +99,11 @@ export async function POST(
       taxTableSource = result.source
     } catch (err) {
       if (err instanceof TaxTableUnavailableError) {
-        return NextResponse.json({ error: err.message }, { status: 503 })
+        return errorResponseFromCode('SALARY_RUN_TAX_TABLE_MISSING', opLog, {
+          requestId,
+          details: { reason: err.message, paymentYear, tableNumbers },
+          status: 503,
+        })
       }
       throw err
     }
@@ -154,7 +153,7 @@ export async function POST(
     // in-memory lineItems array passed to calculateSalary.
     const absenceResult = await loadAndDeriveAbsence({
       supabase,
-      companyId,
+      companyId: companyId!,
       employeeId: emp.id,
       monthlySalary: emp.monthly_salary || 0,
       payrollConfig: config,
@@ -168,7 +167,7 @@ export async function POST(
       .eq('salary_run_employee_id', sre.id)
       .in('item_type', DERIVED_ABSENCE_TYPES)
     if (delAbsErr) {
-      return NextResponse.json({ error: delAbsErr.message }, { status: 500 })
+      return errorResponse(delAbsErr, opLog, { requestId })
     }
 
     if (absenceResult.lineItems.length > 0) {
@@ -191,7 +190,7 @@ export async function POST(
         .from('salary_line_items')
         .insert(rows)
       if (insAbsErr) {
-        return NextResponse.json({ error: insAbsErr.message }, { status: 500 })
+        return errorResponse(insAbsErr, opLog, { requestId })
       }
     }
 
@@ -300,7 +299,7 @@ export async function POST(
       .eq('id', sre.id)
 
     if (empUpdateError) {
-      return NextResponse.json({ error: empUpdateError.message }, { status: 500 })
+      return errorResponse(empUpdateError, opLog, { requestId })
     }
 
     totalGross += result.grossSalary
@@ -328,7 +327,7 @@ export async function POST(
     .single()
 
   if (updateError) {
-    return NextResponse.json({ error: updateError.message }, { status: 500 })
+    return errorResponse(updateError, opLog, { requestId })
   }
 
   const warnings: string[] = []
@@ -343,4 +342,6 @@ export async function POST(
   }
 
   return NextResponse.json({ data: updatedRun, warnings })
-}
+  },
+  { requireWrite: true },
+)

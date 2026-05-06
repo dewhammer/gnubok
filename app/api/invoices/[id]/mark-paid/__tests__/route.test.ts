@@ -74,7 +74,7 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(404)
-    expect(body.error).toBe('Fakturan hittades inte')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_PAID_NOT_FOUND')
   })
 
   it('returns 400 when invoice is in draft status', async () => {
@@ -86,7 +86,7 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Fakturan kan inte markeras som betald i nuvarande status')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_PAID_NOT_PAYABLE')
   })
 
   it('returns 400 when invoice is already paid', async () => {
@@ -98,7 +98,7 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toBe('Fakturan kan inte markeras som betald i nuvarande status')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_PAID_NOT_PAYABLE')
   })
 
   it('returns 400 when invoice is credited', async () => {
@@ -279,7 +279,7 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     const { status, body } = await parseJsonResponse<{ error: string }>(response)
 
     expect(status).toBe(400)
-    expect(body.error).toContain('balanserade')
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_PAID_LINES_UNBALANCED')
     expect(mockCreateJournalEntry).not.toHaveBeenCalled()
   })
 

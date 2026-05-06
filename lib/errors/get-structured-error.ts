@@ -11,17 +11,33 @@
  *     that fixes the problem. Optional — only set when there's a clear
  *     mechanical next step
  *
- * Used by the MCP server's tool error wrapper. UI callers continue to use the
- * string-only getErrorMessage() — this is additive.
+ * Both MCP and REST consume this. errorResponse() below produces the standard
+ * REST envelope so a single registry covers every entry point.
  */
+import { NextResponse } from 'next/server'
+import { ZodError } from 'zod'
 import { getErrorMessage } from './get-error-message'
+import {
+  getErrorEntry,
+  type StructuredErrorEntry,
+  type StructuredErrorRemediation,
+} from './structured-errors'
+import {
+  AccountsNotInChartError,
+  BookkeepingDatabaseError,
+  CannotCorrectNonPostedError,
+  CannotReverseNonPostedError,
+  EntryAlreadyReversedError,
+  EntryDateOutsideFiscalPeriodError,
+  FiscalPeriodNotFoundError,
+  InvalidMappingResultError,
+  JournalEntryNotBalancedError,
+  JournalEntryNotFoundError,
+  CurrencyRevaluationAlreadyExistsError,
+  isBookkeepingError,
+} from '../bookkeeping/errors'
 
-export interface StructuredErrorRemediation {
-  description: string
-  tool?: string
-  args?: Record<string, unknown>
-  resource?: string
-}
+export type { StructuredErrorRemediation }
 
 export interface StructuredError {
   code: string
@@ -39,58 +55,6 @@ interface StructuredErrorOptions {
    * Optional: tool name being called, used in fallback remediation hints.
    */
   toolName?: string
-}
-
-const ERROR_CODE_REMEDIATION: Record<string, StructuredErrorRemediation> = {
-  ACCOUNTS_NOT_IN_CHART: {
-    description: 'One or more BAS accounts referenced are not active in the chart of accounts. Activate them via the bookkeeping settings, or use a different category.',
-    resource: 'gnubok://chart-of-accounts',
-  },
-  JOURNAL_ENTRY_NOT_BALANCED: {
-    description: 'Debits and credits do not match. Recalculate the lines so totals are equal before retrying.',
-  },
-  FISCAL_PERIOD_NOT_FOUND: {
-    description: 'No fiscal period covers the entry date. Create or extend the relevant period before retrying.',
-    resource: 'gnubok://period/active',
-  },
-  ENTRY_DATE_OUTSIDE_FISCAL_PERIOD: {
-    description: 'The entry date is outside the active fiscal period. Use a date inside an open period or create one that covers it.',
-    resource: 'gnubok://period/active',
-  },
-  CANNOT_REVERSE_NON_POSTED: {
-    description: 'Only posted entries can be reversed. Commit the draft first or pick a posted entry.',
-  },
-  CANNOT_CORRECT_NON_POSTED: {
-    description: 'Only posted entries can be corrected. Commit the draft first or pick a posted entry.',
-  },
-  ENTRY_ALREADY_REVERSED: {
-    description: 'Another caller reversed this entry concurrently. Re-fetch the entry list and pick a different one.',
-  },
-  PERIOD_NOT_LOCKED: {
-    description: 'The period must be locked before it can be closed. Call gnubok_lock_period first.',
-    tool: 'gnubok_lock_period',
-  },
-  PERIOD_HAS_UNBOOKED_TRANSACTIONS: {
-    description: 'The period contains uncategorized business transactions. Categorize or mark them private before locking.',
-    tool: 'gnubok_list_uncategorized_transactions',
-  },
-  YEAR_END_NOT_RUN: {
-    description: 'Year-end closing must be executed before the period can be closed. Run the year-end procedure first.',
-  },
-  INSUFFICIENT_SCOPE: {
-    description: 'The current API key does not have the required scope. Mint a new key with the missing scope or grant it through the API key settings.',
-    resource: 'gnubok://capabilities',
-  },
-  TRANSACTION_ALREADY_CATEGORIZED: {
-    description: 'The transaction already has a journal entry. Use gnubok_uncategorize_transaction first if you need to recategorize.',
-    tool: 'gnubok_uncategorize_transaction',
-  },
-  INVOICE_ALREADY_SENT: {
-    description: 'The invoice is already sent or paid; sending again would create a duplicate.',
-  },
-  IDEMPOTENCY_KEY_REUSE: {
-    description: 'This idempotency_key was previously used with a different request body. Use a fresh UUID for a new operation, or send the original request body to replay.',
-  },
 }
 
 /**
@@ -164,7 +128,8 @@ export function getStructuredError(
 
   const code = extractCode(error) ?? inferCode(message_en) ?? 'UNKNOWN_ERROR'
 
-  let remediation = ERROR_CODE_REMEDIATION[code]
+  const entry = getErrorEntry(code)
+  let remediation = entry?.remediation
 
   // Specialize INSUFFICIENT_SCOPE with the actual scope name when known.
   if (code === 'INSUFFICIENT_SCOPE' && options.attemptedScope && remediation) {
@@ -180,4 +145,241 @@ export function getStructuredError(
     message_en,
     ...(remediation ? { remediation } : {}),
   }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// REST error envelope
+// ────────────────────────────────────────────────────────────────────
+
+export interface ErrorEnvelope {
+  error: {
+    code: string
+    message: string
+    message_en?: string
+    remediation?: StructuredErrorRemediation
+    requestId?: string
+    details?: unknown
+  }
+}
+
+interface ErrorResponseContext {
+  requestId?: string
+  /** Additional details to attach to the response for the user/agent. */
+  details?: unknown
+  /** When known, override the http status from the registry entry. */
+  status?: number
+}
+
+interface MinimalLogger {
+  error: (msg: string, ...args: unknown[]) => void
+}
+
+function entryFor(code: string): StructuredErrorEntry {
+  return (
+    getErrorEntry(code) ??
+    getErrorEntry('INTERNAL_ERROR') ?? {
+      httpStatus: 500,
+      message_sv: 'Något gick fel. Försök igen.',
+      message_en: 'Internal server error.',
+    }
+  )
+}
+
+function postgresCodeToStructured(code: string): string | null {
+  switch (code) {
+    case '23505':
+    case '23503':
+    case '23514':
+    case '22P02':
+    case '22003':
+      return 'VALIDATION_ERROR'
+    case '23502':
+      return 'VALIDATION_ERROR'
+    case '42501':
+      return 'FORBIDDEN'
+    case '42P01':
+      return 'NOT_FOUND'
+    case '40001':
+    case '40P01':
+      return 'CONFLICT'
+    default:
+      return null
+  }
+}
+
+function isZodError(err: unknown): err is ZodError {
+  return err instanceof ZodError || (err instanceof Error && err.name === 'ZodError')
+}
+
+function isPostgresError(err: unknown): err is { code: string; message: string } {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    typeof (err as { code?: unknown }).code === 'string' &&
+    /^[0-9A-Z]{5}$/.test((err as { code: string }).code)
+  )
+}
+
+/**
+ * Build the canonical REST error envelope for any thrown value.
+ *
+ * Order of dispatch:
+ *   1. typed BookkeepingError → reuses bookkeepingErrorResponse()
+ *   2. ZodError                → VALIDATION_ERROR with field-level details
+ *   3. Postgres error code     → mapped to a structured code
+ *   4. Error with `code` field present in registry → use that
+ *   5. Anything else            → INTERNAL_ERROR
+ *
+ * Always logs the underlying error (no silent error returns). The caller
+ * must pass a logger so the request id propagates to the log line.
+ */
+export function errorResponse(
+  err: unknown,
+  log: MinimalLogger,
+  ctx: ErrorResponseContext = {},
+): NextResponse {
+  // 1. Bookkeeping domain errors — route through the registry, preserving
+  //    the structured details each typed error class carries.
+  if (isBookkeepingError(err)) {
+    const { code, details } = extractBookkeepingDetails(err)
+    log.error(code, err as Error, { requestId: ctx.requestId })
+    const entry = entryFor(code)
+    return buildResponse(code, entry, ctx.requestId, details ?? ctx.details)
+  }
+
+  // 2. Zod validation errors
+  if (isZodError(err)) {
+    const issues = (err as ZodError).issues.map((i) => ({
+      field: i.path.join('.'),
+      message: i.message,
+      code: i.code,
+    }))
+    log.error('validation failed', err as Error, {
+      requestId: ctx.requestId,
+      issueCount: issues.length,
+    })
+    const entry = entryFor('VALIDATION_ERROR')
+    const details = mergeDetails({ issues }, ctx.details)
+    return buildResponse('VALIDATION_ERROR', entry, ctx.requestId, details)
+  }
+
+  // 3. Postgres errors
+  if (isPostgresError(err)) {
+    const mapped = postgresCodeToStructured(err.code)
+    log.error('database error', err as unknown as Error, {
+      requestId: ctx.requestId,
+      pgCode: err.code,
+    })
+    if (mapped) {
+      const entry = entryFor(mapped)
+      const details = mergeDetails({ pgCode: err.code }, ctx.details)
+      return buildResponse(mapped, entry, ctx.requestId, details)
+    }
+  }
+
+  // 4. Errors with a known structured code on them
+  const code = extractCode(err)
+  if (code && getErrorEntry(code)) {
+    const entry = entryFor(code)
+    log.error(`${code}`, err instanceof Error ? err : new Error(String(err)), { requestId: ctx.requestId })
+    const status = ctx.status ?? entry.httpStatus
+    return buildResponse(code, { ...entry, httpStatus: status }, ctx.requestId, ctx.details)
+  }
+
+  // 5. Fallback — log the actual error so we can still debug
+  log.error('unhandled error', err instanceof Error ? err : new Error(String(err)), {
+    requestId: ctx.requestId,
+  })
+  const fallback = entryFor('INTERNAL_ERROR')
+  return buildResponse('INTERNAL_ERROR', fallback, ctx.requestId, ctx.details)
+}
+
+function mergeDetails(
+  base: Record<string, unknown>,
+  extra: unknown,
+): Record<string, unknown> {
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+    return { ...base, ...(extra as Record<string, unknown>) }
+  }
+  return base
+}
+
+function extractBookkeepingDetails(err: unknown): { code: string; details?: unknown } {
+  if (err instanceof AccountsNotInChartError) {
+    return { code: err.code, details: { account_numbers: err.accountNumbers } }
+  }
+  if (err instanceof JournalEntryNotBalancedError) {
+    return {
+      code: err.code,
+      details: { totalDebit: err.totalDebit, totalCredit: err.totalCredit, kind: err.kind },
+    }
+  }
+  if (err instanceof FiscalPeriodNotFoundError) return { code: err.code }
+  if (err instanceof EntryDateOutsideFiscalPeriodError) {
+    return {
+      code: err.code,
+      details: {
+        entryDate: err.entryDate,
+        periodName: err.periodName,
+        periodStart: err.periodStart,
+        periodEnd: err.periodEnd,
+      },
+    }
+  }
+  if (err instanceof JournalEntryNotFoundError) return { code: err.code }
+  if (err instanceof CannotReverseNonPostedError) {
+    return { code: err.code, details: { currentStatus: err.currentStatus } }
+  }
+  if (err instanceof CannotCorrectNonPostedError) {
+    return { code: err.code, details: { currentStatus: err.currentStatus } }
+  }
+  if (err instanceof EntryAlreadyReversedError) return { code: err.code }
+  if (err instanceof CurrencyRevaluationAlreadyExistsError) return { code: err.code }
+  if (err instanceof InvalidMappingResultError) {
+    return {
+      code: err.code,
+      details: { debitAccount: err.debitAccount, creditAccount: err.creditAccount },
+    }
+  }
+  if (err instanceof BookkeepingDatabaseError) {
+    return { code: err.code, details: { operation: err.operation } }
+  }
+  return { code: 'INTERNAL_ERROR' }
+}
+
+function buildResponse(
+  code: string,
+  entry: StructuredErrorEntry,
+  requestId: string | undefined,
+  details: unknown,
+): NextResponse {
+  const body: ErrorEnvelope = {
+    error: {
+      code,
+      message: entry.message_sv,
+      message_en: entry.message_en,
+      ...(entry.remediation ? { remediation: entry.remediation } : {}),
+      ...(requestId ? { requestId } : {}),
+      ...(details !== undefined ? { details } : {}),
+    },
+  }
+  const res = NextResponse.json(body, { status: entry.httpStatus })
+  if (requestId) res.headers.set('X-Request-Id', requestId)
+  return res
+}
+
+/**
+ * Construct an envelope-shaped error directly from a code (when the route
+ * already knows the failure mode). Skips dispatch — useful inside a handler
+ * that wants the standard shape without throwing.
+ */
+export function errorResponseFromCode(
+  code: string,
+  log: MinimalLogger,
+  ctx: ErrorResponseContext & { reason?: string } = {},
+): NextResponse {
+  const entry = entryFor(code)
+  log.error(code, ctx.reason ?? entry.message_en, { requestId: ctx.requestId })
+  const status = ctx.status ?? entry.httpStatus
+  return buildResponse(code, { ...entry, httpStatus: status }, ctx.requestId, ctx.details)
 }

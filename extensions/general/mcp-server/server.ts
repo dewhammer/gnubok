@@ -929,6 +929,115 @@ export const tools: McpTool[] = [
   },
 
   {
+    name: 'gnubok_create_transactions',
+    description: 'Stage one or more transactions for the user to approve. Each item creates a separate pending operation that the user confirms or rejects in the web app. Useful for ingesting rows from external sources (Airtable, CSVs, etc.). Max 10 per call.',
+    outputSchema: {
+      type: 'object',
+      properties: {
+        staged_count: { type: 'number', description: 'Number of items successfully staged.' },
+        operations: {
+          type: 'array',
+          items: STAGED_OPERATION_SCHEMA,
+          description: 'One staged-operation result per input item, in the same order.',
+        },
+      },
+      required: ['staged_count', 'operations'],
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        transactions: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 10,
+          description: 'Up to 10 transactions to stage. Each becomes its own pending operation.',
+          items: {
+            type: 'object',
+            properties: {
+              date: { type: 'string', description: 'Transaction date (YYYY-MM-DD).' },
+              amount: { type: 'number', description: 'Positive = income, negative = expense.' },
+              description: { type: 'string', description: 'Free-text description shown in /transactions.' },
+              currency: { type: 'string', description: 'ISO 4217 code. Default SEK.' },
+              bank_connection_id: { type: 'string', description: 'Optional UUID of a bank_connections row to associate with.' },
+              external_id: { type: 'string', description: 'Optional external reference (e.g., Airtable record ID). Shown in the preview; the DB enforces uniqueness per user, so the second commit of the same external_id will fail at approval.' },
+            },
+            required: ['date', 'amount', 'description'],
+          },
+        },
+      },
+      required: ['transactions'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, supabase, actor) {
+      const items = args.transactions as Array<Record<string, unknown>> | undefined
+      if (!Array.isArray(items) || items.length === 0) {
+        throw new Error('transactions must be a non-empty array.')
+      }
+      if (items.length > 10) {
+        throw new Error('transactions exceeds the per-call limit of 10. Split into multiple calls.')
+      }
+
+      const operations = []
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        const date = item.date as string
+        const amount = Number(item.amount)
+        const description = ((item.description as string) ?? '').trim()
+        const currency = ((item.currency as string) || 'SEK').toUpperCase()
+        const bankConnectionId = (item.bank_connection_id as string) || null
+        const externalId = (item.external_id as string) || null
+
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          throw new Error(`transactions[${i}].date must be in YYYY-MM-DD format.`)
+        }
+        if (!Number.isFinite(amount)) {
+          throw new Error(`transactions[${i}].amount must be a finite number.`)
+        }
+        if (!description) {
+          throw new Error(`transactions[${i}].description is required.`)
+        }
+
+        const params = {
+          date,
+          amount,
+          description,
+          currency,
+          bank_connection_id: bankConnectionId,
+          external_id: externalId,
+        }
+
+        const sign = amount >= 0 ? '+' : ''
+        const titleSuffix = externalId ? ` [${externalId}]` : ''
+        const title = `Ny transaktion: ${description} ${sign}${amount} ${currency}${titleSuffix}`
+
+        const staged = await stagePendingOperation(
+          supabase, companyId, userId, 'create_transaction',
+          title,
+          params,
+          params, // params ARE the preview
+          actor,
+          {
+            description: 'Once approved, the transaction lands in /transactions as uncategorized. Use gnubok_categorize_transaction to book it.',
+            tool: 'gnubok_categorize_transaction',
+          }
+        )
+
+        operations.push(staged)
+      }
+
+      return {
+        staged_count: operations.length,
+        operations,
+      }
+    },
+  },
+
+  {
     name: 'gnubok_list_uncategorized_transactions',
     description: 'List bank transactions with no journal entry yet, newest first. Paginated.',
     inputSchema: {

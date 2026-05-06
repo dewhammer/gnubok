@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { ArrowLeft, CheckCircle, CreditCard, FileText, Trash2 } from 'lucide-react'
 import Link from 'next/link'
 import { AccountNumber } from '@/components/ui/account-number'
@@ -78,7 +79,7 @@ export default function ExpenseDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}/approve`, { method: 'POST' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Kunde inte godkänna', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kunde inte godkänna', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({ title: 'Godkänd', description: 'Utgiften har godkänts' })
       fetchInvoice()
@@ -95,7 +96,7 @@ export default function ExpenseDetailPage() {
     })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Betalning misslyckades', description: result.error, variant: 'destructive' })
+      toast({ title: 'Betalning misslyckades', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({
         title: result.status === 'paid' ? 'Betald' : 'Delbetalning registrerad',
@@ -119,7 +120,7 @@ export default function ExpenseDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}/credit`, { method: 'POST' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Kunde inte kreditera', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kunde inte kreditera', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({ title: 'Kreditfaktura registrerad' })
       fetchInvoice()
@@ -138,7 +139,7 @@ export default function ExpenseDetailPage() {
     const res = await fetch(`/api/supplier-invoices/${params.id}`, { method: 'DELETE' })
     const result = await res.json()
     if (!res.ok) {
-      toast({ title: 'Kunde inte ta bort', description: result.error, variant: 'destructive' })
+      toast({ title: 'Kunde inte ta bort', description: getErrorMessage(result, { context: 'supplier_invoice' }), variant: 'destructive' })
     } else {
       toast({ title: 'Borttagen' })
       router.push('/expenses')

@@ -10,7 +10,8 @@ import {
   generateConsentExpiryEmailSubject,
 } from '@/lib/email/consent-notification-templates'
 import { ensureInitialized } from '@/lib/init'
-import { verifyCronSecret } from '@/lib/auth/cron'
+import { withCronContext } from '@/lib/api/with-cron-context'
+import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { getBranding } from '@/lib/branding/service'
 import type { StoredAccount } from '@/extensions/general/enable-banking/types'
 
@@ -25,18 +26,15 @@ ensureInitialized()
  * Prioritizes connections not synced for the longest time.
  * Deduplication via external_id makes repeated runs safe.
  */
-export async function GET(request: Request) {
-  const authError = verifyCronSecret(request)
-  if (authError) return authError
-
+export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
   if (!supabaseUrl || !supabaseServiceKey) {
-    return NextResponse.json(
-      { error: 'Missing Supabase configuration' },
-      { status: 500 }
-    )
+    return errorResponseFromCode('INTERNAL_ERROR', ctx.log, {
+      requestId: ctx.requestId,
+      details: { reason: 'Missing Supabase configuration' },
+    })
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
@@ -51,7 +49,7 @@ export async function GET(request: Request) {
     .select('id')
 
   if (stalePending?.length) {
-    console.log(`[bank-sync-cron] Cleaned up ${stalePending.length} stale pending connections`)
+    ctx.log.info('cleaned up stale pending connections', { count: stalePending.length })
   }
 
   const { data: connections, error: connError } = await supabase
@@ -62,12 +60,11 @@ export async function GET(request: Request) {
     .limit(50)
 
   if (connError) {
-    console.error('[bank-sync-cron] Failed to fetch bank connections', {
+    ctx.log.error('failed to fetch bank connections', connError, {
       message: connError.message,
       code: connError.code,
-      details: connError.details,
     })
-    return NextResponse.json({ error: 'Failed to fetch connections' }, { status: 500 })
+    return errorResponse(connError, ctx.log, { requestId: ctx.requestId })
   }
 
   if (!connections || connections.length === 0) {
@@ -91,7 +88,7 @@ export async function GET(request: Request) {
 
   for (const connection of connections) {
     if (Date.now() - startTime > TIME_BUDGET_MS) {
-      console.log(`[bank-sync-cron] Time budget reached after ${results.length} connections`)
+      ctx.log.info('time budget reached', { processedSoFar: results.length })
       break
     }
 
@@ -137,7 +134,10 @@ export async function GET(request: Request) {
       const isFirstSync = !connection.last_synced_at
       const lookbackDays = isFirstSync ? 90 : 7
       if (isFirstSync) {
-        console.log(`[bank-sync-cron] First sync for connection ${connection.id}, using ${lookbackDays}-day lookback`)
+        ctx.log.info('first sync for connection — using 90-day lookback', {
+          connectionId: connection.id,
+          lookbackDays,
+        })
       }
       const fromDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
         .toISOString()
@@ -212,16 +212,12 @@ export async function GET(request: Request) {
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
-      console.error('[bank-sync-cron] Sync failed for connection', {
+      ctx.log.error('sync failed for connection', error as Error, {
         connectionId: connection.id,
         userId: connection.user_id,
         bankName: connection.bank_name,
-        sessionId: '[REDACTED]',
         consentExpires: connection.consent_expires,
         lastSyncedAt: connection.last_synced_at,
-        message,
-        stack: error instanceof Error ? error.stack : undefined,
-        name: error instanceof Error ? error.name : undefined,
       })
 
       // Persist error status on sync failure
@@ -247,7 +243,13 @@ export async function GET(request: Request) {
   const totalExpiringSoon = results.filter(r => r.status === 'expiring_soon').length
   const totalFailed = results.filter(r => r.status === 'error').length
 
-  console.log(`[bank-sync-cron] Processed ${results.length} connections: ${totalImported} imported, ${totalExpired} expired, ${totalExpiringSoon} expiring soon, ${totalFailed} failed`)
+  ctx.log.info('bank sync summary', {
+    processed: results.length,
+    totalImported,
+    totalExpired,
+    totalExpiringSoon,
+    totalFailed,
+  })
 
   return NextResponse.json({
     processed: results.length,
@@ -257,7 +259,7 @@ export async function GET(request: Request) {
     totalFailed,
     results,
   })
-}
+})
 
 /**
  * Send consent expiry notification email.
@@ -316,7 +318,8 @@ async function sendConsentExpiryNotification(
       .update({ last_expiry_notification_at: new Date().toISOString() })
       .eq('id', connection.id as string)
   } catch (error) {
-    // Notification failure must not break the cron job
-    console.error(`[bank-sync-cron] Failed to send consent expiry notification:`, error)
+    // Notification failure must not break the cron job — log only.
+    // eslint-disable-next-line no-console
+    console.error('[bank-sync-cron] failed to send consent expiry notification:', error)
   }
 }

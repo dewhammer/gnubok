@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { NextResponse } from 'next/server'
+import type { Logger } from '@/lib/logger'
 
 export interface ValidationSuccess<T> {
   success: true
@@ -12,6 +13,28 @@ export interface ValidationFailure {
 }
 
 export type ValidationResult<T> = ValidationSuccess<T> | ValidationFailure
+
+interface ValidationOptions {
+  /** Optional logger; when present, validation failures are logged at warn level. */
+  log?: Logger
+  /** Identifier for the operation/route being validated, included in the log line. */
+  operation?: string
+}
+
+function logIssues(
+  options: ValidationOptions | undefined,
+  kind: 'body' | 'query' | 'json',
+  issues: Array<{ field: string; message: string; code: string }> | string,
+) {
+  if (!options?.log) return
+  options.log.warn('validation failed', {
+    operation: options.operation,
+    kind,
+    ...(typeof issues === 'string'
+      ? { reason: issues }
+      : { issueCount: issues.length, issues }),
+  })
+}
 
 /**
  * Validate a request body against a Zod schema.
@@ -29,11 +52,13 @@ export type ValidationResult<T> = ValidationSuccess<T> | ValidationFailure
 export async function validateBody<T>(
   request: Request,
   schema: z.ZodType<T>,
+  options?: ValidationOptions,
 ): Promise<ValidationResult<T>> {
   let body: unknown
   try {
     body = await request.json()
   } catch {
+    logIssues(options, 'json', 'Invalid JSON in request body')
     return {
       success: false,
       response: NextResponse.json(
@@ -54,6 +79,8 @@ export async function validateBody<T>(
       message: issue.message,
       code: issue.code,
     }))
+
+    logIssues(options, 'body', errors)
 
     return {
       success: false,
@@ -84,6 +111,7 @@ export async function validateBody<T>(
 export function validateQuery<T>(
   request: Request,
   schema: z.ZodType<T>,
+  options?: ValidationOptions,
 ): ValidationResult<T> {
   const url = new URL(request.url)
   const raw = Object.fromEntries(url.searchParams.entries())
@@ -96,6 +124,8 @@ export function validateQuery<T>(
       message: issue.message,
       code: issue.code,
     }))
+
+    logIssues(options, 'query', errors)
 
     return {
       success: false,

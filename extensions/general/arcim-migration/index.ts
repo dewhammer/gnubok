@@ -24,6 +24,11 @@ import { BAS_REFERENCE, getBASReference } from '@/lib/bookkeeping/bas-reference'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { FortnoxClient } from '@/lib/providers/fortnox/client'
 import type { ProviderName } from '@/lib/providers/types'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
+import { classifyProviderError } from '@/lib/providers/with-provider-call'
+import { createLogger } from '@/lib/logger'
+
+const moduleLog = createLogger('extensions/arcim-migration')
 
 /** Fiscal years we support importing — older data is not needed */
 const ALLOWED_FISCAL_YEARS = new Set([2024, 2025, 2026])
@@ -133,10 +138,10 @@ export const arcimMigrationExtension: Extension = {
             },
           })
         } catch (error) {
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Failed to fetch status' },
-            { status: 500 }
-          )
+          moduleLog.error('arcim status failed', error as Error, { companyId })
+          return errorResponseFromCode('PROVIDER_STATUS_FAILED', moduleLog, {
+            details: { reason: error instanceof Error ? error.message : 'unknown' },
+          })
         }
       },
     },
@@ -163,12 +168,16 @@ export const arcimMigrationExtension: Extension = {
         }
 
         if (!provider) {
-          return NextResponse.json({ error: 'provider is required' }, { status: 400 })
+          return errorResponseFromCode('VALIDATION_ERROR', moduleLog, {
+            details: { field: 'provider', reason: 'required' },
+          })
         }
 
         const providerInfo = ARCIM_PROVIDERS.find(p => p.id === provider)
         if (!providerInfo) {
-          return NextResponse.json({ error: 'Invalid provider' }, { status: 400 })
+          return errorResponseFromCode('PROVIDER_INVALID', moduleLog, {
+            details: { provider },
+          })
         }
 
         try {
@@ -263,11 +272,10 @@ export const arcimMigrationExtension: Extension = {
             })
           }
         } catch (error) {
-          log.error('Failed to create consent:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Failed to connect' },
-            { status: 500 }
-          )
+          log.error('arcim connect failed', error as Error, { provider })
+          return errorResponseFromCode('PROVIDER_CONNECT_FAILED', moduleLog, {
+            details: { reason: error instanceof Error ? error.message : 'unknown' },
+          })
         }
       },
     },
@@ -293,36 +301,32 @@ export const arcimMigrationExtension: Extension = {
         }
 
         if (!consentId || !provider) {
-          return NextResponse.json(
-            { error: 'consentId and provider are required' },
-            { status: 400 }
-          )
+          return errorResponseFromCode('VALIDATION_ERROR', moduleLog, {
+            details: { fields: ['consentId', 'provider'], reason: 'required' },
+          })
         }
 
         // BL uses server-side client credentials — only needs companyId
         if (provider !== 'bjornlunden' && !apiToken) {
-          return NextResponse.json(
-            { error: 'apiToken is required for this provider' },
-            { status: 400 }
-          )
+          return errorResponseFromCode('PROVIDER_TOKEN_REQUIRED', moduleLog, {
+            details: { provider },
+          })
         }
 
         if ((provider === 'bokio' || provider === 'bjornlunden') && !companyId) {
-          return NextResponse.json(
-            { error: 'companyId is required for this provider' },
-            { status: 400 }
-          )
+          return errorResponseFromCode('PROVIDER_COMPANY_ID_REQUIRED', moduleLog, {
+            details: { provider },
+          })
         }
 
         try {
           await submitProviderToken(consentId, provider, apiToken || 'client_credentials', companyId)
           return NextResponse.json({ success: true, consentId })
         } catch (error) {
-          log.error('Submit token error:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Failed to submit token' },
-            { status: 500 }
-          )
+          log.error('arcim submit-token failed', error as Error, { provider })
+          return errorResponseFromCode('PROVIDER_TOKEN_SUBMIT_FAILED', moduleLog, {
+            details: { reason: error instanceof Error ? error.message : 'unknown' },
+          })
         }
       },
     },
@@ -470,16 +474,17 @@ export const arcimMigrationExtension: Extension = {
         const consentId = url.searchParams.get('consentId')
 
         if (!consentId) {
-          return NextResponse.json({ error: 'consentId is required' }, { status: 400 })
+          return errorResponseFromCode('VALIDATION_ERROR', moduleLog, {
+            details: { field: 'consentId', reason: 'required' },
+          })
         }
 
         try {
           const consent = await getConsent(consentId)
           if (consent.status !== 0 && consent.status !== 1) {
-            return NextResponse.json(
-              { error: 'Consent is not ready. Complete authentication first.' },
-              { status: 400 }
-            )
+            return errorResponseFromCode('PROVIDER_CONSENT_NOT_READY', moduleLog, {
+              details: { consentId, status: consent.status },
+            })
           }
 
           // Resolve consent to get access token
@@ -562,11 +567,16 @@ export const arcimMigrationExtension: Extension = {
             hasSieData: (sieImportCount ?? 0) > 0,
           })
         } catch (error) {
-          log.error('Preview error:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Preview failed' },
-            { status: 500 }
-          )
+          log.error('arcim preview failed', error as Error)
+          // Classify HTTP failures into typed codes so the toast can suggest
+          // reconnect / retry instead of a generic "preview failed".
+          const classified = classifyProviderError(error)
+          return errorResponseFromCode(classified ?? 'PROVIDER_PREVIEW_FAILED', moduleLog, {
+            details: {
+              reason: error instanceof Error ? error.message : 'unknown',
+              classified: classified ?? 'unclassified',
+            },
+          })
         }
       },
     },
@@ -599,10 +609,9 @@ export const arcimMigrationExtension: Extension = {
           const provider = resolved.consent.provider as ProviderName
 
           if (provider !== 'fortnox') {
-            return NextResponse.json(
-              { error: `SIE export is currently only supported for Fortnox. Provider: ${provider}` },
-              { status: 400 }
-            )
+            return errorResponseFromCode('PROVIDER_SIE_ONLY_FORTNOX', moduleLog, {
+              details: { provider },
+            })
           }
 
           // Fetch financial years from Fortnox
@@ -623,7 +632,7 @@ export const arcimMigrationExtension: Extension = {
             })
 
           if (allowedYears.length === 0) {
-            return NextResponse.json({ error: 'No SIE data available for fiscal years 2024–2026' }, { status: 404 })
+            return errorResponseFromCode('PROVIDER_SIE_NO_YEARS', moduleLog)
           }
 
           // Fetch SIE type 4 for each allowed year
@@ -646,7 +655,7 @@ export const arcimMigrationExtension: Extension = {
           }
 
           if (sieFiles.length === 0) {
-            return NextResponse.json({ error: 'No SIE data available for fiscal years 2024–2026' }, { status: 404 })
+            return errorResponseFromCode('PROVIDER_SIE_NO_YEARS', moduleLog)
           }
 
           // Parse most recent file for preview/validation
@@ -742,11 +751,14 @@ export const arcimMigrationExtension: Extension = {
             basAccounts: BAS_REFERENCE,
           })
         } catch (error) {
-          log.error('SIE data fetch error:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Failed to fetch SIE data' },
-            { status: 500 }
-          )
+          log.error('arcim sie-data fetch failed', error as Error)
+          const classified = classifyProviderError(error)
+          return errorResponseFromCode(classified ?? 'PROVIDER_SIE_FETCH_FAILED', moduleLog, {
+            details: {
+              reason: error instanceof Error ? error.message : 'unknown',
+              classified: classified ?? 'unclassified',
+            },
+          })
         }
       },
     },
@@ -903,11 +915,14 @@ export const arcimMigrationExtension: Extension = {
 
           return NextResponse.json(result)
         } catch (error) {
-          log.error('SIE import failed:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'SIE import failed' },
-            { status: 500 }
-          )
+          log.error('arcim sie import failed', error as Error)
+          const classified = classifyProviderError(error)
+          return errorResponseFromCode(classified ?? 'SIE_IMPORT_UNEXPECTED', moduleLog, {
+            details: {
+              reason: error instanceof Error ? error.message : 'unknown',
+              classified: classified ?? 'unclassified',
+            },
+          })
         }
       },
     },
@@ -950,10 +965,9 @@ export const arcimMigrationExtension: Extension = {
         try {
           const consent = await getConsent(consentId)
           if (consent.status !== 0 && consent.status !== 1) {
-            return NextResponse.json(
-              { error: 'Consent is not ready' },
-              { status: 400 }
-            )
+            return errorResponseFromCode('PROVIDER_CONSENT_NOT_READY', moduleLog, {
+              details: { consentId, status: consent.status },
+            })
           }
 
           log.info(`Starting migration for user ${user.id} from ${consent.provider}`)
@@ -977,11 +991,14 @@ export const arcimMigrationExtension: Extension = {
 
           return NextResponse.json({ success: true, results })
         } catch (error) {
-          log.error('Migration failed:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Migration failed' },
-            { status: 500 }
-          )
+          log.error('arcim migration failed', error as Error)
+          const classified = classifyProviderError(error)
+          return errorResponseFromCode(classified ?? 'PROVIDER_MIGRATE_FAILED', moduleLog, {
+            details: {
+              reason: error instanceof Error ? error.message : 'unknown',
+              classified: classified ?? 'unclassified',
+            },
+          })
         }
       },
     },
@@ -1013,17 +1030,17 @@ export const arcimMigrationExtension: Extension = {
           .single()
 
         if (!consent) {
-          return NextResponse.json({ error: 'Not found' }, { status: 404 })
+          return errorResponseFromCode('PROVIDER_CONSENT_NOT_FOUND', moduleLog)
         }
 
         try {
           await acceptConsent(consentId)
           return NextResponse.json({ success: true })
         } catch (error) {
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Failed to accept consent' },
-            { status: 500 }
-          )
+          moduleLog.error('arcim accept failed', error as Error, { consentId })
+          return errorResponseFromCode('PROVIDER_ACCEPT_FAILED', moduleLog, {
+            details: { reason: error instanceof Error ? error.message : 'unknown' },
+          })
         }
       },
     },
@@ -1057,7 +1074,7 @@ export const arcimMigrationExtension: Extension = {
           .single()
 
         if (!consent) {
-          return NextResponse.json({ error: 'Not found' }, { status: 404 })
+          return errorResponseFromCode('PROVIDER_CONSENT_NOT_FOUND', moduleLog)
         }
 
         try {
@@ -1070,11 +1087,10 @@ export const arcimMigrationExtension: Extension = {
 
           return NextResponse.json({ success: true })
         } catch (error) {
-          log.error('Disconnect error:', error)
-          return NextResponse.json(
-            { error: error instanceof Error ? error.message : 'Disconnect failed' },
-            { status: 500 }
-          )
+          log.error('arcim disconnect failed', error as Error, { consentId })
+          return errorResponseFromCode('PROVIDER_DISCONNECT_FAILED', moduleLog, {
+            details: { reason: error instanceof Error ? error.message : 'unknown' },
+          })
         }
       },
     },

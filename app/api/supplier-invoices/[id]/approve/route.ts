@@ -1,69 +1,62 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { SupplierInvoice } from '@/types'
 
 ensureInitialized()
 
-export async function POST(
-  _request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const supabase = await createClient()
-  const { id } = await params
+export const POST = withRouteContext(
+  'supplier_invoice.approve',
+  async (_request, ctx, { params }: { params: Promise<{ id: string }> }) => {
+    const { id } = await params
+    const { user, supabase, companyId, log, requestId } = ctx
 
-  const { data: { user } } = await supabase.auth.getUser()
+    const { data: invoice } = await supabase
+      .from('supplier_invoices')
+      .select('*')
+      .eq('id', id)
+      .eq('company_id', companyId)
+      .single()
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+    if (!invoice) {
+      return errorResponseFromCode('SI_NOT_FOUND', log, { requestId })
+    }
 
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
+    if (invoice.status !== 'registered') {
+      return errorResponseFromCode('SI_APPROVE_NOT_REGISTERED', log, {
+        requestId,
+        details: { currentStatus: invoice.status },
+      })
+    }
 
-  const companyId = await requireCompanyId(supabase, user.id)
+    const { data, error } = await supabase
+      .from('supplier_invoices')
+      .update({ status: 'approved' })
+      .eq('id', id)
+      .eq('company_id', companyId)
+      .select()
+      .single()
 
-  const { data: invoice } = await supabase
-    .from('supplier_invoices')
-    .select('*')
-    .eq('id', id)
-    .eq('company_id', companyId)
-    .single()
+    if (error) {
+      log.error('supplier_invoice update to approved failed', error)
+      return errorResponseFromCode('SI_APPROVE_UPDATE_FAILED', log, { requestId })
+    }
 
-  if (!invoice) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  }
+    // Event emission is non-blocking — the registration entry is created by
+    // the supplier-invoice handler bound to this event. If the handler throws,
+    // bus.ts persists an EventHandlerFailed row for traceability.
+    try {
+      await eventBus.emit({
+        type: 'supplier_invoice.approved',
+        payload: { supplierInvoice: data as SupplierInvoice, companyId, userId: user.id },
+      })
+    } catch (err) {
+      log.warn('supplier_invoice.approved event emission failed', err as Error)
+    }
 
-  if (invoice.status !== 'registered') {
-    return NextResponse.json(
-      { error: 'Kan bara godkänna registrerade fakturor' },
-      { status: 400 }
-    )
-  }
-
-  const { data, error } = await supabase
-    .from('supplier_invoices')
-    .update({ status: 'approved' })
-    .eq('id', id)
-    .eq('company_id', companyId)
-    .select()
-    .single()
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  try {
-    await eventBus.emit({
-      type: 'supplier_invoice.approved',
-      payload: { supplierInvoice: data as SupplierInvoice, companyId, userId: user.id },
-    })
-  } catch {
-    // Non-blocking
-  }
-
-  return NextResponse.json({ data })
-}
+    return NextResponse.json({ data })
+  },
+  { requireWrite: true },
+)

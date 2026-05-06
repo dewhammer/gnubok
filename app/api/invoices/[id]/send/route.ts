@@ -1,4 +1,3 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
@@ -8,118 +7,88 @@ import { getEmailService } from '@/lib/email/service'
 import {
   generateInvoiceEmailHtml,
   generateInvoiceEmailText,
-  generateInvoiceEmailSubject
+  generateInvoiceEmailSubject,
 } from '@/lib/email/invoice-templates'
 import { createInvoiceJournalEntry } from '@/lib/bookkeeping/invoice-entries'
 import { uploadDocument } from '@/lib/core/documents/document-service'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
-import { requireCompanyId } from '@/lib/company/context'
-import { requireWritePermission } from '@/lib/auth/require-write'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { Invoice, InvoiceItem, Customer, CompanySettings } from '@/types'
 
 ensureInitialized()
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id } = await params
-  const supabase = await createClient()
+export const POST = withRouteContext(
+  'invoice.send',
+  async (_request, ctx, { params }: { params: Promise<{ id: string }> }) => {
+    const { id } = await params
+    const { user, supabase, companyId, log, requestId } = ctx
+    const opLog = log.child({ invoiceId: id })
 
-  const { data: { user } } = await supabase.auth.getUser()
+    const emailService = getEmailService()
+    if (!emailService.isConfigured()) {
+      return errorResponseFromCode('INVOICE_SEND_EMAIL_NOT_CONFIGURED', opLog, { requestId })
+    }
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const writeCheck = await requireWritePermission(supabase, user.id)
-  if (!writeCheck.ok) return writeCheck.response
-
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  // Check if email is configured
-  const emailService = getEmailService()
-  if (!emailService.isConfigured()) {
-    return NextResponse.json(
-      { error: 'E-posttjänsten är inte konfigurerad. Kontrollera att RESEND_API_KEY och RESEND_FROM_EMAIL är satta i miljövariablerna.' },
-      { status: 503 }
-    )
-  }
-
-  // Fetch invoice with customer and items
-  const { data: invoice, error: invoiceError } = await supabase
-    .from('invoices')
-    .select(`
-      *,
-      customer:customers(*),
-      items:invoice_items(*)
-    `)
-    .eq('id', id)
-    .eq('company_id', companyId)
-    .single()
-
-  if (invoiceError || !invoice) {
-    return NextResponse.json({ error: 'Fakturan hittades inte' }, { status: 404 })
-  }
-
-  // Verify customer has email
-  const customer = invoice.customer as Customer
-  if (!customer.email) {
-    return NextResponse.json(
-      { error: 'Kunden saknar e-postadress. Uppdatera kunduppgifterna först.' },
-      { status: 400 }
-    )
-  }
-
-  // Fetch company settings
-  const { data: company, error: companyError } = await supabase
-    .from('company_settings')
-    .select('*')
-    .eq('company_id', companyId)
-    .single()
-
-  if (companyError || !company) {
-    return NextResponse.json(
-      { error: 'Företagsinställningar saknas' },
-      { status: 404 }
-    )
-  }
-
-  // Assign invoice number now if this is a draft being sent for the first time.
-  // Mutates `invoice.invoice_number` so the rest of this flow (PDF render,
-  // email subject, journal entry description) sees the new value.
-  try {
-    await ensureInvoiceNumber(supabase, companyId, invoice as Invoice)
-  } catch (err) {
-    console.error('Failed to assign invoice number on send:', err)
-    return NextResponse.json(
-      { error: 'Kunde inte tilldela fakturanummer. Försök igen.' },
-      { status: 500 }
-    )
-  }
-
-  // Sort items by sort_order
-  const items = (invoice.items as InvoiceItem[]).sort(
-    (a, b) => a.sort_order - b.sort_order
-  )
-
-  // If this is a credit note, fetch the original invoice number
-  let originalInvoiceNumber: string | undefined
-  if (invoice.credited_invoice_id) {
-    const { data: originalInvoice } = await supabase
+    const { data: invoice, error: invoiceError } = await supabase
       .from('invoices')
-      .select('invoice_number')
-      .eq('id', invoice.credited_invoice_id)
+      .select(`
+        *,
+        customer:customers(*),
+        items:invoice_items(*)
+      `)
+      .eq('id', id)
       .eq('company_id', companyId)
       .single()
 
-    if (originalInvoice) {
-      originalInvoiceNumber = originalInvoice.invoice_number
+    if (invoiceError || !invoice) {
+      return errorResponseFromCode('INVOICE_PAID_NOT_FOUND', opLog, { requestId })
     }
-  }
 
-  try {
-    // Generate PDF
+    const customer = invoice.customer as Customer
+    if (!customer.email) {
+      return errorResponseFromCode('INVOICE_SEND_NO_CUSTOMER_EMAIL', opLog, {
+        requestId,
+        details: { customerId: customer.id },
+      })
+    }
+
+    const { data: company, error: companyError } = await supabase
+      .from('company_settings')
+      .select('*')
+      .eq('company_id', companyId)
+      .single()
+
+    if (companyError || !company) {
+      return errorResponseFromCode('INVOICE_SEND_COMPANY_SETTINGS_MISSING', opLog, { requestId })
+    }
+
+    // Eagerly assign the invoice number — drafts get one only at send time so
+    // discarded drafts never consume a number.
+    try {
+      await ensureInvoiceNumber(supabase, companyId!, invoice as Invoice)
+    } catch (err) {
+      opLog.error('failed to assign invoice number on send', err as Error)
+      return errorResponseFromCode('INVOICE_SEND_NUMBER_ASSIGN_FAILED', opLog, { requestId })
+    }
+
+    const items = (invoice.items as InvoiceItem[]).sort((a, b) => a.sort_order - b.sort_order)
+
+    let originalInvoiceNumber: string | undefined
+    if (invoice.credited_invoice_id) {
+      const { data: originalInvoice } = await supabase
+        .from('invoices')
+        .select('invoice_number')
+        .eq('id', invoice.credited_invoice_id)
+        .eq('company_id', companyId)
+        .single()
+
+      if (originalInvoice) {
+        originalInvoiceNumber = originalInvoice.invoice_number
+      }
+    }
+
+    // Generate PDF — non-fatal failures here become PARTIAL after send.
     const pdfBuffer = await renderToBuffer(
       InvoicePDF({
         invoice: invoice as Invoice,
@@ -127,17 +96,15 @@ export async function POST(
         items,
         company: company as CompanySettings,
         originalInvoiceNumber,
-      })
+      }),
     )
 
-    // Prepare email data
     const emailData = {
       invoice: invoice as Invoice,
       customer,
-      company: company as CompanySettings
+      company: company as CompanySettings,
     }
 
-    // Determine filename based on document type
     const isCreditNote = !!invoice.credited_invoice_id
     const docType = invoice.document_type || 'invoice'
     let filename: string
@@ -151,7 +118,6 @@ export async function POST(
       filename = `faktura-${invoice.invoice_number}.pdf`
     }
 
-    // Send email (CC the user so they have a copy of what was sent)
     const ccAddress = company.email || user.email
     const result = await emailService.sendEmail({
       to: customer.email,
@@ -165,42 +131,50 @@ export async function POST(
         {
           filename,
           content: pdfBuffer,
-          contentType: 'application/pdf'
-        }
-      ]
+          contentType: 'application/pdf',
+        },
+      ],
     })
 
     if (!result.success) {
-      console.error('Failed to send invoice email:', result.error)
-      return NextResponse.json(
-        { error: `Kunde inte skicka e-post: ${result.error}` },
-        { status: 500 }
-      )
+      opLog.error('email provider failed to send invoice', new Error(result.error || 'Unknown'))
+      return errorResponseFromCode('INVOICE_SEND_PROVIDER_FAILED', opLog, {
+        requestId,
+        details: { providerError: result.error },
+      })
     }
 
-    // Update invoice status to "sent"
-    const { error: updateError } = await supabase
-      .from('invoices')
-      .update({ status: 'sent' })
-      .eq('id', id)
-      .eq('company_id', companyId)
+    // From here on the invoice has reached the customer. Failures in the
+    // follow-up steps degrade the response to PARTIAL — the user gets a
+    // success toast with a sub-warning, and the audit trail records exactly
+    // which sub-step broke.
+    const partialFailures: Array<{ step: string; reason: string }> = []
 
-    if (updateError) {
-      console.error('Failed to update invoice status:', updateError)
-      // Don't fail the request - the email was sent successfully
+    {
+      const { error: updateError } = await supabase
+        .from('invoices')
+        .update({ status: 'sent' })
+        .eq('id', id)
+        .eq('company_id', companyId)
+
+      if (updateError) {
+        opLog.warn('failed to update invoice status to sent', updateError)
+        partialFailures.push({ step: 'status_update', reason: updateError.message })
+      }
     }
 
-    // Only create journal entries for real invoices (not proformas or delivery notes)
     const isRealInvoice = !invoice.document_type || invoice.document_type === 'invoice'
+    const accountingMethod = (company as Record<string, unknown>).accounting_method as string | undefined
     let createdJournalEntryId: string | undefined
-    if (isRealInvoice && ((company as Record<string, unknown>).accounting_method === 'accrual' || !(company as Record<string, unknown>).accounting_method)) {
+
+    if (isRealInvoice && (!accountingMethod || accountingMethod === 'accrual')) {
       try {
         const journalEntry = await createInvoiceJournalEntry(
           supabase,
-          companyId,
+          companyId!,
           user.id,
           invoice as Invoice,
-          (company as CompanySettings).entity_type
+          (company as CompanySettings).entity_type,
         )
         if (journalEntry) {
           createdJournalEntryId = journalEntry.id
@@ -210,16 +184,18 @@ export async function POST(
             .eq('id', id)
         }
       } catch (err) {
-        console.error('Failed to create invoice journal entry on send:', err)
-        // Non-blocking — don't fail the send
+        opLog.error('failed to create invoice journal entry on send', err as Error)
+        partialFailures.push({
+          step: 'journal_entry',
+          reason: err instanceof Error ? err.message : 'unknown',
+        })
       }
     }
 
-    // Auto-store invoice PDF as underlag and link to journal entry
     if (isRealInvoice) {
       try {
         const pdfArrayBuffer = new Uint8Array(pdfBuffer).buffer as ArrayBuffer
-        await uploadDocument(supabase, user.id, companyId, {
+        await uploadDocument(supabase, user.id, companyId!, {
           name: filename,
           buffer: pdfArrayBuffer,
           type: 'application/pdf',
@@ -228,26 +204,34 @@ export async function POST(
           journal_entry_id: createdJournalEntryId,
         })
       } catch (err) {
-        console.error('Failed to store invoice PDF as underlag:', err)
-        // Non-blocking — don't fail the send
+        opLog.error('failed to store invoice PDF as underlag', err as Error)
+        partialFailures.push({
+          step: 'pdf_archive',
+          reason: err instanceof Error ? err.message : 'unknown',
+        })
       }
     }
 
     await eventBus.emit({
       type: 'invoice.sent',
-      payload: { invoice: invoice as Invoice, companyId, userId: user.id },
+      payload: { invoice: invoice as Invoice, companyId: companyId!, userId: user.id },
     })
+
+    if (partialFailures.length > 0) {
+      opLog.warn('invoice sent with partial follow-up failures', {
+        errorCode: 'INVOICE_SEND_PARTIAL',
+        failures: partialFailures,
+      })
+    }
 
     return NextResponse.json({
       success: true,
       message: `Fakturan har skickats till ${customer.email} (kopia till ${ccAddress})`,
-      messageId: result.messageId
+      messageId: result.messageId,
+      ...(partialFailures.length > 0
+        ? { partial: true, partial_failures: partialFailures }
+        : {}),
     })
-  } catch (error) {
-    console.error('Send invoice error:', error)
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Kunde inte skicka fakturan' },
-      { status: 500 }
-    )
-  }
-}
+  },
+  { requireWrite: true },
+)

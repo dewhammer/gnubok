@@ -1,29 +1,31 @@
-import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { generateGeneralLedger } from '@/lib/reports/general-ledger'
-import { requireCompanyId } from '@/lib/company/context'
+import { withRouteContext } from '@/lib/api/with-route-context'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 
-export async function GET(request: Request) {
-  const supabase = await createClient()
+export const GET = withRouteContext(
+  'report.general_ledger',
+  async (request, ctx) => {
+    const { supabase, companyId, log, requestId } = ctx
 
-  const { data: { user } } = await supabase.auth.getUser()
+    const { searchParams } = new URL(request.url)
+    const periodId = searchParams.get('period_id')
+    const accountFrom = searchParams.get('account_from') || undefined
+    const accountTo = searchParams.get('account_to') || undefined
 
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+    if (!periodId) {
+      return errorResponseFromCode('REPORT_PERIOD_REQUIRED', log, { requestId })
+    }
 
-  const companyId = await requireCompanyId(supabase, user.id)
-
-  const { searchParams } = new URL(request.url)
-  const periodId = searchParams.get('period_id')
-  const accountFrom = searchParams.get('account_from') || undefined
-  const accountTo = searchParams.get('account_to') || undefined
-
-  if (!periodId) {
-    return NextResponse.json({ error: 'period_id is required' }, { status: 400 })
-  }
-
-  const data = await generateGeneralLedger(supabase, companyId, periodId, accountFrom, accountTo)
-
-  return NextResponse.json({ data })
-}
+    try {
+      const data = await generateGeneralLedger(supabase, companyId!, periodId, accountFrom, accountTo)
+      return NextResponse.json({ data })
+    } catch (err) {
+      log.error('general ledger generation failed', err as Error, { periodId })
+      return errorResponseFromCode('REPORT_GENERATION_FAILED', log, {
+        requestId,
+        details: { reason: err instanceof Error ? err.message : 'unknown' },
+      })
+    }
+  },
+)

@@ -1,41 +1,30 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
+import { withCronContext } from '@/lib/api/with-cron-context'
+import { errorResponse } from '@/lib/errors/get-structured-error'
 
 /**
- * GET /api/events/cleanup/cron
- * Daily cron job to delete event_log rows older than 30 days.
- * Runs at 02:00 UTC every day.
+ * GET /api/events/cleanup/cron — daily 02:00 UTC.
+ * Removes event_log rows older than 30 days.
  */
-export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization')
-  const cronSecret = process.env.CRON_SECRET
+export const GET = withCronContext('cron.events_cleanup', async (_request, ctx) => {
+  const supabase = createServiceClient()
 
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - 30)
+
+  const { error, count } = await supabase
+    .from('event_log')
+    .delete({ count: 'exact' })
+    .lt('created_at', cutoff.toISOString())
+
+  if (error) {
+    ctx.log.error('event log cleanup failed', error)
+    return errorResponse(error, ctx.log, { requestId: ctx.requestId })
   }
 
-  try {
-    const supabase = await createServiceClient()
+  const deleted = count ?? 0
+  ctx.log.info('event log cleanup summary', { deleted, cutoff: cutoff.toISOString() })
 
-    const cutoff = new Date()
-    cutoff.setDate(cutoff.getDate() - 30)
-
-    const { error, count } = await supabase
-      .from('event_log')
-      .delete({ count: 'exact' })
-      .lt('created_at', cutoff.toISOString())
-
-    if (error) throw error
-
-    const deleted = count ?? 0
-    console.log(`Event log cleanup completed: ${deleted} events removed`)
-
-    return NextResponse.json({ success: true, deleted })
-  } catch (error) {
-    console.error('Error in event log cleanup cron:', error)
-    return NextResponse.json(
-      { error: 'Failed to clean up event log' },
-      { status: 500 }
-    )
-  }
-}
+  return NextResponse.json({ success: true, deleted })
+})
