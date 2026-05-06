@@ -131,6 +131,23 @@ describe('POST /api/invoices/[id]/send', () => {
     expect((body.error as unknown as { code: string }).code).toBe('INVOICE_PAID_NOT_FOUND')
   })
 
+  it('returns 400 when invoice is cancelled (makulerad)', async () => {
+    const cancelledInvoice = makeInvoice({
+      id: 'inv-1',
+      status: 'cancelled',
+      invoice_number: 'F-2026001',
+      items: [],
+    })
+    enqueue({ data: cancelledInvoice, error: null })
+
+    const request = createMockRequest('/api/invoices/inv-1/send', { method: 'POST' })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+    const { status, body } = await parseJsonResponse<{ error: string }>(response)
+
+    expect(status).toBe(400)
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_SEND_CANCELLED')
+  })
+
   it('returns 400 when customer has no email', async () => {
     const noEmailInvoice = makeInvoice({
       id: 'inv-1',

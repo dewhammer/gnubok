@@ -149,6 +149,27 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_NOT_FOUND')
   })
 
+  it('returns 400 when matching against a proforma (defense-in-depth)', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: 12500, invoice_id: null })
+    const proforma = makeInvoice({
+      id: VALID_UUID,
+      status: 'sent',
+      document_type: 'proforma',
+    } as Parameters<typeof makeInvoice>[0])
+    enqueue({ data: tx, error: null })
+    enqueue({ data: proforma, error: null })
+
+    const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
+      method: 'POST',
+      body: { invoice_id: VALID_UUID },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ error: string }>(response)
+
+    expect(status).toBe(400)
+    expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_NOT_INVOICE_TYPE')
+  })
+
   it('returns 400 when invoice is not in unpaid state', async () => {
     const tx = makeTransaction({ id: 'tx-1', amount: 12500, invoice_id: null })
     const invoice = makeInvoice({ id: VALID_UUID, status: 'paid' })

@@ -93,13 +93,17 @@ export default function InvoicesPage() {
 
     const isCreditNote = !!invoice.credited_invoice_id
     const docType = (invoice as Invoice & { document_type?: string }).document_type || 'invoice'
+    // Cancelled invoices are kept in the table for compliance but hidden from
+    // the default 'Alla' view; they only show up when the user explicitly picks
+    // the 'Makulerade' tab.
     const matchesTab =
-      activeTab === 'all' ||
+      (activeTab === 'all' && invoice.status !== 'cancelled') ||
       (activeTab === 'unpaid' && ['sent', 'overdue'].includes(invoice.status) && !isCreditNote && docType === 'invoice') ||
       (activeTab === 'credit' && isCreditNote) ||
-      (activeTab === 'proforma' && docType === 'proforma') ||
-      (activeTab === 'delivery_note' && docType === 'delivery_note') ||
-      (activeTab !== 'proforma' && activeTab !== 'delivery_note' && invoice.status === activeTab)
+      (activeTab === 'proforma' && docType === 'proforma' && invoice.status !== 'cancelled') ||
+      (activeTab === 'delivery_note' && docType === 'delivery_note' && invoice.status !== 'cancelled') ||
+      (activeTab === 'cancelled' && invoice.status === 'cancelled') ||
+      (activeTab !== 'all' && activeTab !== 'proforma' && activeTab !== 'delivery_note' && activeTab !== 'cancelled' && invoice.status === activeTab)
 
     return matchesSearch && matchesTab
   })
@@ -209,6 +213,7 @@ export default function InvoicesPage() {
             <SelectItem value="proforma">Proforma</SelectItem>
             <SelectItem value="delivery_note">Följesedel</SelectItem>
             <SelectItem value="credit">Kredit</SelectItem>
+            <SelectItem value="cancelled">Makulerade</SelectItem>
           </SelectContent>
         </Select>
         {/* Desktop: tab bar */}
@@ -221,6 +226,7 @@ export default function InvoicesPage() {
             <TabsTrigger value="proforma">Proforma</TabsTrigger>
             <TabsTrigger value="delivery_note">Följesedel</TabsTrigger>
             <TabsTrigger value="credit">Kredit</TabsTrigger>
+            <TabsTrigger value="cancelled">Makulerade</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>

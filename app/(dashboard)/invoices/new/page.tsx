@@ -78,6 +78,7 @@ export default function NewInvoicePage() {
   const [isCreatingCustomer, setIsCreatingCustomer] = useState(false)
   const [hasBankDetails, setHasBankDetails] = useState<boolean | null>(null)
   const [showBankSetup, setShowBankSetup] = useState(false)
+  const [accountingMethod, setAccountingMethod] = useState<'accrual' | 'cash'>('accrual')
   const pendingCustomerRef = useRef<Customer | null>(null)
 
   const {
@@ -137,7 +138,7 @@ export default function NewInvoicePage() {
     if (!company?.id) return
     const { data } = await supabase
       .from('company_settings')
-      .select('invoice_default_notes, clearing_number, account_number, bankgiro')
+      .select('invoice_default_notes, clearing_number, account_number, bankgiro, accounting_method')
       .eq('company_id', company.id)
       .single()
     if (data?.invoice_default_notes) {
@@ -147,6 +148,9 @@ export default function NewInvoicePage() {
     setHasBankDetails(
       !!(data?.clearing_number && data?.account_number) || !!data?.bankgiro
     )
+    if (data?.accounting_method === 'cash' || data?.accounting_method === 'accrual') {
+      setAccountingMethod(data.accounting_method)
+    }
   }
 
   useEffect(() => {
@@ -812,7 +816,9 @@ export default function NewInvoicePage() {
           isSubmitting={isSubmitting}
           title={watchDocumentType === 'proforma' ? 'Granska proformafaktura' : watchDocumentType === 'delivery_note' ? 'Granska följesedel' : 'Granska faktura'}
           warningText={watchDocumentType === 'invoice'
-            ? 'En faktura skapas och en verifikation bokförs. Verifikationen kan inte redigeras direkt, men kan korrigeras via en kreditnota.'
+            ? accountingMethod === 'cash'
+              ? 'En faktura skapas och tilldelas ett fakturanummer. Verifikationen bokförs först när fakturan markeras som betald (kontantmetoden).'
+              : 'En faktura skapas och tilldelas ett fakturanummer. När den skickas eller markeras som skickad bokförs en verifikation, som inte kan redigeras direkt men kan korrigeras via en kreditnota.'
             : watchDocumentType === 'proforma'
               ? 'En proformafaktura skapas. Ingen verifikation bokförs. Proforman kan senare konverteras till en riktig faktura.'
               : 'En följesedel skapas utan priser. Ingen verifikation bokförs.'}

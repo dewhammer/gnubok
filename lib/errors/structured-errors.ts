@@ -292,6 +292,11 @@ const MATCH_INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Fakturan är inte i ett obetalt läge och kan inte matchas.',
     message_en: 'Invoice is not in an unpaid state.',
   },
+  MATCH_INVOICE_NOT_INVOICE_TYPE: {
+    httpStatus: 400,
+    message_sv: 'Endast fakturor kan matchas mot en transaktion. Proforma och följesedel saknar momsskyldighet.',
+    message_en: 'Only invoices may be matched to a transaction; proforma and delivery notes have no VAT obligation.',
+  },
   MATCH_INVOICE_ALREADY_PAID: {
     httpStatus: 409,
     message_sv: 'Fakturan har redan slutbetalats av en annan förfrågan.',
@@ -383,6 +388,11 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Fakturaraderna kunde inte sparas.',
     message_en: 'Invoice items insert failed.',
   },
+  INVOICE_CREATE_NUMBER_ASSIGN_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte tilldela fakturanummer vid skapande.',
+    message_en: 'Failed to assign invoice number on create.',
+  },
   INVOICE_CREDIT_ORIGINAL_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Ursprungsfakturan kunde inte hittas.',
@@ -445,6 +455,11 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
       'Fakturan skickades men en efterföljande åtgärd misslyckades (verifikation eller PDF-bilaga).',
     message_en: 'Invoice was sent but a follow-up step (journal entry or PDF) failed.',
   },
+  INVOICE_SEND_CANCELLED: {
+    httpStatus: 400,
+    message_sv: 'Makulerade fakturor kan inte skickas. Skapa en ny faktura istället.',
+    message_en: 'Cancelled invoices cannot be sent; create a new invoice instead.',
+  },
   INVOICE_PAID_NOT_FOUND: {
     httpStatus: 404,
     message_sv: 'Fakturan kunde inte hittas.',
@@ -483,16 +498,10 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
       description: 'Issue a credit note instead of deleting a posted invoice.',
     },
   },
-  INVOICE_DELETE_NUMBERED: {
-    httpStatus: 400,
-    message_sv:
-      'Det här utkastet har redan tilldelats ett löpnummer och kan inte tas bort. Försök skicka det igen — om sändningen lyckas behövs inget annat steg.',
-    message_en:
-      'Draft already has an invoice number assigned; refusing to delete to preserve the number sequence. Retry the send — assignment is idempotent.',
-    remediation: {
-      description:
-        'Retry sending the invoice; ensureInvoiceNumber is idempotent so no new number will be consumed. If sending is no longer desired, contact support to clean up the orphan number.',
-    },
+  INVOICE_CANCEL_RACE: {
+    httpStatus: 409,
+    message_sv: 'Fakturan ändrades samtidigt och kunde inte makuleras. Ladda om och försök igen.',
+    message_en: 'Invoice was modified concurrently and could not be cancelled. Reload and retry.',
   },
 }
 

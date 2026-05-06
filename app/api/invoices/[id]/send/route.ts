@@ -45,6 +45,14 @@ export const POST = withRouteContext(
       return errorResponseFromCode('INVOICE_PAID_NOT_FOUND', opLog, { requestId })
     }
 
+    // A cancelled invoice keeps its F-series number for compliance with ML 17
+    // kap 24§ but is not a valid faktura — sending it would silently
+    // re-activate it (the .update({ status: 'sent' }) below has no status
+    // guard) and could deliver a "MAKULERAD" PDF as if it were live.
+    if (invoice.status === 'cancelled') {
+      return errorResponseFromCode('INVOICE_SEND_CANCELLED', opLog, { requestId })
+    }
+
     const customer = invoice.customer as Customer
     if (!customer.email) {
       return errorResponseFromCode('INVOICE_SEND_NO_CUSTOMER_EMAIL', opLog, {

@@ -170,7 +170,7 @@ describe('POST /api/invoices (create invoice)', () => {
 
   it('creates invoice with items and emits event', async () => {
     const customer = makeCustomer({ id: VALID_UUID })
-    const createdInvoice = makeInvoice({ id: 'inv-1' })
+    const createdInvoice = makeInvoice({ id: 'inv-1', invoice_number: null })
 
     mockGetVatRules.mockReturnValue({
       treatment: 'standard_25',
@@ -188,12 +188,14 @@ describe('POST /api/invoices (create invoice)', () => {
 
     // Fetch customer
     enqueue({ data: customer, error: null })
-    // Insert invoice (no number generated for drafts — assigned at send time)
+    // Insert invoice (number is null on insert; allocated immediately after items)
     enqueue({ data: createdInvoice, error: null })
     // Insert items
     enqueue({ data: null, error: null })
+    // ensureInvoiceNumber → generate_invoice_number RPC
+    enqueue({ data: '2026001', error: null })
     // Fetch complete invoice
-    enqueue({ data: { ...createdInvoice, customer, items: [] }, error: null })
+    enqueue({ data: { ...createdInvoice, invoice_number: '2026001', customer, items: [] }, error: null })
 
     const emitSpy = vi.spyOn(eventBus, 'emit')
 
@@ -257,6 +259,51 @@ describe('POST /api/invoices (create invoice)', () => {
 
     expect(status).toBe(500)
     expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREATE_ITEMS_FAILED')
+  })
+
+  it('soft-cancels the invoice when invoice-number allocation fails', async () => {
+    const customer = makeCustomer({ id: VALID_UUID })
+    const createdInvoice = makeInvoice({ id: 'inv-1', invoice_number: null })
+
+    mockGetVatRules.mockReturnValue({
+      treatment: 'standard_25',
+      rate: 25,
+      momsRuta: '10',
+      reverseChargeText: null,
+    })
+    mockCalculateVat.mockReturnValue(2500)
+    mockGetAvailableVatRates.mockReturnValue([
+      { rate: 25, label: '25%', treatment: 'standard_25' },
+      { rate: 12, label: '12%', treatment: 'reduced_12' },
+      { rate: 6, label: '6%', treatment: 'reduced_6' },
+      { rate: 0, label: '0% (momsfri)', treatment: 'exempt' },
+    ])
+
+    enqueue({ data: customer, error: null })
+    enqueue({ data: createdInvoice, error: null })
+    // Items insertion succeeds
+    enqueue({ data: null, error: null })
+    // generate_invoice_number RPC fails
+    enqueue({ data: null, error: { message: 'sequence locked' } })
+    // Rollback path: re-fetch invoice_number, then soft-cancel.
+    enqueue({ data: { invoice_number: null }, error: null })
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/invoices', {
+      method: 'POST',
+      body: {
+        customer_id: VALID_UUID,
+        invoice_date: '2024-06-15',
+        due_date: '2024-07-15',
+        currency: 'SEK',
+        items: [{ description: 'Test', quantity: 1, unit: 'st', unit_price: 1000 }],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{ error: string }>(response)
+
+    expect(status).toBe(500)
+    expect((body.error as unknown as { code: string }).code).toBe('INVOICE_CREATE_NUMBER_ASSIGN_FAILED')
   })
 })
 

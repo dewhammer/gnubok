@@ -314,20 +314,20 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
       if (!response.ok) {
         const data = await response.json()
-        throw new Error(data.error || 'Kunde inte ta bort fakturan')
+        throw new Error(data.error || 'Kunde inte makulera fakturan')
       }
 
       toast({
-        title: 'Faktura borttagen',
+        title: 'Faktura makulerad',
         description: invoice.invoice_number
-          ? `Utkast ${invoice.invoice_number} har tagits bort`
-          : 'Utkastet har tagits bort',
+          ? `Faktura ${invoice.invoice_number} har makulerats. Numret behålls i serien.`
+          : 'Utkastet har makulerats.',
       })
 
       router.push('/invoices')
     } catch (error) {
       toast({
-        title: 'Kunde inte ta bort fakturan',
+        title: 'Kunde inte makulera fakturan',
         description: error instanceof Error ? error.message : 'Försök igen.',
         variant: 'destructive',
       })
@@ -904,24 +904,15 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                         </p>
                       </>
                     )}
-                    {invoice.invoice_number ? (
-                      <div className="flex items-start gap-2 p-3 bg-muted/50 border border-border rounded-lg mt-2">
-                        <AlertTriangle className="h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                        <p className="text-xs text-muted-foreground">
-                          Utkastet har redan tilldelats löpnummer {invoice.invoice_number} och kan inte tas bort. Försök skicka fakturan igen — om sändningen lyckas behövs inget annat steg.
-                        </p>
-                      </div>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        className="w-full text-destructive hover:text-destructive"
-                        onClick={() => setShowDeleteDialog(true)}
-                        disabled={isDeleting}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Ta bort utkast
-                      </Button>
-                    )}
+                    <Button
+                      variant="outline"
+                      className="w-full text-destructive hover:text-destructive"
+                      onClick={() => setShowDeleteDialog(true)}
+                      disabled={isDeleting}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Makulera utkast
+                    </Button>
                   </>
                 )}
                 {(invoice.status === 'sent' || invoice.status === 'overdue') && isRealInvoice && (
@@ -956,17 +947,25 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         </div>
       </div>
 
-      {/* Delete confirmation dialog. Only reachable when invoice_number is null;
-          numbered drafts surface an inline retry-send notice instead. */}
+      {/* Cancel confirmation dialog. The invoice transitions to status='cancelled'
+          and the F-series number is retained so the sequence stays gap-free. */}
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Ta bort fakturautkast</DialogTitle>
+            <DialogTitle>Makulera fakturautkast</DialogTitle>
             <DialogDescription>
-              Är du säker på att du vill ta bort utkastet? Detta kan inte ångras.
-              <span className="mt-2 block text-muted-foreground">
-                Inget löpnummer har tilldelats — fakturaserien påverkas inte.
-              </span>
+              {invoice.invoice_number ? (
+                <>
+                  Fakturan markeras som makulerad och sparas i fakturalistan med status <strong>Makulerad</strong>.
+                  <span className="mt-2 block text-muted-foreground">
+                    Fakturanumret {invoice.invoice_number} behålls för att hålla nummerserien obruten enligt ML 17 kap 24§.
+                  </span>
+                </>
+              ) : (
+                <>
+                  Utkastet markeras som makulerat. Detta kan inte ångras.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -975,7 +974,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
             </Button>
             <Button variant="destructive" onClick={deleteInvoice} disabled={isDeleting}>
               {isDeleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Ta bort
+              Makulera
             </Button>
           </DialogFooter>
         </DialogContent>

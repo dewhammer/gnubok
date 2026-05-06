@@ -234,6 +234,26 @@ const styles = StyleSheet.create({
     color: '#856404',
     textAlign: 'center',
   },
+  cancelledBanner: {
+    marginBottom: 16,
+    padding: 10,
+    backgroundColor: '#f8d7da',
+    borderWidth: 2,
+    borderColor: '#721c24',
+    borderRadius: 4,
+  },
+  cancelledBannerTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#721c24',
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  cancelledBannerText: {
+    fontSize: 9,
+    color: '#721c24',
+    textAlign: 'center',
+  },
   footer: {
     position: 'absolute',
     bottom: 30,
@@ -325,15 +345,27 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
   return (
     <Document>
       <Page size="A4" style={styles.page}>
-        {/* Draft banner — visible warning when this PDF is rendered for an
-            invoice that has not yet been assigned a löpnummer. ML 17 kap 24§
-            requires a unique invoice number; without one the document is not
-            valid as fakturaunderlag and must not be sent to a customer. */}
-        {!invoice.invoice_number && (
+        {/* Status banner — cancelled takes precedence over draft so a cancelled
+            row that lacks a number (legacy un-numbered draft that was later
+            cancelled) still surfaces as MAKULERAD rather than UTKAST. The draft
+            banner only shows for genuine drafts and for the corrupt-state case
+            of a non-cancelled invoice that somehow lacks a number. */}
+        {invoice.status === 'cancelled' ? (
+          <View style={styles.cancelledBanner}>
+            <Text style={styles.cancelledBannerTitle}>MAKULERAD – inte en giltig faktura</Text>
+            <Text style={styles.cancelledBannerText}>
+              {invoice.invoice_number
+                ? `Faktura ${invoice.invoice_number} har makulerats. Numret behålls i serien för att hålla nummerföljden obruten enligt ML 17 kap 24§, men dokumentet är inte ett giltigt fakturaunderlag.`
+                : 'Detta utkast har makulerats och är inte ett giltigt fakturaunderlag.'}
+            </Text>
+          </View>
+        ) : (invoice.status === 'draft' || !invoice.invoice_number) && (
           <View style={styles.draftBanner}>
             <Text style={styles.draftBannerTitle}>UTKAST – inte en giltig faktura</Text>
             <Text style={styles.draftBannerText}>
-              Denna faktura saknar löpnummer och kan inte användas som fakturaunderlag enligt ML 17 kap 24§. Skicka fakturan via systemet för att tilldela ett nummer.
+              {invoice.invoice_number
+                ? 'Detta är ett utkast. Markera fakturan som skickad eller skicka via systemet för att göra den giltig som fakturaunderlag.'
+                : 'Denna faktura saknar löpnummer och kan inte användas som fakturaunderlag enligt ML 17 kap 24§. Skicka fakturan via systemet för att tilldela ett nummer.'}
             </Text>
           </View>
         )}

@@ -80,6 +80,19 @@ export const POST = withRouteContext(
       return errorResponseFromCode('MATCH_INVOICE_NOT_FOUND', txLog, { requestId })
     }
 
+    // Defense-in-depth: the InvoicePicker UI filters proformas / delivery
+    // notes out of the candidate list, but a direct API call could still
+    // pass a proforma id. A proforma is not a faktura per ML 17 kap 24§ —
+    // no VAT obligation, no binding payment — so matching one against a
+    // bank receipt would book income and VAT incorrectly.
+    const docType = (invoice as { document_type?: string }).document_type ?? 'invoice'
+    if (docType !== 'invoice') {
+      return errorResponseFromCode('MATCH_INVOICE_NOT_INVOICE_TYPE', txLog, {
+        requestId,
+        details: { documentType: docType },
+      })
+    }
+
     if (invoice.status !== 'sent' && invoice.status !== 'overdue' && invoice.status !== 'partially_paid') {
       return errorResponseFromCode('MATCH_INVOICE_NOT_OPEN', txLog, {
         requestId,
@@ -267,6 +280,7 @@ export const POST = withRouteContext(
       remaining_amount: newRemaining,
       journal_entry_id: journalEntryId,
       journal_entry_error: journalEntryError,
+      category: 'income_services',
     })
   },
   { requireWrite: true },

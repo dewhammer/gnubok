@@ -19,6 +19,7 @@ import TransactionInboxCard from '@/components/transactions/TransactionInboxCard
 import TransactionHistoryList from '@/components/transactions/TransactionHistoryList'
 import InboxZeroState from '@/components/transactions/InboxZeroState'
 import InvoiceMatchDialog from '@/components/transactions/InvoiceMatchDialog'
+import InvoicePicker from '@/components/transactions/InvoicePicker'
 import TransactionBookingDialog from '@/components/transactions/TransactionBookingDialog'
 import QuickReviewDialog from '@/components/transactions/QuickReviewDialog'
 
@@ -75,6 +76,11 @@ export default function TransactionsPage() {
   // Template picker dialog
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false)
   const [templatePickerTransaction, setTemplatePickerTransaction] = useState<TransactionWithInvoice | null>(null)
+
+  // Invoice picker dialog (manual match)
+  const [invoicePickerOpen, setInvoicePickerOpen] = useState(false)
+  const [invoicePickerTransaction, setInvoicePickerTransaction] = useState<TransactionWithInvoice | null>(null)
+  const [isMatchingFromPicker, setIsMatchingFromPicker] = useState(false)
 
   // Quick review dialog (suggestion review before booking)
   const [quickReviewOpen, setQuickReviewOpen] = useState(false)
@@ -454,6 +460,69 @@ export default function TransactionsPage() {
     } catch {
       toast({ title: 'Matchning misslyckades', description: 'Transaktionen kunde inte matchas med fakturan. Försök igen.', variant: 'destructive' })
       return false
+    }
+  }
+
+  async function handleSelectInvoiceFromPicker(invoice: Invoice & { customer?: Customer }) {
+    if (!invoicePickerTransaction) return
+    const tx = invoicePickerTransaction
+    setIsMatchingFromPicker(true)
+    try {
+      const response = await fetch(`/api/transactions/${tx.id}/match-invoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_id: invoice.id }),
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        toast({
+          title: 'Fakturamatchning misslyckades',
+          description: getErrorMessage(result, { context: 'transaction' }),
+          variant: 'destructive',
+        })
+        setIsMatchingFromPicker(false)
+        return
+      }
+
+      toast({
+        title: 'Faktura matchad',
+        description: `Faktura ${invoice.invoice_number ?? ''} markerad som betald`,
+      })
+
+      setInvoicePickerOpen(false)
+      setInvoicePickerTransaction(null)
+      setExitingIds((prev) => new Set(prev).add(tx.id))
+      setTotalUncategorizedCount((prev) => Math.max(0, (prev ?? 1) - 1))
+      setTimeout(() => {
+        setTransactions((prev) =>
+          prev.map((t) =>
+            t.id === tx.id
+              ? {
+                  ...t,
+                  invoice_id: invoice.id,
+                  potential_invoice_id: null,
+                  potential_invoice: undefined,
+                  is_business: true,
+                  category: (result.category ?? 'income_services') as TransactionCategory,
+                  journal_entry_id: result.journal_entry_id,
+                }
+              : t
+          )
+        )
+        setExitingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(tx.id)
+          return next
+        })
+        setIsMatchingFromPicker(false)
+      }, 350)
+    } catch {
+      toast({
+        title: 'Matchning misslyckades',
+        description: 'Transaktionen kunde inte matchas med fakturan. Försök igen.',
+        variant: 'destructive',
+      })
+      setIsMatchingFromPicker(false)
     }
   }
 
@@ -895,11 +964,56 @@ export default function TransactionsPage() {
               handleOpenTemplateReview(templatePickerTransaction, templateId)
             }}
           />
-          <div className="pt-2 border-t">
+          <div className="pt-2 border-t space-y-1">
+            {templatePickerTransaction && templatePickerTransaction.amount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full text-muted-foreground"
+                onClick={() => {
+                  const tx = templatePickerTransaction
+                  setTemplatePickerOpen(false)
+                  setInvoicePickerTransaction(tx)
+                  setInvoicePickerOpen(true)
+                }}
+              >
+                Matcha med faktura...
+              </Button>
+            )}
             <Button variant="ghost" size="sm" className="w-full text-muted-foreground" onClick={handleManualBooking}>
               Ange konton manuellt...
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={invoicePickerOpen}
+        onOpenChange={(open) => {
+          if (isMatchingFromPicker) return
+          setInvoicePickerOpen(open)
+          if (!open) setInvoicePickerTransaction(null)
+        }}
+      >
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Matcha med faktura</DialogTitle>
+          </DialogHeader>
+          {invoicePickerTransaction && (
+            <>
+              <div className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
+                <span className="truncate text-muted-foreground">{invoicePickerTransaction.description}</span>
+                <span className="font-medium tabular-nums flex-shrink-0 ml-3 text-success">
+                  +{formatCurrency(invoicePickerTransaction.amount, invoicePickerTransaction.currency)}
+                </span>
+              </div>
+              <InvoicePicker
+                transaction={invoicePickerTransaction}
+                onSelect={handleSelectInvoiceFromPicker}
+                isProcessing={isMatchingFromPicker}
+              />
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

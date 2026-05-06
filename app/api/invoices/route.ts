@@ -7,6 +7,7 @@ import type { EntityType, AccountingMethod, Invoice, CreditNote, InvoiceDocument
 import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
 import { fetchExchangeRate, convertToSEK } from '@/lib/currency/riksbanken'
 import { createCreditNoteJournalEntry } from '@/lib/bookkeeping/invoice-entries'
+import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { Logger } from '@/lib/logger'
@@ -230,6 +231,56 @@ export const POST = withRouteContext(
         requestId,
         details: { pgCode: itemsError.code, pgMessage: itemsError.message },
       })
+    }
+
+    // Allocate F-series number on save (Fortnox-style). The user gets a numbered
+    // draft they can download and send manually without first lying about
+    // having sent it. Discarded numbered drafts become 'cancelled' rather than
+    // deleted, so the F-series stays gap-free per ML 17 kap 24§.
+    // Delivery notes already have their number from the insert above.
+    if (documentType === 'invoice' || documentType === 'proforma') {
+      try {
+        await ensureInvoiceNumber(supabase, companyId!, invoice as Invoice)
+      } catch (err) {
+        // Soft-cancel rather than hard-delete: if generate_invoice_number bumped
+        // the sequence before failing to write the number back, hard-deleting
+        // would leave a permanent gap in the F-series in violation of ML 17 kap
+        // 24§. Re-fetch the row to pick up any partially-written number, then
+        // flip status='cancelled' so the row (and any allocated number) is
+        // retained for audit. Log loudly if the cancel itself fails so an
+        // operator can clean up.
+        const { data: latest } = await supabase
+          .from('invoices')
+          .select('invoice_number')
+          .eq('id', invoice.id)
+          .single()
+        // Guard on status='draft' for symmetry with the DELETE handler — only
+        // drafts may be cancelled. At this point in the create flow the row
+        // can't realistically be anything else, but the symmetry prevents a
+        // future caller adding a status flip between insert and number-
+        // allocation from accidentally cancelling a posted invoice.
+        const { error: cancelErr } = await supabase
+          .from('invoices')
+          .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+          .eq('id', invoice.id)
+          .eq('company_id', companyId!)
+          .eq('status', 'draft')
+        if (cancelErr) {
+          log.error('invoice number allocation failed AND rollback-cancel failed; row may be orphaned', cancelErr, {
+            invoiceId: invoice.id,
+            allocatedNumber: latest?.invoice_number ?? null,
+            originalError: (err as Error).message,
+          })
+        } else {
+          log.error('invoice number allocation failed; invoice soft-cancelled', err as Error, {
+            invoiceId: invoice.id,
+            allocatedNumber: latest?.invoice_number ?? null,
+          })
+        }
+        return errorResponseFromCode('INVOICE_CREATE_NUMBER_ASSIGN_FAILED', log, {
+          requestId,
+        })
+      }
     }
 
     const { data: completeInvoice } = await supabase

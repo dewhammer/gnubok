@@ -334,6 +334,115 @@ function skipVoucher(ctx: CompanyCtx, fy: number, n: number): void {
   }
 }
 
+async function closeYearForSeed(ctx: CompanyCtx, fy: number): Promise<void> {
+  const fpId = ctx.fpY[fy]
+  if (!fpId) throw new Error(`No fiscal period for ${fy}`)
+
+  const { data: rows, error } = await sb
+    .from('journal_entry_lines')
+    .select(
+      'account_number, debit_amount, credit_amount, journal_entries!inner(fiscal_period_id, company_id, status)'
+    )
+    .eq('journal_entries.company_id', ctx.companyId)
+    .eq('journal_entries.fiscal_period_id', fpId)
+    .eq('journal_entries.status', 'posted')
+  if (error) throw new Error(`closeYearForSeed query: ${error.message}`)
+
+  const nets = new Map<string, number>()
+  for (const r of rows ?? []) {
+    const acc = r.account_number as string
+    const cls = parseInt(acc[0])
+    if (cls < 3 || cls > 8) continue
+    const net = (Number(r.debit_amount) || 0) - (Number(r.credit_amount) || 0)
+    nets.set(acc, round2((nets.get(acc) ?? 0) + net))
+  }
+
+  const lines: JELine[] = []
+  let totalDebit = 0
+  let totalCredit = 0
+  for (const [acc, net] of nets) {
+    if (Math.abs(net) < 0.005) continue
+    if (net > 0) {
+      lines.push({ account: acc, credit: net, description: `Stängning ${acc}` })
+      totalCredit = round2(totalCredit + net)
+    } else {
+      lines.push({ account: acc, debit: -net, description: `Stängning ${acc}` })
+      totalDebit = round2(totalDebit + -net)
+    }
+  }
+
+  if (lines.length === 0) return
+
+  const balancing = round2(totalDebit - totalCredit)
+  if (balancing > 0) {
+    lines.push({ account: '2099', credit: balancing, description: 'Årets resultat' })
+  } else if (balancing < 0) {
+    lines.push({ account: '2099', debit: -balancing, description: 'Årets förlust' })
+  }
+
+  await postEntry(ctx, fy, dt(fy, 12, 31), `Årsbokslut ${fy}`, 'year_end', lines)
+}
+
+async function postOpeningBalanceFromPriorYear(
+  ctx: CompanyCtx,
+  priorFy: number,
+  nextFy: number
+): Promise<void> {
+  const priorFpId = ctx.fpY[priorFy]
+  const nextFpId = ctx.fpY[nextFy]
+  if (!priorFpId || !nextFpId) throw new Error(`Missing fiscal period`)
+
+  const { data: rows, error } = await sb
+    .from('journal_entry_lines')
+    .select(
+      'account_number, debit_amount, credit_amount, journal_entries!inner(fiscal_period_id, company_id, status)'
+    )
+    .eq('journal_entries.company_id', ctx.companyId)
+    .eq('journal_entries.fiscal_period_id', priorFpId)
+    .eq('journal_entries.status', 'posted')
+  if (error) throw new Error(`postOpeningBalanceFromPriorYear: ${error.message}`)
+
+  const nets = new Map<string, number>()
+  for (const r of rows ?? []) {
+    const acc = r.account_number as string
+    const cls = parseInt(acc[0])
+    if (cls < 1 || cls > 2) continue
+    const net = (Number(r.debit_amount) || 0) - (Number(r.credit_amount) || 0)
+    nets.set(acc, round2((nets.get(acc) ?? 0) + net))
+  }
+
+  const lines: JELine[] = []
+  for (const [acc, net] of nets) {
+    if (Math.abs(net) < 0.005) continue
+    if (net > 0) {
+      lines.push({ account: acc, debit: net, description: `Ingående balans: ${acc}` })
+    } else {
+      lines.push({ account: acc, credit: -net, description: `Ingående balans: ${acc}` })
+    }
+  }
+
+  if (lines.length === 0) return
+
+  const obEntryId = await postEntry(
+    ctx,
+    nextFy,
+    dt(nextFy, 1, 1),
+    `Ingående balans ${nextFy}`,
+    'opening_balance',
+    lines
+  )
+
+  const { error: updErr } = await sb
+    .from('fiscal_periods')
+    .update({
+      opening_balance_entry_id: obEntryId,
+      opening_balances_set: true,
+    })
+    .eq('id', nextFpId)
+    .eq('company_id', ctx.companyId)
+  if (updErr) throw new Error(`set opening_balance_entry_id: ${updErr.message}`)
+}
+
 async function seedKonsultAB(userId: string): Promise<CompanyCtx> {
   console.log('[2] Creating Konsult AB')
   const companyId = await createCompany(userId, 'Konsult AB', '5591234567', 'aktiebolag')
@@ -1257,21 +1366,14 @@ async function seedFY2026Konsult(
   customers: Record<string, string>,
   suppliers: Record<string, string>
 ): Promise<void> {
-  console.log('[5] FY2026: opening balances + 32 customer invoices + state mix + Stripe + supplier')
+  console.log('[5] FY2026: close FY2025, derive opening balance, then activity')
 
-  // Opening balance 2026 (per prompt: bank IB 142000)
-  await postEntry(
-    ctx,
-    2026,
-    dt(2026, 1, 1),
-    'Ingående balans 2026',
-    'opening_balance',
-    [
-      { account: '1930', debit: 142000, description: 'Bank SEB IB' },
-      { account: '2081', credit: 50000, description: 'Aktiekapital' },
-      { account: '2091', credit: 92000, description: 'Balanserat resultat' },
-    ]
-  )
+  // Close FY2025 P&L → 2099 and derive FY2026 IB from FY2025 class 1-2 balances.
+  // Without this, FY2025's net profit silently drops out of FY2026's IB
+  // (compute_prior_opening_balances filters to class 1-2) and balansräkningen
+  // shows "Balanserar ej".
+  await closeYearForSeed(ctx, 2025)
+  await postOpeningBalanceFromPriorYear(ctx, 2025, 2026)
 
   const klient = customers['Klient AB']
   const berlin = customers['Berlin GmbH']
@@ -1909,7 +2011,7 @@ async function seedInboxAndUncategorized(
 
 async function seedHolding(holding: CompanyCtx): Promise<void> {
   console.log('[H] Holding 2026 IB + dotterbolagsaktier')
-  await postEntry(
+  const obEntryId = await postEntry(
     holding,
     2026,
     dt(2026, 1, 1),
@@ -1922,6 +2024,12 @@ async function seedHolding(holding: CompanyCtx): Promise<void> {
       { account: '2091', credit: 300000, description: 'Balanserat resultat' },
     ]
   )
+  const { error } = await sb
+    .from('fiscal_periods')
+    .update({ opening_balance_entry_id: obEntryId, opening_balances_set: true })
+    .eq('id', holding.fpY[2026])
+    .eq('company_id', holding.companyId)
+  if (error) throw new Error(`Holding set opening_balance_entry_id: ${error.message}`)
 }
 
 // ─── MAIN ──────────────────────────────────────────────────────────────────

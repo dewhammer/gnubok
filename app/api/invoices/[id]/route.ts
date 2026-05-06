@@ -5,21 +5,21 @@ import { requireWritePermission } from '@/lib/auth/require-write'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { createLogger } from '@/lib/logger'
 
-const log = createLogger('api.invoices.delete')
+const log = createLogger('api.invoices.cancel')
 
 /**
  * DELETE /api/invoices/[id]
  *
- * Permanently deletes a draft invoice and its items.
+ * Cancels (makulerar) a draft invoice. The row and its F-series number are
+ * retained — the invoice transitions to status='cancelled'. Keeping the row
+ * preserves the invoice-number sequence per ML 17 kap 24§ and BFNAR 2013:2,
+ * so the F-series stays gap-free without any voucher_gap_explanations entry.
  *
- * Two preconditions:
- *   1. status === 'draft' — committed invoices are immutable per BFL and
- *      must be reversed via credit note.
- *   2. invoice_number IS NULL — a draft that already holds an F-series
- *      number is a side effect of an interrupted send/convert/mark-sent.
- *      Destroying it would orphan the number and create a permanent gap
- *      in the verifications series. Refuse and let the user retry the
- *      send instead (ensureInvoiceNumber is idempotent).
+ * Only drafts may be cancelled this way. Sent / paid invoices are immutable
+ * per BFL and must be reversed via a credit note instead.
+ *
+ * Old drafts predating allocate-on-save may have invoice_number = NULL; those
+ * still cancel (status flip) without consuming a number — no special-case path.
  */
 export async function DELETE(
   request: Request,
@@ -54,30 +54,25 @@ export async function DELETE(
     return errorResponseFromCode('INVOICE_DELETE_NOT_DRAFT', log)
   }
 
-  if (invoice.invoice_number !== null) {
-    return errorResponseFromCode('INVOICE_DELETE_NUMBERED', log, {
-      details: { invoice_number: invoice.invoice_number },
-    })
-  }
-
-  const { error: itemsError } = await supabase
-    .from('invoice_items')
-    .delete()
-    .eq('invoice_id', id)
-
-  if (itemsError) {
-    return NextResponse.json({ error: itemsError.message }, { status: 500 })
-  }
-
-  const { error: deleteError } = await supabase
+  // .select() returns the affected rows so we can detect a TOCTOU race where
+  // the status flipped between the fetch above and this update. With only the
+  // .eq('status','draft') guard, a 0-row update returns success and the user
+  // would see "Makulerad" while the invoice is still in its previous state.
+  const { data: updated, error: cancelError } = await supabase
     .from('invoices')
-    .delete()
+    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('company_id', companyId)
+    .eq('status', 'draft')
+    .select('id')
 
-  if (deleteError) {
-    return NextResponse.json({ error: deleteError.message }, { status: 500 })
+  if (cancelError) {
+    return NextResponse.json({ error: cancelError.message }, { status: 500 })
   }
 
-  return NextResponse.json({ data: { deleted: true } })
+  if (!updated || updated.length === 0) {
+    return errorResponseFromCode('INVOICE_CANCEL_RACE', log)
+  }
+
+  return NextResponse.json({ data: { cancelled: true, invoice_number: invoice.invoice_number } })
 }
