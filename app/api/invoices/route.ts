@@ -182,6 +182,13 @@ export const POST = withRouteContext(
         vat_amount_sek: documentType === 'delivery_note' ? null : vatAmountSek,
         total,
         total_sek: documentType === 'delivery_note' ? null : totalSek,
+        // Initialize remaining_amount to total for real invoices so the open-
+        // invoice queries (InvoicePicker, AR ledger, supplier matching) treat
+        // newly-created invoices as fully unpaid. The DB default is 0 — without
+        // this, brand-new fakturor look settled and disappear from match
+        // candidate lists. Proformas and delivery notes have no payment
+        // obligation, so they keep the 0 default.
+        remaining_amount: documentType === 'invoice' ? total : 0,
         vat_treatment: vatRules.treatment,
         vat_rate: documentType === 'delivery_note' ? 0 : (isMixedRate ? null : (uniqueRates.values().next().value ?? vatRules.rate)),
         moms_ruta: vatRules.momsRuta,

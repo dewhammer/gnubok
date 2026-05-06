@@ -179,6 +179,53 @@ export const POST = withRouteContext(
       }
     }
 
+    // Underlag for the payment verifikation: re-attach the invoice PDF that
+    // was archived on send to the new payment journal entry. document_
+    // attachments.journal_entry_id is one-to-one, so we insert a parallel
+    // row pointing at the same storage_path. Same WORM file, second JE
+    // pointer — no copy, no schema change. Non-blocking (BFL 7 kap audit
+    // gap, but the bank line + invoice still exist as evidence).
+    if (journalEntryId && invoice.journal_entry_id) {
+      try {
+        const { data: invoiceDoc } = await supabase
+          .from('document_attachments')
+          .select('storage_path, file_name, file_size_bytes, mime_type, sha256_hash')
+          .eq('journal_entry_id', invoice.journal_entry_id)
+          .eq('company_id', companyId)
+          .eq('is_current_version', true)
+          .limit(1)
+          .maybeSingle()
+        if (invoiceDoc) {
+          // Destructure error: Supabase client returns { data, error } on
+          // postgres-level failures (unique constraint, RLS reject) instead
+          // of throwing, so the surrounding try/catch only covers thrown
+          // JS exceptions. Log via warn so attachment failures are visible
+          // in logs even though we don't abort the match.
+          const { error: attachErr } = await supabase.from('document_attachments').insert({
+            user_id: user.id,
+            company_id: companyId,
+            uploaded_by: user.id,
+            upload_source: 'system',
+            storage_path: invoiceDoc.storage_path,
+            file_name: invoiceDoc.file_name,
+            file_size_bytes: invoiceDoc.file_size_bytes,
+            mime_type: invoiceDoc.mime_type,
+            sha256_hash: invoiceDoc.sha256_hash,
+            journal_entry_id: journalEntryId,
+          })
+          if (attachErr) {
+            txLog.warn('failed to attach invoice PDF to payment journal entry', {
+              attachError: attachErr.message,
+              paymentJournalEntryId: journalEntryId,
+              invoiceJournalEntryId: invoice.journal_entry_id,
+            })
+          }
+        }
+      } catch (err) {
+        txLog.warn('failed to attach invoice PDF to payment journal entry', err as Error)
+      }
+    }
+
     // Optimistic lock: only update if invoice is still in a matchable state.
     const { data: updatedRows, error: updateInvError } = await supabase
       .from('invoices')
