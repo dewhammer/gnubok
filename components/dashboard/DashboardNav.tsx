@@ -22,7 +22,6 @@ import {
   HelpCircle,
   ChevronDown,
   Building2,
-  FileInput,
   Wallet,
   TrendingUp,
   ClipboardCheck,
@@ -71,10 +70,9 @@ const navItems: NavItem[] = [
   { href: '/invoices', label: 'Fakturor', icon: Receipt, group: 'försäljning' },
   { href: '/customers', label: 'Kunder', icon: Users, group: 'försäljning' },
   // AP — Accounts Payable
-  { href: '/expenses', label: 'Leverantörsfakturor', icon: Wallet, group: 'inköp' },
+  { href: '/supplier-invoices', label: 'Leverantörsfakturor', icon: Wallet, group: 'inköp' },
   // Temporarily hidden pending module rework (see feedback #49)
   { href: '/suppliers', label: 'Leverantörer', icon: Building2, group: 'inköp', hidden: true },
-  { href: '/supplier-invoices', label: 'Leverantörsfakturor', icon: FileInput, group: 'inköp', hidden: true },
   // General accounting
   { href: '/pending', label: 'Granskning', icon: ClipboardCheck, group: 'redovisning' },
   { href: '/transactions', label: 'Transaktioner', icon: ArrowLeftRight, group: 'redovisning' },

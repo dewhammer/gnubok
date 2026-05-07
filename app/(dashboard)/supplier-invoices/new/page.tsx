@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useForm, Controller, useFieldArray } from 'react-hook-form'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,17 +10,18 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
-import { ArrowLeft, Plus, Trash2, Lock, AlertCircle } from 'lucide-react'
-import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
 import { SupplierInvoiceReviewContent } from '@/components/suppliers/SupplierInvoiceReviewContent'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import { getAccountDescription } from '@/lib/bookkeeping/account-descriptions'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
-import type { Supplier, BASAccount, VatTreatment } from '@/types'
+import { useCanWrite } from '@/lib/hooks/use-can-write'
+import BankTransactionPicker from '@/components/transactions/BankTransactionPicker'
+import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, Sparkles, Link2 } from 'lucide-react'
+import type { Supplier, BASAccount, VatTreatment, EntityType, InvoiceExtractionResult } from '@/types'
 
 interface LineItem {
   description: string
@@ -43,6 +44,17 @@ interface FormData {
   items: LineItem[]
 }
 
+interface NewSupplierForm {
+  name: string
+  supplier_type: string
+  org_number: string
+  vat_number: string
+  address_line1: string
+  bankgiro: string
+  plusgiro: string
+  default_expense_account: string
+}
+
 function formatAmount(amount: number): string {
   return amount.toLocaleString('sv-SE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
@@ -62,15 +74,62 @@ function inferVatTreatment(items: LineItem[], reverseCharge: boolean): VatTreatm
   return 'standard_25'
 }
 
+// AI returns VAT as integer percent (25, 12, 6, 0). The form stores decimals.
+function vatRateFromAi(rate: number | null | undefined): number {
+  if (rate == null) return 0.25
+  if (rate === 25) return 0.25
+  if (rate === 12) return 0.12
+  if (rate === 6) return 0.06
+  return 0
+}
+
+const EMPTY_NEW_SUPPLIER: NewSupplierForm = {
+  name: '',
+  supplier_type: 'swedish_business',
+  org_number: '',
+  vat_number: '',
+  address_line1: '',
+  bankgiro: '',
+  plusgiro: '',
+  default_expense_account: '',
+}
+
 export default function NewSupplierInvoicePage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const inboxItemId = searchParams.get('inbox_item_id')
   const { canWrite } = useCanWrite()
   const { toast } = useToast()
+
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [accounts, setAccounts] = useState<BASAccount[]>([])
+  const [entityType, setEntityType] = useState<EntityType>('enskild_firma')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [pendingData, setPendingData] = useState<FormData | null>(null)
+  const [showNewSupplier, setShowNewSupplier] = useState(false)
+  const [isCreatingSupplier, setIsCreatingSupplier] = useState(false)
+  const [pendingSupplierSelect, setPendingSupplierSelect] = useState<string | null>(null)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [newSupplier, setNewSupplier] = useState<NewSupplierForm>(EMPTY_NEW_SUPPLIER)
+
+  // Inbox/AI state
+  const [extractedData, setExtractedData] = useState<InvoiceExtractionResult | null>(null)
+  const [originalExtracted, setOriginalExtracted] = useState<InvoiceExtractionResult | null>(null)
+  const [hasMatchedSupplier, setHasMatchedSupplier] = useState(false)
+  const [isLoadingInbox, setIsLoadingInbox] = useState(!!inboxItemId)
+  const [hasPrefilled, setHasPrefilled] = useState(false)
+
+  // Match-on-create state
+  const [showBankPicker, setShowBankPicker] = useState(false)
+  const [pendingTransactionId, setPendingTransactionId] = useState<string | null>(null)
+  // The button's onClick and the form's onSubmit run in the same React event
+  // batch, so a `useState`-backed submitMode would still hold the previous
+  // render's value when onSubmit reads it. A ref bridges the two synchronous
+  // handlers; the matching state mirror only drives the review-dialog UI.
+  const submitModeRef = useRef<'register' | 'register_and_match'>('register')
+
+  // Conflict state for duplicate-supplier-invoice-number
   const [conflict, setConflict] = useState<{
     message: string
     existing: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null } | null
@@ -78,7 +137,7 @@ export default function NewSupplierInvoicePage() {
   const [isResolvingConflict, setIsResolvingConflict] = useState(false)
   const invoiceNumberInputRef = useRef<HTMLInputElement | null>(null)
 
-  const { register, control, handleSubmit, watch, setValue, formState: { isDirty } } = useForm<FormData>({
+  const { register, control, handleSubmit, watch, setValue, getValues, reset, formState: { isDirty } } = useForm<FormData>({
     defaultValues: {
       supplier_id: '',
       supplier_invoice_number: '',
@@ -90,53 +149,158 @@ export default function NewSupplierInvoicePage() {
       reverse_charge: false,
       payment_reference: '',
       notes: '',
-      items: [
-        {
-          description: '',
-          amount: 0,
-          account_number: '5010',
-          vat_rate: 0.25,
-        },
-      ],
+      items: [{ description: '', amount: 0, account_number: '5010', vat_rate: 0.25 }],
     },
   })
 
   useUnsavedChanges(isDirty)
 
-  const { fields, append, remove } = useFieldArray({ control, name: 'items' })
+  const { fields, append, remove, replace } = useFieldArray({ control, name: 'items' })
   const watchedItems = watch('items')
   const watchedSupplierId = watch('supplier_id')
   const watchedCurrency = watch('currency')
 
+  const isEF = entityType === 'enskild_firma'
+
   useEffect(() => {
     fetchSuppliers()
     fetchAccounts()
+    fetchEntityType()
   }, [])
 
-  // Auto-fill due date when supplier is selected
+  // One-shot: load inbox item and prefill form. Runs after suppliers are
+  // loaded so we can resolve matched_supplier_id to a real picker value.
   useEffect(() => {
-    if (watchedSupplierId) {
-      const supplier = suppliers.find((s) => s.id === watchedSupplierId)
-      if (supplier) {
-        const invoiceDate = watch('invoice_date')
-        if (invoiceDate) {
-          const due = new Date(invoiceDate)
-          due.setDate(due.getDate() + supplier.default_payment_terms)
-          setValue('due_date', due.toISOString().split('T')[0])
+    if (!inboxItemId || hasPrefilled || suppliers.length === 0) return
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/extensions/ext/invoice-inbox/items/${inboxItemId}`)
+        const json = await res.json()
+        if (cancelled) return
+        if (!res.ok) {
+          toast({
+            title: 'Kunde inte ladda inkorgsposten',
+            description: json?.error || 'Posten finns inte längre eller är otillgänglig.',
+            variant: 'destructive',
+          })
+          setIsLoadingInbox(false)
+          return
         }
-        if (supplier.default_expense_account && fields.length > 0) {
-          setValue('items.0.account_number', supplier.default_expense_account)
+
+        const item = json.data as {
+          id: string
+          extracted_data: InvoiceExtractionResult | null
+          matched_supplier_id: string | null
+          document_id: string | null
         }
-        if (supplier.default_currency) {
-          setValue('currency', supplier.default_currency)
+        const extracted = item.extracted_data
+        if (!extracted) {
+          setIsLoadingInbox(false)
+          setHasPrefilled(true)
+          return
         }
-        if (supplier.supplier_type === 'eu_business') {
-          setValue('reverse_charge', true)
+
+        setExtractedData(extracted)
+        setOriginalExtracted(extracted)
+
+        // Supplier
+        if (item.matched_supplier_id && suppliers.find((s) => s.id === item.matched_supplier_id)) {
+          setValue('supplier_id', item.matched_supplier_id)
+          setHasMatchedSupplier(true)
         }
+
+        // Scalar invoice fields
+        if (extracted.invoice?.invoiceNumber) {
+          setValue('supplier_invoice_number', extracted.invoice.invoiceNumber)
+        }
+        if (extracted.invoice?.invoiceDate) {
+          setValue('invoice_date', extracted.invoice.invoiceDate)
+        }
+        if (extracted.invoice?.dueDate) {
+          setValue('due_date', extracted.invoice.dueDate)
+        }
+        if (extracted.invoice?.paymentReference) {
+          setValue('payment_reference', extracted.invoice.paymentReference)
+        }
+        if (extracted.invoice?.currency) {
+          setValue('currency', extracted.invoice.currency)
+        }
+
+        // Line items: keep the single empty default if AI returned nothing,
+        // otherwise replace it with the extracted lines.
+        if (extracted.lineItems && extracted.lineItems.length > 0) {
+          replace(
+            extracted.lineItems.map((li) => ({
+              description: li.description || '',
+              amount: typeof li.lineTotal === 'number' ? li.lineTotal : 0,
+              account_number: '5010',
+              vat_rate: vatRateFromAi(li.vatRate),
+            })),
+          )
+        }
+
+        // Treat the AI prefill as the new baseline — otherwise the unsaved-
+        // changes prompt fires the moment the user navigates away, even if
+        // they didn't touch anything.
+        reset(getValues())
+        setHasPrefilled(true)
+      } catch (err) {
+        if (cancelled) return
+        toast({
+          title: 'Kunde inte ladda inkorgsposten',
+          description: err instanceof Error ? err.message : 'Okänt fel.',
+          variant: 'destructive',
+        })
+      } finally {
+        if (!cancelled) setIsLoadingInbox(false)
       }
+    })()
+
+    return () => {
+      cancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchedSupplierId, suppliers, watch, setValue, fields.length])
+  }, [inboxItemId, suppliers])
+
+  // Auto-fill due date and defaults when supplier is selected — but never
+  // overwrite a value the AI already filled in for us.
+  useEffect(() => {
+    if (!watchedSupplierId) return
+    const supplier = suppliers.find((s) => s.id === watchedSupplierId)
+    if (!supplier) return
+
+    const invoiceDate = watch('invoice_date')
+    const currentDue = watch('due_date')
+    if (invoiceDate && !currentDue) {
+      const due = new Date(invoiceDate)
+      due.setDate(due.getDate() + supplier.default_payment_terms)
+      setValue('due_date', due.toISOString().split('T')[0])
+    }
+    if (supplier.default_expense_account && fields.length > 0) {
+      // Only override the first row if it's still the seeded default (5010 with empty desc)
+      const firstRow = watch('items.0')
+      if (firstRow && (firstRow.account_number === '5010' || !firstRow.account_number) && !firstRow.description) {
+        setValue('items.0.account_number', supplier.default_expense_account)
+      }
+    }
+    if (supplier.default_currency && watch('currency') === 'SEK') {
+      setValue('currency', supplier.default_currency)
+    }
+    if (supplier.supplier_type === 'eu_business') {
+      setValue('reverse_charge', true)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchedSupplierId, suppliers])
+
+  // Auto-select newly created supplier once it shows up in the list
+  useEffect(() => {
+    if (pendingSupplierSelect && suppliers.find((s) => s.id === pendingSupplierSelect)) {
+      setValue('supplier_id', pendingSupplierSelect, { shouldDirty: true, shouldValidate: true })
+      setPendingSupplierSelect(null)
+    }
+  }, [suppliers, pendingSupplierSelect, setValue])
 
   async function fetchSuppliers() {
     const res = await fetch('/api/suppliers')
@@ -150,15 +314,22 @@ export default function NewSupplierInvoicePage() {
     setAccounts(data || [])
   }
 
+  async function fetchEntityType() {
+    try {
+      const res = await fetch('/api/settings')
+      const { data } = await res.json()
+      if (data?.entity_type) setEntityType(data.entity_type)
+    } catch {
+      // Default to enskild_firma
+    }
+  }
+
   function handleAccountChange(index: number, accountNumber: string) {
     setValue(`items.${index}.account_number`, accountNumber)
-    // Auto-fill description from account name if description is empty
     const currentDesc = watch(`items.${index}.description`)
     if (!currentDesc && accountNumber.length === 4) {
       const desc = getAccountDescription(accountNumber)
-      if (desc) {
-        setValue(`items.${index}.description`, desc.name)
-      }
+      if (desc) setValue(`items.${index}.description`, desc.name)
     }
   }
 
@@ -168,14 +339,167 @@ export default function NewSupplierInvoicePage() {
     const vatAmount = Math.round(lineTotal * (item.vat_rate || 0) * 100) / 100
     return { lineTotal, vatAmount }
   })
-
   const subtotal = itemTotals.reduce((sum, t) => sum + t.lineTotal, 0)
   const totalVat = itemTotals.reduce((sum, t) => sum + t.vatAmount, 0)
   const total = Math.round((subtotal + totalVat) * 100) / 100
 
+  // Show the AI-suggested supplier card when we have an inbox item, the AI
+  // surfaced a supplier name, and we couldn't match it to an existing record.
+  const showAISupplierHint =
+    !!extractedData?.supplier?.name &&
+    !hasMatchedSupplier &&
+    !watchedSupplierId
+
+  function openSupplierDialogPrefilled() {
+    setNewSupplier({
+      name: extractedData?.supplier?.name || '',
+      supplier_type: 'swedish_business',
+      org_number: extractedData?.supplier?.orgNumber || '',
+      vat_number: extractedData?.supplier?.vatNumber || '',
+      address_line1: extractedData?.supplier?.address || '',
+      bankgiro: extractedData?.supplier?.bankgiro || '',
+      plusgiro: extractedData?.supplier?.plusgiro || '',
+      default_expense_account: '',
+    })
+    setShowNewSupplier(true)
+  }
+
+  function openSupplierDialogBlank() {
+    setNewSupplier(EMPTY_NEW_SUPPLIER)
+    setShowNewSupplier(true)
+  }
+
+  async function handleCreateSupplier() {
+    if (!newSupplier.name.trim()) {
+      toast({ title: 'Namn saknas', description: 'Ange ett namn för leverantören.', variant: 'destructive' })
+      return
+    }
+    setIsCreatingSupplier(true)
+
+    const payload: Record<string, unknown> = {
+      name: newSupplier.name,
+      supplier_type: newSupplier.supplier_type,
+    }
+    if (newSupplier.org_number) payload.org_number = newSupplier.org_number
+    if (newSupplier.vat_number) payload.vat_number = newSupplier.vat_number
+    if (newSupplier.address_line1) payload.address_line1 = newSupplier.address_line1
+    if (newSupplier.bankgiro) payload.bankgiro = newSupplier.bankgiro
+    if (newSupplier.plusgiro) payload.plusgiro = newSupplier.plusgiro
+    if (newSupplier.default_expense_account) payload.default_expense_account = newSupplier.default_expense_account
+
+    const res = await fetch('/api/suppliers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const result = await res.json()
+
+    if (!res.ok) {
+      toast({ title: 'Kunde inte skapa leverantör', description: getErrorMessage(result, { context: 'supplier' }), variant: 'destructive' })
+    } else {
+      const created = result.data as Supplier
+      setSuppliers((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setPendingSupplierSelect(created.id)
+      setHasMatchedSupplier(true)
+      setShowNewSupplier(false)
+      setNewSupplier(EMPTY_NEW_SUPPLIER)
+      toast({ title: 'Leverantör skapad', description: created.name })
+    }
+
+    setIsCreatingSupplier(false)
+  }
+
+  function buildPayload(data: FormData) {
+    const vatTreatment = inferVatTreatment(data.items, data.reverse_charge)
+    return {
+      supplier_id: data.supplier_id,
+      supplier_invoice_number: data.supplier_invoice_number,
+      invoice_date: data.invoice_date,
+      due_date: data.due_date,
+      delivery_date: data.delivery_date || undefined,
+      currency: data.currency,
+      exchange_rate: data.exchange_rate ? parseFloat(data.exchange_rate) : undefined,
+      vat_treatment: vatTreatment,
+      reverse_charge: data.reverse_charge,
+      payment_reference: data.payment_reference || undefined,
+      notes: data.notes || undefined,
+      items: data.items.map((item) => ({
+        description: item.description,
+        amount: item.amount,
+        account_number: item.account_number,
+        vat_rate: item.vat_rate,
+      })),
+    }
+  }
+
+  // Persist user edits back into the inbox item's extracted_data so the
+  // inbox stays in sync with what was actually booked. Best-effort: a
+  // failed PATCH never blocks the registration.
+  async function patchInboxFieldsIfChanged(data: FormData) {
+    if (!inboxItemId || !originalExtracted) return
+    const supplierField: Record<string, unknown> = {}
+    const invoiceField: Record<string, unknown> = {}
+
+    if (originalExtracted.invoice?.invoiceNumber !== data.supplier_invoice_number) {
+      invoiceField.invoiceNumber = data.supplier_invoice_number || null
+    }
+    if (originalExtracted.invoice?.invoiceDate !== data.invoice_date) {
+      invoiceField.invoiceDate = data.invoice_date || null
+    }
+    if (originalExtracted.invoice?.dueDate !== data.due_date) {
+      invoiceField.dueDate = data.due_date || null
+    }
+    if ((originalExtracted.invoice?.paymentReference || null) !== (data.payment_reference || null)) {
+      invoiceField.paymentReference = data.payment_reference || null
+    }
+    if (originalExtracted.invoice?.currency !== data.currency) {
+      invoiceField.currency = data.currency
+    }
+
+    if (Object.keys(supplierField).length === 0 && Object.keys(invoiceField).length === 0) return
+
+    try {
+      await fetch(`/api/extensions/ext/invoice-inbox/items/${inboxItemId}/fields`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(Object.keys(supplierField).length ? { supplier: supplierField } : {}),
+          ...(Object.keys(invoiceField).length ? { invoice: invoiceField } : {}),
+        }),
+      })
+    } catch {
+      // Best-effort sync; don't block registration on this.
+    }
+  }
+
+  // Single submit endpoint chooser — convert when we came from inbox, plain
+  // POST otherwise. Both endpoints validate the same CreateSupplierInvoiceSchema.
+  async function postCreate(data: FormData): Promise<{
+    ok: boolean
+    status: number
+    result: {
+      data?: { id: string; arrival_number: number }
+      error?: string
+      message?: string
+      existing?: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null }
+    }
+  }> {
+    const url = inboxItemId
+      ? `/api/extensions/ext/invoice-inbox/items/${inboxItemId}/convert`
+      : '/api/supplier-invoices'
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildPayload(data)),
+    })
+    const result = await res.json()
+    return { ok: res.ok, status: res.status, result }
+  }
+
   function onSubmit(data: FormData) {
     if (!data.supplier_id) {
-      toast({ title: 'Leverantör saknas', description: 'Välj en leverantör innan du fortsätter.', variant: 'destructive' })
+      toast({ title: 'Leverantör saknas', description: 'Välj eller skapa en leverantör.', variant: 'destructive' })
       return
     }
     if (!data.supplier_invoice_number) {
@@ -183,71 +507,120 @@ export default function NewSupplierInvoicePage() {
       return
     }
 
-    setPendingData(data)
-    setShowReview(true)
-  }
-
-  async function submitInvoice(): Promise<{ ok: boolean; status: number; result: { data?: { id: string; arrival_number: number }; error?: string; message?: string; existing?: { id: string; supplier_invoice_number: string; status: string; credit_note_id: string | null } } }> {
-    if (!pendingData) return { ok: false, status: 0, result: {} }
-
-    const vatTreatment = inferVatTreatment(pendingData.items, pendingData.reverse_charge)
-
-    const payload = {
-      supplier_id: pendingData.supplier_id,
-      supplier_invoice_number: pendingData.supplier_invoice_number,
-      invoice_date: pendingData.invoice_date,
-      due_date: pendingData.due_date,
-      delivery_date: pendingData.delivery_date || undefined,
-      currency: pendingData.currency,
-      exchange_rate: pendingData.exchange_rate ? parseFloat(pendingData.exchange_rate) : undefined,
-      vat_treatment: vatTreatment,
-      reverse_charge: pendingData.reverse_charge,
-      payment_reference: pendingData.payment_reference || undefined,
-      notes: pendingData.notes || undefined,
-      items: pendingData.items.map((item) => ({
-        description: item.description,
-        amount: item.amount,
-        account_number: item.account_number,
-        vat_rate: item.vat_rate,
-      })),
+    if (submitModeRef.current === 'register_and_match') {
+      // Open the bank-transaction picker; actual create happens on pick.
+      // For AB the review dialog is shown after a transaction is picked.
+      setPendingData(data)
+      setShowBankPicker(true)
+      return
     }
 
-    const res = await fetch('/api/supplier-invoices', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-
-    const result = await res.json()
-    return { ok: res.ok, status: res.status, result }
+    if (isEF) {
+      setPendingData(data)
+      handleDirectSubmit(data)
+    } else {
+      setPendingData(data)
+      setShowReview(true)
+    }
   }
 
+  // EF: create + auto-approve, no review dialog
+  async function handleDirectSubmit(data: FormData) {
+    setIsSubmitting(true)
+    await patchInboxFieldsIfChanged(data)
+    const { ok, status, result } = await postCreate(data)
+
+    if (!ok) {
+      handleCreateError(status, result)
+      setIsSubmitting(false)
+      return
+    }
+    if (!result.data) {
+      setIsSubmitting(false)
+      return
+    }
+
+    // Auto-approve for EF
+    const approveRes = await fetch(`/api/supplier-invoices/${result.data.id}/approve`, { method: 'POST' })
+    if (!approveRes.ok) {
+      toast({
+        title: 'Varning',
+        description: 'Fakturan skapades men kunde inte godkännas automatiskt',
+        variant: 'destructive',
+      })
+      router.push(`/supplier-invoices/${result.data.id}`)
+    } else {
+      toast({ title: 'Faktura registrerad', description: `Ankomstnummer: ${result.data.arrival_number}` })
+      router.push('/supplier-invoices')
+    }
+    setIsSubmitting(false)
+  }
+
+  // AB: create after review dialog. If a bank transaction was picked first
+  // (register-and-match flow), also match the new invoice to it.
   async function handleConfirm() {
     if (!pendingData) return
     setIsSubmitting(true)
-
-    const { ok, status, result } = await submitInvoice()
+    await patchInboxFieldsIfChanged(pendingData)
+    const { ok, status, result } = await postCreate(pendingData)
 
     if (ok && result.data) {
-      toast({ title: 'Faktura registrerad', description: `Ankomstnummer: ${result.data.arrival_number}` })
+      const invoiceId = result.data.id
+      const arrivalNumber = result.data.arrival_number
       setShowReview(false)
-      router.push(`/supplier-invoices/${result.data.id}`)
-    } else if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
-      // Surface the explanatory modal instead of a toast — the user has real choices to make.
-      setShowReview(false)
-      setConflict({
-        message: result.message || 'Det finns redan en faktura med detta nummer från denna leverantör.',
-        existing: result.existing ?? null,
-      })
-    } else {
-      toast({
-        title: 'Kunde inte registrera faktura',
-        description: getErrorMessage(result, { context: 'supplier_invoice', statusCode: status }),
-        variant: 'destructive',
-      })
-    }
 
+      if (pendingTransactionId) {
+        const matchRes = await fetch(`/api/transactions/${pendingTransactionId}/match-supplier-invoice`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ supplier_invoice_id: invoiceId }),
+        })
+        const matchResult = await matchRes.json()
+        setPendingTransactionId(null)
+        submitModeRef.current = 'register'
+
+        if (matchRes.ok) {
+          toast({
+            title: 'Faktura registrerad och matchad',
+            description: `Ankomstnummer: ${arrivalNumber}. Markerad som betald.`,
+          })
+        } else {
+          toast({
+            title: 'Faktura registrerad — kunde inte matcha',
+            description: getErrorMessage(matchResult, { context: 'supplier_invoice', statusCode: matchRes.status }),
+            variant: 'destructive',
+          })
+        }
+      } else {
+        toast({ title: 'Faktura registrerad', description: `Ankomstnummer: ${arrivalNumber}` })
+      }
+
+      router.push(`/supplier-invoices/${invoiceId}`)
+    } else {
+      // Treat duplicate-number as a recoverable conflict; everything else as a hard error.
+      if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
+        setShowReview(false)
+        setConflict({
+          message: result.message || 'Det finns redan en faktura med detta nummer från denna leverantör.',
+          existing: result.existing ?? null,
+        })
+      } else {
+        handleCreateError(status, result)
+      }
+    }
     setIsSubmitting(false)
+  }
+
+  // Shared error toast for non-conflict failures.
+  function handleCreateError(
+    status: number,
+    result: { error?: string; message?: string },
+  ) {
+    toast({
+      title: 'Kunde inte registrera faktura',
+      description: getErrorMessage(result, { context: 'supplier_invoice', statusCode: status }),
+      variant: 'destructive',
+    })
   }
 
   async function handleUncreditAndRetry() {
@@ -258,7 +631,7 @@ export default function NewSupplierInvoicePage() {
 
     const uncreditRes = await fetch(
       `/api/supplier-invoices/${existingId}/uncredit`,
-      { method: 'POST' }
+      { method: 'POST' },
     )
     const uncreditResult = await uncreditRes.json()
     if (!uncreditRes.ok) {
@@ -271,12 +644,14 @@ export default function NewSupplierInvoicePage() {
       return
     }
 
-    // The duplicate number is now free — drop the dialog regardless of what
-    // happens next, otherwise the user is left staring at a stale "number in
-    // use" prompt that no longer matches reality.
     setConflict(null)
 
-    const { ok, status, result } = await submitInvoice()
+    if (!pendingData) {
+      setIsResolvingConflict(false)
+      return
+    }
+
+    const { ok, status, result } = await postCreate(pendingData)
     setIsResolvingConflict(false)
 
     if (ok && result.data) {
@@ -288,9 +663,6 @@ export default function NewSupplierInvoicePage() {
       return
     }
 
-    // Uncredit succeeded but the resubmit hit a different validation error.
-    // Tell the user exactly what happened so they don't assume the uncredit
-    // also failed, and leave them on the form to fix and retry.
     toast({
       title: 'Kreditering ångrad — men nya fakturan kunde inte registreras',
       description: `Faktura ${existingNumber} är återställd och numret är ledigt. ${getErrorMessage(result, { context: 'supplier_invoice', statusCode: status })}`,
@@ -303,6 +675,69 @@ export default function NewSupplierInvoicePage() {
     setTimeout(() => invoiceNumberInputRef.current?.focus(), 0)
   }
 
+  // Match-on-create: register the invoice, then match the picked transaction.
+  // EF goes straight through (auto-approve included). AB stores the picked
+  // transaction and routes through the same review dialog as the plain
+  // register flow — handleConfirm picks up the match step on confirmation.
+  async function handlePickTransaction(transactionId: string) {
+    if (!pendingData) return
+    setShowBankPicker(false)
+
+    if (!isEF) {
+      setPendingTransactionId(transactionId)
+      setShowReview(true)
+      return
+    }
+
+    setIsSubmitting(true)
+    await patchInboxFieldsIfChanged(pendingData)
+    const { ok, status, result } = await postCreate(pendingData)
+
+    if (!ok || !result.data) {
+      if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
+        setConflict({
+          message: result.message || 'Det finns redan en faktura med detta nummer från denna leverantör.',
+          existing: result.existing ?? null,
+        })
+      } else {
+        handleCreateError(status, result)
+      }
+      setIsSubmitting(false)
+      return
+    }
+
+    const invoiceId = result.data.id
+    const arrivalNumber = result.data.arrival_number
+
+    // Auto-approve before matching, so the invoice is in the 'approved' state
+    // that match-supplier-invoice expects (it accepts registered too, but
+    // EF's expectation is fully-booked).
+    await fetch(`/api/supplier-invoices/${invoiceId}/approve`, { method: 'POST' })
+
+    const matchRes = await fetch(`/api/transactions/${transactionId}/match-supplier-invoice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supplier_invoice_id: invoiceId }),
+    })
+    const matchResult = await matchRes.json()
+    setIsSubmitting(false)
+    submitModeRef.current = 'register'
+
+    if (matchRes.ok) {
+      toast({
+        title: 'Faktura registrerad och matchad',
+        description: `Ankomstnummer: ${arrivalNumber}. Markerad som betald.`,
+      })
+    } else {
+      toast({
+        title: 'Faktura registrerad — kunde inte matcha',
+        description: getErrorMessage(matchResult, { context: 'supplier_invoice', statusCode: matchRes.status }),
+        variant: 'destructive',
+      })
+    }
+    router.push(`/supplier-invoices/${invoiceId}`)
+  }
+
   return (
     <div className="space-y-6 max-w-4xl">
       <div className="flex items-center gap-4">
@@ -311,27 +746,69 @@ export default function NewSupplierInvoicePage() {
         </Button>
         <div>
           <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">Registrera leverantörsfaktura</h1>
-          <p className="text-muted-foreground">
-            Registrera en inkommande faktura (uppfyller BFL verifikationskrav)
-          </p>
         </div>
       </div>
 
+      {isLoadingInbox && (
+        <Card>
+          <CardContent className="py-4 flex items-center gap-3 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Laddar uppgifter från inkorgen…
+          </CardContent>
+        </Card>
+      )}
+
+      {showAISupplierHint && (
+        <Card className="border-primary/30 bg-primary/[0.02]">
+          <CardContent className="py-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <Sparkles className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium">
+                    Föreslagen leverantör (från fakturan): {extractedData?.supplier?.name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {extractedData?.supplier?.orgNumber
+                      ? `Org.nr ${extractedData.supplier.orgNumber}`
+                      : 'Ingen organisationsnummer hittades'}
+                    {' — leverantören finns inte upplagd ännu.'}
+                  </p>
+                </div>
+              </div>
+              <Button type="button" size="sm" onClick={openSupplierDialogPrefilled}>
+                <Plus className="mr-2 h-4 w-4" />
+                Skapa &amp; välj
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-        {/* Supplier & Reference */}
+        {/* Section 1: Faktura */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Leverantör & referens</CardTitle>
+            <CardTitle className="text-lg">Faktura</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Leverantör *</Label>
                 <Controller
                   name="supplier_id"
                   control={control}
                   render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
+                    <Select
+                      value={field.value}
+                      onValueChange={(v) => {
+                        if (v === '__new__') {
+                          openSupplierDialogBlank()
+                        } else {
+                          field.onChange(v)
+                        }
+                      }}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="Välj leverantör" />
                       </SelectTrigger>
@@ -339,6 +816,9 @@ export default function NewSupplierInvoicePage() {
                         {suppliers.map((s) => (
                           <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                         ))}
+                        <SelectItem value="__new__" className="text-primary font-medium">
+                          + Lägg till ny leverantör...
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   )}
@@ -361,22 +841,6 @@ export default function NewSupplierInvoicePage() {
                 })()}
               </div>
             </div>
-            <div className="space-y-2">
-              <Label>OCR / Betalningsreferens</Label>
-              <Input
-                placeholder="OCR-nummer"
-                {...register('payment_reference')}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Dates */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Datum</CardTitle>
-          </CardHeader>
-          <CardContent>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label>Fakturadatum *</Label>
@@ -387,85 +851,24 @@ export default function NewSupplierInvoicePage() {
                 <Input type="date" {...register('due_date')} />
               </div>
               <div className="space-y-2">
-                <Label>Leveransdatum (ML krav)</Label>
-                <Input type="date" {...register('delivery_date')} />
+                <Label>OCR / Betalningsreferens</Label>
+                <Input placeholder="OCR-nummer" {...register('payment_reference')} />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Currency & Reverse Charge */}
+        {/* Section 2: Kontering */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Valuta & moms</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Valuta</Label>
-                <Controller
-                  name="currency"
-                  control={control}
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="SEK">SEK</SelectItem>
-                        <SelectItem value="EUR">EUR</SelectItem>
-                        <SelectItem value="USD">USD</SelectItem>
-                        <SelectItem value="GBP">GBP</SelectItem>
-                        <SelectItem value="NOK">NOK</SelectItem>
-                        <SelectItem value="DKK">DKK</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-              </div>
-              {watchedCurrency !== 'SEK' && (
-                <div className="space-y-2">
-                  <Label>Växelkurs</Label>
-                  <Input
-                    type="number"
-                    step="0.0001"
-                    placeholder="1.0000"
-                    {...register('exchange_rate')}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <Controller
-                name="reverse_charge"
-                control={control}
-                render={({ field }) => (
-                  <Checkbox
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                )}
-              />
-              <Label>Omvänd skattskyldighet (reverse charge)</Label>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Line Items */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <CardTitle className="text-lg">Kontering</CardTitle>
             <Button
               type="button"
               variant="outline"
               size="sm"
+              className="w-full sm:w-auto"
               onClick={() =>
-                append({
-                  description: '',
-                  amount: 0,
-                  account_number: '',
-                  vat_rate: 0.25,
-                })
+                append({ description: '', amount: 0, account_number: '', vat_rate: 0.25 })
               }
             >
               <Plus className="mr-2 h-4 w-4" />
@@ -503,10 +906,7 @@ export default function NewSupplierInvoicePage() {
                         />
                       </td>
                       <td className="py-2 pr-2">
-                        <Input
-                          placeholder="Beskrivning"
-                          {...register(`items.${index}.description`)}
-                        />
+                        <Input placeholder="Beskrivning" {...register(`items.${index}.description`)} />
                       </td>
                       <td className="py-2 pr-2">
                         <Controller
@@ -528,10 +928,7 @@ export default function NewSupplierInvoicePage() {
                           name={`items.${index}.vat_rate`}
                           control={control}
                           render={({ field: f }) => (
-                            <Select
-                              value={String(f.value)}
-                              onValueChange={(v) => f.onChange(parseFloat(v))}
-                            >
+                            <Select value={String(f.value)} onValueChange={(v) => f.onChange(parseFloat(v))}>
                               <SelectTrigger>
                                 <SelectValue />
                               </SelectTrigger>
@@ -550,12 +947,7 @@ export default function NewSupplierInvoicePage() {
                       </td>
                       <td className="py-2 pt-3">
                         {fields.length > 1 && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => remove(index)}
-                          >
+                          <Button type="button" variant="ghost" size="icon" onClick={() => remove(index)}>
                             <Trash2 className="h-4 w-4 text-muted-foreground" />
                           </Button>
                         )}
@@ -565,43 +957,36 @@ export default function NewSupplierInvoicePage() {
                 </tbody>
               </table>
             </div>
+
             {/* Mobile cards */}
             <div className="sm:hidden space-y-4">
               {fields.map((field, index) => (
                 <div key={field.id} className="border rounded-lg p-3 space-y-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1">
-                      <Controller
-                        name={`items.${index}.account_number`}
-                        control={control}
-                        render={({ field: f }) => (
-                          <AccountCombobox
-                            value={f.value}
-                            accounts={accounts}
-                            onChange={(val) => handleAccountChange(index, val)}
-                          />
-                        )}
-                      />
-                    </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-muted-foreground">Rad {index + 1}</span>
                     {fields.length > 1 && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="shrink-0"
-                        onClick={() => remove(index)}
-                      >
+                      <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => remove(index)}>
                         <Trash2 className="h-4 w-4 text-muted-foreground" />
                       </Button>
                     )}
                   </div>
-                  <Input
-                    placeholder="Beskrivning"
-                    {...register(`items.${index}.description`)}
-                  />
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Konto</Label>
+                    <Controller
+                      name={`items.${index}.account_number`}
+                      control={control}
+                      render={({ field: f }) => (
+                        <AccountCombobox value={f.value} accounts={accounts} onChange={(val) => handleAccountChange(index, val)} />
+                      )}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Beskrivning</Label>
+                    <Input placeholder="Beskrivning" {...register(`items.${index}.description`)} />
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-xs text-muted-foreground">Belopp (exkl.)</label>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-muted-foreground">Belopp (exkl.)</Label>
                       <Controller
                         name={`items.${index}.amount`}
                         control={control}
@@ -616,16 +1001,13 @@ export default function NewSupplierInvoicePage() {
                         )}
                       />
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-xs text-muted-foreground">Momssats</label>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-muted-foreground">Momssats</Label>
                       <Controller
                         name={`items.${index}.vat_rate`}
                         control={control}
                         render={({ field: f }) => (
-                          <Select
-                            value={String(f.value)}
-                            onValueChange={(v) => f.onChange(parseFloat(v))}
-                          >
+                          <Select value={String(f.value)} onValueChange={(v) => f.onChange(parseFloat(v))}>
                             <SelectTrigger>
                               <SelectValue />
                             </SelectTrigger>
@@ -640,61 +1022,164 @@ export default function NewSupplierInvoicePage() {
                       />
                     </div>
                   </div>
-                  <div className="text-right text-sm text-muted-foreground">
-                    Moms: <span className="font-mono">{formatAmount(itemTotals[index]?.vatAmount || 0)} kr</span>
+                  <div className="flex justify-between items-center pt-1 border-t">
+                    <span className="text-xs text-muted-foreground">Moms</span>
+                    <span className="font-mono text-sm">{formatAmount(itemTotals[index]?.vatAmount || 0)} kr</span>
                   </div>
                 </div>
               ))}
             </div>
 
-            {/* Totals */}
-            <div className="mt-4 pt-4 border-t space-y-2 text-right">
-              <div className="flex justify-end gap-8">
+            {/* AI totals comparison — only when extracted */}
+            {extractedData?.totals && (extractedData.totals.subtotal != null || extractedData.totals.total != null) && (
+              <div className="mt-4 pt-4 border-t flex flex-wrap gap-2 text-xs">
+                <span className="text-muted-foreground">Från fakturan (AI):</span>
+                {extractedData.totals.subtotal != null && (
+                  <span className="px-2 py-1 rounded bg-muted font-mono">
+                    Netto {formatAmount(extractedData.totals.subtotal)}
+                  </span>
+                )}
+                {extractedData.totals.vatAmount != null && (
+                  <span className="px-2 py-1 rounded bg-muted font-mono">
+                    Moms {formatAmount(extractedData.totals.vatAmount)}
+                  </span>
+                )}
+                {extractedData.totals.total != null && (
+                  <span className="px-2 py-1 rounded bg-muted font-mono">
+                    Totalt {formatAmount(extractedData.totals.total)}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Computed totals */}
+            <div className="mt-4 pt-4 border-t space-y-2">
+              <div className="flex justify-between sm:justify-end sm:gap-8">
                 <span className="text-muted-foreground">Netto (exkl. moms)</span>
-                <span className="font-mono w-32">{formatAmount(subtotal)} kr</span>
+                <span className="font-mono sm:w-32 text-right">{formatAmount(subtotal)} kr</span>
               </div>
-              <div className="flex justify-end gap-8">
+              <div className="flex justify-between sm:justify-end sm:gap-8">
                 <span className="text-muted-foreground">Moms</span>
-                <span className="font-mono w-32">{formatAmount(totalVat)} kr</span>
+                <span className="font-mono sm:w-32 text-right">{formatAmount(totalVat)} kr</span>
               </div>
-              <div className="flex justify-end gap-8 font-bold text-lg">
+              <div className="flex justify-between sm:justify-end sm:gap-8 font-bold text-lg">
                 <span>Totalt</span>
-                <span className="font-mono w-32">{formatAmount(total)} kr</span>
+                <span className="font-mono sm:w-32 text-right">{formatAmount(total)} kr</span>
               </div>
             </div>
           </CardContent>
         </Card>
 
-        {/* Notes */}
+        {/* Section 3: Övrigt (collapsible) */}
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Anteckningar</CardTitle>
+          <CardHeader
+            className="cursor-pointer hover:bg-muted/30 transition-colors"
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+          >
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg">Övrigt</CardTitle>
+              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+            </div>
           </CardHeader>
-          <CardContent>
-            <Textarea
-              placeholder="Interna anteckningar om denna faktura..."
-              {...register('notes')}
-            />
-          </CardContent>
+          {advancedOpen && (
+            <CardContent className="space-y-4 pt-0">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Valuta</Label>
+                  <Controller
+                    name="currency"
+                    control={control}
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="SEK">SEK</SelectItem>
+                          <SelectItem value="EUR">EUR</SelectItem>
+                          <SelectItem value="USD">USD</SelectItem>
+                          <SelectItem value="GBP">GBP</SelectItem>
+                          <SelectItem value="NOK">NOK</SelectItem>
+                          <SelectItem value="DKK">DKK</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+                {watchedCurrency !== 'SEK' && (
+                  <div className="space-y-2">
+                    <Label>Växelkurs</Label>
+                    <Input type="number" step="0.0001" placeholder="1.0000" {...register('exchange_rate')} />
+                  </div>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Leveransdatum (ML krav)</Label>
+                <Input type="date" {...register('delivery_date')} />
+              </div>
+              <div className="flex items-center gap-2">
+                <Controller
+                  name="reverse_charge"
+                  control={control}
+                  render={({ field }) => (
+                    <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                  )}
+                />
+                <Label>Omvänd skattskyldighet (reverse charge)</Label>
+              </div>
+              <div className="space-y-2">
+                <Label>Anteckningar</Label>
+                <Textarea placeholder="Interna anteckningar om denna faktura..." {...register('notes')} />
+              </div>
+            </CardContent>
+          )}
         </Card>
 
         {/* Submit */}
-        <div className="flex justify-end gap-4">
-          <Button type="button" variant="outline" onClick={() => router.push('/supplier-invoices')}>
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3 sm:gap-4">
+          <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => router.push('/supplier-invoices')}>
             Avbryt
           </Button>
           <Button
             type="submit"
+            variant="outline"
+            className="w-full sm:w-auto"
             disabled={isSubmitting || !canWrite}
+            onClick={() => { submitModeRef.current = 'register_and_match' }}
             title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
           >
-            {!canWrite && <Lock className="mr-2 h-4 w-4 inline" />}
-            Granska & registrera
+            <Link2 className="mr-2 h-4 w-4" />
+            Registrera &amp; markera som betald
+          </Button>
+          <Button
+            type="submit"
+            disabled={isSubmitting || !canWrite}
+            className="w-full sm:w-auto"
+            onClick={() => { submitModeRef.current = 'register' }}
+            title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Registrerar...
+              </>
+            ) : !canWrite ? (
+              <>
+                <Lock className="mr-2 h-4 w-4" />
+                {isEF ? 'Registrera faktura' : 'Granska & registrera'}
+              </>
+            ) : isEF ? (
+              'Registrera faktura'
+            ) : (
+              'Granska & registrera'
+            )}
           </Button>
         </div>
       </form>
 
-      {pendingData && (() => {
+      {/* Review dialog (AB only — also shown after a bank transaction is picked
+          in the register-and-match flow). */}
+      {pendingData && !isEF && showReview && (() => {
         const selectedSupplier = suppliers.find((s) => s.id === pendingData.supplier_id)
         if (!selectedSupplier) return null
         return (
@@ -726,6 +1211,124 @@ export default function NewSupplierInvoicePage() {
         )
       })()}
 
+      {/* Bank transaction picker for "Registrera & markera som betald" */}
+      <BankTransactionPicker
+        open={showBankPicker}
+        onOpenChange={(open) => {
+          setShowBankPicker(open)
+          if (!open) {
+            submitModeRef.current = 'register'
+            setPendingTransactionId(null)
+          }
+        }}
+        targetAmount={total}
+        targetCurrency={watchedCurrency}
+        onPick={handlePickTransaction}
+      />
+
+      {/* New supplier dialog */}
+      <Dialog open={showNewSupplier} onOpenChange={setShowNewSupplier}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Ny leverantör</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Namn *</Label>
+              <Input
+                placeholder="Leverantörens namn"
+                value={newSupplier.name}
+                onChange={(e) => setNewSupplier((p) => ({ ...p, name: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Typ</Label>
+              <Select
+                value={newSupplier.supplier_type}
+                onValueChange={(v) => setNewSupplier((p) => ({ ...p, supplier_type: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="swedish_business">Svenskt företag</SelectItem>
+                  <SelectItem value="eu_business">EU-företag</SelectItem>
+                  <SelectItem value="non_eu_business">Utomeuropeiskt</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Organisationsnummer</Label>
+                <Input
+                  placeholder="XXXXXX-XXXX"
+                  value={newSupplier.org_number}
+                  onChange={(e) => setNewSupplier((p) => ({ ...p, org_number: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>VAT-nummer</Label>
+                <Input
+                  placeholder="SE..."
+                  value={newSupplier.vat_number}
+                  onChange={(e) => setNewSupplier((p) => ({ ...p, vat_number: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Adress</Label>
+              <Input
+                placeholder="Gatuadress"
+                value={newSupplier.address_line1}
+                onChange={(e) => setNewSupplier((p) => ({ ...p, address_line1: e.target.value }))}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Bankgiro</Label>
+                <Input
+                  placeholder="XXX-XXXX"
+                  value={newSupplier.bankgiro}
+                  onChange={(e) => setNewSupplier((p) => ({ ...p, bankgiro: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Plusgiro</Label>
+                <Input
+                  placeholder="XXXXXX-X"
+                  value={newSupplier.plusgiro}
+                  onChange={(e) => setNewSupplier((p) => ({ ...p, plusgiro: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Standardkonto (kostnad)</Label>
+              <Input
+                placeholder="t.ex. 5010"
+                value={newSupplier.default_expense_account}
+                onChange={(e) => setNewSupplier((p) => ({ ...p, default_expense_account: e.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowNewSupplier(false)}>
+              Avbryt
+            </Button>
+            <Button onClick={handleCreateSupplier} disabled={isCreatingSupplier}>
+              {isCreatingSupplier ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Skapar...
+                </>
+              ) : (
+                'Skapa leverantör'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Duplicate-number conflict dialog */}
       <Dialog open={!!conflict} onOpenChange={(open) => !open && setConflict(null)}>
         <DialogContent>
           <DialogHeader>

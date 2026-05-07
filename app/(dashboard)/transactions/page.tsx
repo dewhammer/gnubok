@@ -33,8 +33,29 @@ import type { TransactionWithInvoice, ViewMode, CategorizeHandler } from '@/comp
 import { useCompany } from '@/contexts/CompanyContext'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, VatTreatment, EntityType, LinePatternEntry } from '@/types'
+import type { TransactionCategory, CreateTransactionInput, Invoice, Customer, SupplierInvoice, Supplier, VatTreatment, EntityType, LinePatternEntry } from '@/types'
 import type { SuggestedCategory, SuggestedTemplate } from '@/lib/transactions/category-suggestions'
+
+type InvoiceWithCustomer = Invoice & { customer?: Customer }
+type SupplierInvoiceWithSupplier = SupplierInvoice & { supplier?: Supplier }
+
+function buildInvoiceMap(rows: InvoiceWithCustomer[] | null): Record<string, InvoiceWithCustomer> {
+  if (!rows) return {}
+  return rows.reduce<Record<string, InvoiceWithCustomer>>((acc, inv) => {
+    acc[inv.id] = inv
+    return acc
+  }, {})
+}
+
+function buildSupplierInvoiceMap(
+  rows: SupplierInvoiceWithSupplier[] | null,
+): Record<string, SupplierInvoiceWithSupplier> {
+  if (!rows) return {}
+  return rows.reduce<Record<string, SupplierInvoiceWithSupplier>>((acc, inv) => {
+    acc[inv.id] = inv
+    return acc
+  }, {})
+}
 
 interface QuickReviewState {
   transaction: TransactionWithInvoice
@@ -107,12 +128,16 @@ export default function TransactionsPage() {
   const uncategorizedTransactions = transactions
     .filter((t) => t.is_business === null && !exitingIds.has(t.id))
     .sort((a, b) => {
-      const aHasMatch = a.potential_invoice ? 1 : 0
-      const bHasMatch = b.potential_invoice ? 1 : 0
+      const aHasMatch = a.potential_invoice || a.potential_supplier_invoice ? 1 : 0
+      const bHasMatch = b.potential_invoice || b.potential_supplier_invoice ? 1 : 0
       if (aHasMatch !== bHasMatch) return bHasMatch - aHasMatch
       return b.date.localeCompare(a.date)
     })
-  const transactionsWithMatches = transactions.filter((t) => t.potential_invoice && !t.invoice_id)
+  const transactionsWithMatches = transactions.filter(
+    (t) =>
+      (t.potential_invoice && !t.invoice_id) ||
+      (t.potential_supplier_invoice && !t.supplier_invoice_id),
+  )
 
   const PAGE_SIZE = 200
 
@@ -139,30 +164,37 @@ export default function TransactionsPage() {
       return
     }
 
-    const potentialInvoiceIds = (txData || [])
+    const rows = txData || []
+    const potentialInvoiceIds = rows
       .filter((t) => t.potential_invoice_id)
       .map((t) => t.potential_invoice_id)
+    const potentialSupplierInvoiceIds = rows
+      .filter((t) => t.potential_supplier_invoice_id)
+      .map((t) => t.potential_supplier_invoice_id)
 
-    const invoiceResult = potentialInvoiceIds.length > 0
-      ? await supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
-      : { data: null }
+    const [invoiceResult, supplierInvoiceResult] = await Promise.all([
+      potentialInvoiceIds.length > 0
+        ? supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
+        : Promise.resolve({ data: null }),
+      potentialSupplierInvoiceIds.length > 0
+        ? supabase.from('supplier_invoices').select('*, supplier:suppliers(*)').in('id', potentialSupplierInvoiceIds)
+        : Promise.resolve({ data: null }),
+    ])
 
-    let invoiceMap: Record<string, Invoice & { customer?: Customer }> = {}
-    if (invoiceResult.data) {
-      invoiceMap = invoiceResult.data.reduce((acc, inv) => {
-        acc[inv.id] = inv
-        return acc
-      }, {} as Record<string, Invoice & { customer?: Customer }>)
-    }
+    const invoiceMap = buildInvoiceMap(invoiceResult.data)
+    const supplierInvoiceMap = buildSupplierInvoiceMap(supplierInvoiceResult.data)
 
-    const transactionsWithInvoices: TransactionWithInvoice[] = (txData || []).map((t) => ({
+    const transactionsWithInvoices: TransactionWithInvoice[] = rows.map((t) => ({
       ...t,
       potential_invoice: t.potential_invoice_id ? invoiceMap[t.potential_invoice_id] : undefined,
+      potential_supplier_invoice: t.potential_supplier_invoice_id
+        ? supplierInvoiceMap[t.potential_supplier_invoice_id]
+        : undefined,
     }))
 
     setTransactions(transactionsWithInvoices)
     setTotalUncategorizedCount(uncatCount ?? 0)
-    setHasMore((txData || []).length >= PAGE_SIZE)
+    setHasMore(rows.length >= PAGE_SIZE)
     setIsLoading(false)
   }
 
@@ -187,22 +219,28 @@ export default function TransactionsPage() {
     const potentialInvoiceIds = txData
       .filter((t) => t.potential_invoice_id)
       .map((t) => t.potential_invoice_id)
+    const potentialSupplierInvoiceIds = txData
+      .filter((t) => t.potential_supplier_invoice_id)
+      .map((t) => t.potential_supplier_invoice_id)
 
-    const invoiceResult = potentialInvoiceIds.length > 0
-      ? await supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
-      : { data: null }
+    const [invoiceResult, supplierInvoiceResult] = await Promise.all([
+      potentialInvoiceIds.length > 0
+        ? supabase.from('invoices').select('*, customer:customers(*)').in('id', potentialInvoiceIds)
+        : Promise.resolve({ data: null }),
+      potentialSupplierInvoiceIds.length > 0
+        ? supabase.from('supplier_invoices').select('*, supplier:suppliers(*)').in('id', potentialSupplierInvoiceIds)
+        : Promise.resolve({ data: null }),
+    ])
 
-    let invoiceMap: Record<string, Invoice & { customer?: Customer }> = {}
-    if (invoiceResult.data) {
-      invoiceMap = invoiceResult.data.reduce((acc, inv) => {
-        acc[inv.id] = inv
-        return acc
-      }, {} as Record<string, Invoice & { customer?: Customer }>)
-    }
+    const invoiceMap = buildInvoiceMap(invoiceResult.data)
+    const supplierInvoiceMap = buildSupplierInvoiceMap(supplierInvoiceResult.data)
 
     const newTransactions: TransactionWithInvoice[] = txData.map((t) => ({
       ...t,
       potential_invoice: t.potential_invoice_id ? invoiceMap[t.potential_invoice_id] : undefined,
+      potential_supplier_invoice: t.potential_supplier_invoice_id
+        ? supplierInvoiceMap[t.potential_supplier_invoice_id]
+        : undefined,
     }))
 
     setTransactions((prev) => [...prev, ...newTransactions])
@@ -369,26 +407,41 @@ export default function TransactionsPage() {
   }
 
   async function handleConfirmInvoiceMatch() {
-    if (!selectedTransaction?.potential_invoice) return
+    if (!selectedTransaction) return
+    const isSupplier = !!selectedTransaction.potential_supplier_invoice
+    const isCustomer = !!selectedTransaction.potential_invoice
+    if (!isSupplier && !isCustomer) return
+
     setIsConfirmingMatch(true)
 
     try {
-      const response = await fetch(`/api/transactions/${selectedTransaction.id}/match-invoice`, {
+      const url = isSupplier
+        ? `/api/transactions/${selectedTransaction.id}/match-supplier-invoice`
+        : `/api/transactions/${selectedTransaction.id}/match-invoice`
+      const body = isSupplier
+        ? { supplier_invoice_id: selectedTransaction.potential_supplier_invoice!.id }
+        : { invoice_id: selectedTransaction.potential_invoice!.id }
+
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ invoice_id: selectedTransaction.potential_invoice.id }),
+        body: JSON.stringify(body),
       })
       const result = await response.json()
       if (!response.ok) {
-        toast({ title: 'Fakturamatchning misslyckades', description: getErrorMessage(result, { context: 'transaction' }), variant: 'destructive' })
+        toast({
+          title: isSupplier ? 'Leverantörsfakturamatchning misslyckades' : 'Fakturamatchning misslyckades',
+          description: getErrorMessage(result, { context: 'transaction' }),
+          variant: 'destructive',
+        })
         setIsConfirmingMatch(false)
         return
       }
 
-      toast({
-        title: 'Faktura matchad',
-        description: `Faktura ${selectedTransaction.potential_invoice.invoice_number} markerad som betald`,
-      })
+      const label = isSupplier
+        ? `Leverantörsfaktura ${selectedTransaction.potential_supplier_invoice!.supplier_invoice_number} markerad som betald`
+        : `Faktura ${selectedTransaction.potential_invoice!.invoice_number} markerad som betald`
+      toast({ title: isSupplier ? 'Leverantörsfaktura matchad' : 'Faktura matchad', description: label })
       setMatchDialogOpen(false)
 
       // Mark as exiting for animation
@@ -397,15 +450,23 @@ export default function TransactionsPage() {
         setTransactions((prev) =>
           prev.map((t) =>
             t.id === selectedTransaction.id
-              ? {
-                  ...t,
-                  invoice_id: selectedTransaction.potential_invoice?.id || null,
-                  potential_invoice_id: null,
-                  potential_invoice: undefined,
-                  is_business: true,
-                  category: 'income_services' as TransactionCategory,
-                  journal_entry_id: result.journal_entry_id,
-                }
+              ? isSupplier
+                ? {
+                    ...t,
+                    supplier_invoice_id: selectedTransaction.potential_supplier_invoice?.id || null,
+                    potential_supplier_invoice: undefined,
+                    is_business: true,
+                    journal_entry_id: result.journal_entry_id,
+                  }
+                : {
+                    ...t,
+                    invoice_id: selectedTransaction.potential_invoice?.id || null,
+                    potential_invoice_id: null,
+                    potential_invoice: undefined,
+                    is_business: true,
+                    category: 'income_services' as TransactionCategory,
+                    journal_entry_id: result.journal_entry_id,
+                  }
               : t
           )
         )
@@ -418,7 +479,7 @@ export default function TransactionsPage() {
         setIsConfirmingMatch(false)
       }, 350)
     } catch {
-      toast({ title: 'Matchning misslyckades', description: 'Transaktionen kunde inte matchas med fakturan. Försök igen.', variant: 'destructive' })
+      toast({ title: 'Matchning misslyckades', description: 'Transaktionen kunde inte matchas. Försök igen.', variant: 'destructive' })
       setIsConfirmingMatch(false)
     }
   }
