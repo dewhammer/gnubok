@@ -44,9 +44,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: erp-mafia/compliancemaxx@v1
+      - uses: erp-mafia/compliancemaxx@v2
         with:
-          mode: swarm
+          mode: audit                    # v2 name; was `swarm` in v1
           llm-provider: bedrock
           fail-on-findings: false        # observational while bedding in
         env:

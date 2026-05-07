@@ -1,4 +1,9 @@
-name: compliance — PR mode (advisory)
+name: compliance — review (advisory)
+
+# Lightweight LLM-only review on every PR. ~90s, no Docker scanners.
+# Posts a sticky comment with reasoned findings across all 5 frameworks.
+# The nightly compliance-swarm.yml (mode: audit) provides the deeper
+# scanner-backed coverage.
 
 on:
   pull_request:
@@ -7,24 +12,26 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  security-events: write
 
 concurrency:
-  group: compliance-pr-${{ github.ref }}
+  group: compliance-review-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  compliance:
-    name: PR static checks (advisory)
+  review:
+    name: Compliance review (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: erp-mafia/compliancemaxx@v1
+      - uses: erp-mafia/compliancemaxx@v2
         with:
-          mode: pr
           base: ${{ github.event.pull_request.base.sha }}
-          fail-on-findings: false           # advisory while bedding in; flip to true after triage
+          fail-on-findings: false           # advisory while bedding in
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-north-1
