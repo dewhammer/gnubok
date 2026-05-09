@@ -309,6 +309,13 @@ function pad(value: string, length: number): string {
  *
  * For 5-digit clearings starting with "8": digits 1-4 go to the clearing field,
  * the 5th digit becomes the first digit of the 10-position account field.
+ *
+ * Nordea Personkonto with 11-digit account number: the displayed account
+ * already includes the 4-digit clearing as its leading digits (e.g. clearing
+ * 1708 + account 17082042825). The 10-digit BG-LB account field cannot fit
+ * 11 digits, so we strip the redundant clearing prefix and zero-pad the
+ * remaining 7 digits to 10. The receiving bank reconstructs the full
+ * personkonto from clearing + account.
  */
 function encodeReceiverAccount(
   clearingInput: string,
@@ -318,6 +325,11 @@ function encodeReceiverAccount(
   const account = accountInput.replace(/\D/g, '')
 
   if (clearing.length === 4) {
+    // Nordea Personkonto: account is 11 digits and starts with the clearing.
+    // Strip the redundant clearing prefix so it fits the 10-digit account field.
+    if (account.length === 11 && account.startsWith(clearing)) {
+      return { clearing4: clearing, accountWithSwedbankPrefix: account.slice(4) }
+    }
     return { clearing4: clearing, accountWithSwedbankPrefix: account }
   }
 

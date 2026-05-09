@@ -152,6 +152,16 @@ function isSwedishUserMessage(message: string): boolean {
     /förfrågan/i,
     /obligatorisk/i,
     /bokföringen är låst/i,
+    /fält/i,
+    /värde/i,
+    /felaktig/i,
+    /för (lång|kort|stor|liten|många|få)/i,
+    /bankgiro/i,
+    /personnummer/i,
+    /kontonummer/i,
+    /clearingnummer/i,
+    /nummer är/i,
+    /tillgängligt/i,
   ]
   return swedishPatterns.some((p) => p.test(message))
 }

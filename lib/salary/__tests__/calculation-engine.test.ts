@@ -10,6 +10,11 @@ vi.mock('../personnummer', () => ({
     if (encrypted === 'mock_old_person') return '193501011234'
     if (encrypted === 'mock_young_person') return '200301011234'
     if (encrypted === 'mock_senior_person') return '195801011234'
+    // Generic helper: 'mock_born_YYYY' resolves to a Jan-1 birth in YYYY.
+    // Used by ungdomsrabatt boundary tests so each case names its own year
+    // explicitly rather than depending on a global mock alias.
+    const m = /^mock_born_(\d{4})$/.exec(encrypted)
+    if (m) return `${m[1]}01011234`
     return '199001011234' // Default: born 1990
   },
   calculateAgeAtYearStart: (pnr: string, year: number) => {
@@ -366,5 +371,129 @@ describe('calculateAvgifterRate', () => {
 
     expect(result.rate).toBe(0.1021)
     expect(result.category).toBe('vaxa_stod')
+  })
+
+  // Ungdomsrabatt 2026-2027 (Prop. 2025/26:66). Eligibility test is
+  // age >= 18 AND age < 23 at årets ingång. Cases below pin all four age
+  // boundaries plus the period-window edges.
+  describe('youth rate (ungdomsrabatt 2026-2027)', () => {
+    it('NOT eligible — age 17 at year start (too young)', () => {
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2009', paymentDate: '2026-05-25' }),
+        config2026,
+        2026,
+      )
+      expect(result.category).toBe('standard')
+      expect(result.rate).toBe(0.3142)
+    })
+
+    it('eligible — age 18 at year start (lower boundary)', () => {
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2008', paymentDate: '2026-05-25' }),
+        config2026,
+        2026,
+      )
+      expect(result.category).toBe('youth')
+      expect(result.rate).toBe(0.2081)
+    })
+
+    it('eligible — age 22 at year start (upper boundary)', () => {
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2004', paymentDate: '2026-05-25' }),
+        config2026,
+        2026,
+      )
+      expect(result.category).toBe('youth')
+      expect(result.rate).toBe(0.2081)
+    })
+
+    // Regression: this is the case Skatteverket's AGI validator rejected.
+    // The previous implementation incorrectly accepted age 23 at year start.
+    it('NOT eligible — age 23 at year start (just over)', () => {
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2003', paymentDate: '2026-05-25' }),
+        config2026,
+        2026,
+      )
+      expect(result.category).toBe('standard')
+      expect(result.rate).toBe(0.3142)
+    })
+
+    it('NOT eligible — age 22 but paid March 2026 (before period starts)', () => {
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2004', paymentDate: '2026-03-15' }),
+        config2026,
+        2026,
+      )
+      expect(result.category).toBe('standard')
+      expect(result.rate).toBe(0.3142)
+    })
+
+    it('NOT eligible — age 22 but paid October 2027 (after period ends)', () => {
+      const config2027: PayrollConfig = { ...config2026, configYear: 2027 }
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2005', paymentDate: '2027-10-10' }),
+        config2027,
+        2027,
+      )
+      expect(result.category).toBe('standard')
+      expect(result.rate).toBe(0.3142)
+    })
+
+    it('eligible — payment exactly April 1 2026 (period start edge)', () => {
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2004', paymentDate: '2026-04-01' }),
+        config2026,
+        2026,
+      )
+      expect(result.category).toBe('youth')
+      expect(result.rate).toBe(0.2081)
+    })
+
+    it('eligible — payment exactly September 30 2027 (period end edge)', () => {
+      const config2027: PayrollConfig = { ...config2026, configYear: 2027 }
+      const result = calculateAvgifterRate(
+        makeBasicInput({ personnummer: 'mock_born_2005', paymentDate: '2027-09-30' }),
+        config2027,
+        2027,
+      )
+      expect(result.category).toBe('youth')
+      expect(result.rate).toBe(0.2081)
+    })
+  })
+})
+
+describe('calculateSalary — youth cap', () => {
+  // The 25 000 SEK monthly cap is applied by calculateSalary (not
+  // calculateAvgifterRate) so it has to be exercised through the integration
+  // path. Salary above the cap: discounted portion at 20.81%, excess at 31.42%.
+  it('applies 20.81% on first 25 000 SEK and 31.42% on the excess', () => {
+    const result = calculateSalary(
+      makeBasicInput({
+        personnummer: 'mock_born_2004', // age 22 at year start 2026
+        paymentDate: '2026-06-25',
+        monthlySalary: 30000,
+      }),
+      config2026,
+      [],
+    )
+    // 25 000 × 0.2081 + 5 000 × 0.3142 = 5 202.50 + 1 571.00 = 6 773.50
+    expect(result.avgifterAmount).toBeCloseTo(6773.5, 1)
+    expect(result.avgifterCategory).toBe('youth')
+  })
+
+  it('applies pure 20.81% when salary is at or below the cap', () => {
+    const result = calculateSalary(
+      makeBasicInput({
+        personnummer: 'mock_born_2004',
+        paymentDate: '2026-06-25',
+        monthlySalary: 20000,
+      }),
+      config2026,
+      [],
+    )
+    // 20 000 × 0.2081 = 4 162.00
+    expect(result.avgifterAmount).toBeCloseTo(4162, 1)
+    expect(result.avgifterCategory).toBe('youth')
   })
 })

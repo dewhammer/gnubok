@@ -490,17 +490,23 @@ export function calculateAvgifterRate(
     }
   }
 
-  // Youth rate (2026: ages 19-23, Apr-Sep only)
-  if (config.avgifterYouthRate !== null && ageAtYearStart >= 19 && ageAtYearStart <= 23) {
+  // Youth rate (ungdomsrabatt 2026-2027, Prop. 2025/26:66):
+  //   "personer som vid årets ingång har fyllt 18 men inte 23 år"
+  // → eligible at årets ingång: age >= 18 AND age < 23 (i.e. age ≤ 22 on Jan 1).
+  // The Riksdag betänkande's "19-23-åringar" wording is colloquial — those
+  // eligible at year start (18-22) become 19-23 during the year. We test the
+  // year-start age, not the during-year age. Skatteverket's AGI validator
+  // rejects 23-year-olds at year start as not eligible.
+  // Active period: 1 April 2026 - 30 September 2027.
+  if (config.avgifterYouthRate !== null && ageAtYearStart >= 18 && ageAtYearStart <= 22) {
     const [, monthStr] = input.paymentDate.split('-')
     const month = parseInt(monthStr)
-    // Youth rate valid Apr 2026 - Sep 2027
     const isYouthPeriod = (paymentYear === 2026 && month >= 4) || (paymentYear === 2027 && month <= 9)
     if (isYouthPeriod) {
       steps.push({
         label: 'Avgiftskategori',
-        formula: `Ungdomsrabatt (${ageAtYearStart} år): ${fmtPct(config.avgifterYouthRate)} på första ${fmtKr(config.avgifterYouthSalaryCap ?? 0)}`,
-        input: { age: ageAtYearStart, cap: config.avgifterYouthSalaryCap ?? 0 },
+        formula: `Ungdomsrabatt (vid årets ingång ${ageAtYearStart} år): ${fmtPct(config.avgifterYouthRate)} på första ${fmtKr(config.avgifterYouthSalaryCap ?? 0)}/mån`,
+        input: { age_at_year_start: ageAtYearStart, cap: config.avgifterYouthSalaryCap ?? 0 },
         output: null,
       })
       return { rate: config.avgifterYouthRate, amount: 0, basis: 0, category: 'youth', steps }

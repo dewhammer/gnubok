@@ -19,7 +19,7 @@ export const HUVUDUPPGIFT_FIELDS = {
   RUTA_060: '060',
   /** Arbetsgivaravgifter — age-reduced (10.21%, born ≤1959 for 2026) */
   RUTA_061: '061',
-  /** Arbetsgivaravgifter — youth rate (20.81%, ages 19-23, Apr 2026–Sep 2027) */
+  /** Arbetsgivaravgifter — youth rate (20.81%, vid årets ingång 18–22 år, Apr 2026–Sep 2027; Prop. 2025/26:66) */
   RUTA_062: '062',
 } as const
 
