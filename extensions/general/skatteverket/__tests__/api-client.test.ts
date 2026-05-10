@@ -55,7 +55,7 @@ describe('skvRequest — error mapping', () => {
     }
   })
 
-  it('maps 401 with body text → SESSION_EXPIRED and includes body', async () => {
+  it('maps 401 with body text → SESSION_EXPIRED with a clean Swedish message (no body leak)', async () => {
     mockFetchStatus(401, 'token expired')
     try {
       await skvRequest(fakeSupabase, 'user-1', 'GET', '/x')
@@ -63,7 +63,10 @@ describe('skvRequest — error mapping', () => {
     } catch (e) {
       expect(e).toBeInstanceOf(SkatteverketAuthError)
       expect((e as SkatteverketAuthError).code).toBe('SESSION_EXPIRED')
-      expect((e as SkatteverketAuthError).message).toContain('token expired')
+      expect((e as SkatteverketAuthError).message).toMatch(/Sessionen har gått ut/)
+      // Audit V16.1: the raw response body must NOT be concatenated into the
+      // user-facing message — that information stays in server-side logs.
+      expect((e as SkatteverketAuthError).message).not.toContain('token expired')
     }
   })
 

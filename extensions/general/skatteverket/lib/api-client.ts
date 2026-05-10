@@ -1,8 +1,26 @@
 import crypto from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { createLogger } from '@/lib/logger'
 import { refreshAccessToken } from './oauth'
 import { getTokens, storeTokens, deleteTokens } from './token-store'
 import type { SkatteverketTokens } from '../types'
+
+const log = createLogger('skatteverket-api-client')
+
+// Cap diagnostic-body logging at 200 chars and redact any Bearer token
+// patterns. The audit (V16.1 / A.8.15) flagged that raw 401/403 bodies were
+// being concatenated into user-facing error messages and written to logs
+// without redaction. Diagnostic data still belongs in server-side logs, but
+// not in unbounded form and not in anything that reaches the user.
+const MAX_LOG_BODY_LEN = 200
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9\-._~+/=]+/gi
+
+function safeBodyForLog(body: string): string {
+  const redacted = body.replace(BEARER_PATTERN, 'Bearer [REDACTED]')
+  return redacted.length > MAX_LOG_BODY_LEN
+    ? redacted.slice(0, MAX_LOG_BODY_LEN) + '…'
+    : redacted
+}
 
 /**
  * Skatteverket API client.
@@ -235,15 +253,17 @@ export async function skvRequest(
         skvHeaders[k] = v
       }
     })
-    console.error('[skatteverket] 401 from API', { url, body: text, headers: skvHeaders })
+    // Diagnostic detail (headers, body) belongs in server-side logs only —
+    // not in user-facing error messages. The structured logger redacts
+    // sensitive keys and we further cap body length and strip Bearer tokens
+    // so the diagnostic is bounded.
+    log.error('401 from Skatteverket API', {
+      url,
+      statusCode: 401,
+      body: safeBodyForLog(text),
+      headers: skvHeaders,
+    })
 
-    // (A) Surface SKV's WWW-Authenticate verbatim — when the body is empty
-    // this header is usually the only diagnostic SKV gives us. Carry both
-    // header and body into every thrown message below.
-    const headerSuffix = Object.keys(skvHeaders).length > 0
-      ? ` Headers: ${JSON.stringify(skvHeaders)}`
-      : ''
-    const bodySuffix = text ? ` Svar: ${text}` : ''
     const lower = text.toLowerCase()
 
     // OAuth's standard insufficient_scope marker. SKV sometimes emits this
@@ -258,8 +278,7 @@ export async function skvRequest(
       throw new SkatteverketAuthError(
         'Anslutningen mot Skatteverket saknar nödvändig behörighet för denna ' +
         'tjänst. Koppla bort och anslut igen via Inställningar → Skatteverket ' +
-        'för att förnya tokenen med rätt scope.' +
-        headerSuffix + bodySuffix,
+        'för att förnya tokenen med rätt scope.',
         'MISSING_SCOPE'
       )
     }
@@ -277,13 +296,12 @@ export async function skvRequest(
       try {
         await deleteTokens(supabase, userId)
       } catch (cleanupErr) {
-        console.error('[skatteverket] failed to clear revoked token row', cleanupErr)
+        log.error('failed to clear revoked token row', cleanupErr as Error, { userId })
       }
       throw new SkatteverketAuthError(
         'Skatteverket har återkallat anslutningen. Detta händer t.ex. om ' +
         'BankID-sessionen avslutats eller om en ny anslutning gjorts från ' +
-        'en annan enhet. Anslut igen med BankID för att fortsätta.' +
-        headerSuffix + bodySuffix,
+        'en annan enhet. Anslut igen med BankID för att fortsätta.',
         'TOKEN_REVOKED'
       )
     }
@@ -303,9 +321,7 @@ export async function skvRequest(
       throw new SkatteverketAuthError(
         'Skatteverkets API-gateway nekade anropet. Kontrollera att din ' +
         'APIGW-klient (SKATTEVERKET_APIGW_CLIENT_ID) har prenumeration på ' +
-        'denna tjänst i Utvecklarportalen.' +
-        headerSuffix +
-        ` Svar från Skatteverket: ${text || '(tomt svar)'}`,
+        'denna tjänst i Utvecklarportalen.',
         'ACCESS_DENIED'
       )
     }
@@ -337,19 +353,26 @@ export async function skvRequest(
         `inte prenumeration på tjänsten "${apiHint}" i Utvecklarportalen, ` +
         'eller den lagrade tokenen saknar rätt scope. Kontrollera ' +
         'prenumerationen, koppla annars bort och anslut igen via ' +
-        'Inställningar → Skatteverket.' + headerSuffix,
+        'Inställningar → Skatteverket.',
         'ACCESS_DENIED'
       )
     }
 
     throw new SkatteverketAuthError(
-      `Sessionen har gått ut. Logga in med BankID igen.${headerSuffix}${bodySuffix}`,
+      'Sessionen har gått ut. Logga in med BankID igen.',
       'SESSION_EXPIRED'
     )
   }
 
   if (response.status === 403) {
-    const text = await response.text()
+    const text = await response.text().catch(() => '')
+    // Same diagnostic-vs-user-message split as the 401 path: log the body
+    // server-side, surface only the actionable Swedish guidance.
+    log.error('403 from Skatteverket API', {
+      url,
+      statusCode: 403,
+      body: safeBodyForLog(text),
+    })
     // Missing scope on the access token — fires when an existing connection
     // pre-dates an extension that needed a new scope (the AGI/`agd` rollout
     // is the canonical example). The user has to disconnect + reconnect to
@@ -375,7 +398,7 @@ export async function skvRequest(
       )
     }
     throw new SkatteverketAuthError(
-      `Åtkomst nekad av Skatteverket (403): ${text}`,
+      'Åtkomst nekad av Skatteverket (403). Kontakta support om problemet kvarstår.',
       'ACCESS_DENIED'
     )
   }

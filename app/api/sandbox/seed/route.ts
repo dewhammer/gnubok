@@ -1,25 +1,45 @@
+import crypto from 'crypto'
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { createLogger } from '@/lib/logger'
 
-const log = createLogger('sandbox:seed')
-
 /**
  * POST /api/sandbox/seed
  * Seeds demo data for an anonymous sandbox user.
  * Only callable by anonymous users (is_anonymous === true).
+ *
+ * Defense-in-depth: also requires SANDBOX_ENABLED=true. The anonymous-user
+ * check is the primary control; the env guard exists so that if anonymous
+ * sign-in is ever turned on accidentally in a production environment, this
+ * destructive seed endpoint stays inert until an operator explicitly opts in.
  */
 export async function POST() {
+  // Per-request logger so seed-failure entries are correlatable in the SIEM.
+  // Cannot reuse withRouteContext here — it requires an active company, but
+  // the sandbox seed runs *before* a company exists for the user.
+  const requestId = `req_${crypto.randomUUID()}`
+  const log = createLogger('sandbox:seed', { requestId })
+
+  if (process.env.SANDBOX_ENABLED !== 'true') {
+    return NextResponse.json(
+      { error: 'Sandbox is not enabled in this environment', requestId },
+      { status: 403 },
+    )
+  }
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return NextResponse.json({ error: 'Unauthorized', requestId }, { status: 401 })
   }
 
   if (!user.is_anonymous) {
-    return NextResponse.json({ error: 'Sandbox is only available for anonymous users' }, { status: 403 })
+    return NextResponse.json(
+      { error: 'Sandbox is only available for anonymous users', requestId },
+      { status: 403 },
+    )
   }
 
   // Anonymous users start with no company. Create one before seeding.
@@ -39,7 +59,7 @@ export async function POST() {
     if (companyError || !newCompanyId) {
       log.error('failed to create sandbox company', { error: companyError, userId: user.id })
       return NextResponse.json(
-        { error: 'Failed to create sandbox company' },
+        { error: 'Failed to create sandbox company', requestId },
         { status: 500 }
       )
     }
@@ -552,7 +572,7 @@ export async function POST() {
   } catch (err) {
     log.error('failed to seed sandbox data', { error: err, userId: user.id, companyId })
     return NextResponse.json(
-      { error: 'Failed to seed sandbox data' },
+      { error: 'Failed to seed sandbox data', requestId },
       { status: 500 }
     )
   }

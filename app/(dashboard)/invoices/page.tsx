@@ -124,7 +124,12 @@ export default function InvoicesPage() {
     unpaid: invoices.filter(isOutstandingReceivable).length,
     unpaidAmount: invoices
       .filter(isOutstandingReceivable)
-      .reduce((sum, i) => sum + Number(i.total_sek || i.total), 0),
+      .reduce((sum, i) => {
+        if (i.currency === 'SEK') {
+          return sum + getDisplayTotal({ total: Number(i.total), currency: 'SEK' }, { ore_rounding: oreRounding }).displayed
+        }
+        return sum + Number(i.total_sek || i.total)
+      }, 0),
     overdue: invoices.filter((i) => i.status === 'overdue' && !i.credited_invoice_id).length,
   }
 
