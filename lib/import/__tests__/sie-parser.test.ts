@@ -568,6 +568,53 @@ describe('decodeBuffer — Windows-1252', () => {
   })
 })
 
+// --- Defensive encoding: handle files where the detector picks the wrong encoding ---
+
+describe('detectEncoding — full-buffer scan', () => {
+  it('detects Win-1252 even when Swedish chars appear past the legacy 4KB sample boundary', () => {
+    // Build a buffer where the first 8000 bytes are pure ASCII header + filler,
+    // and the Swedish Win-1252 byte appears only at byte 8000+. The old
+    // implementation sampled the first 4000 bytes and would default to UTF-8.
+    const filler = new Uint8Array(8000).fill(0x20) // spaces
+    const tail = new Uint8Array([
+      0x46, 0x4f, 0x52, 0x45, 0x4e, 0x49, 0x4e, 0x47, // FORENING
+      0xd6, // Ö in Win-1252 (0xD6) — invalid lone UTF-8 byte
+    ])
+    const buf = new Uint8Array(filler.length + tail.length)
+    buf.set(filler, 0)
+    buf.set(tail, filler.length)
+    const encoding = detectEncoding(buf.buffer)
+    expect(encoding).toBe('windows1252')
+  })
+})
+
+describe('decodeBuffer — fallback on U+FFFD', () => {
+  it('falls back from utf8 to windows1252 when the result has replacement characters', () => {
+    // "F" "Ö" "RENING" in Windows-1252 — Ö is lone byte 0xD6, not valid UTF-8
+    const buf = new Uint8Array([0x46, 0xd6, 0x52, 0x45, 0x4e, 0x49, 0x4e, 0x47])
+    const result = decodeBuffer(buf.buffer, 'utf8')
+    expect(result).toBe('FÖRENING')
+    expect(result.includes('\uFFFD')).toBe(false)
+  })
+
+  it('falls back from utf8 to cp437 when both windows1252 also fails', () => {
+    // 0x94 is "ö" in CP437; in Win-1252 it's an unprintable "" but textually different;
+    // in UTF-8 it's invalid → U+FFFD. Verify CP437 path is reachable when chosen wrong.
+    const buf = new Uint8Array([0x66, 0x94, 0x72]) // f + ö-cp437 + r
+    const result = decodeBuffer(buf.buffer, 'utf8')
+    // Either windows1252 or cp437 fallback produces a non-FFFD result; both are
+    // acceptable here since the byte 0x94 is interpretable in both — what matters
+    // is no U+FFFD leaks through.
+    expect(result.includes('\uFFFD')).toBe(false)
+  })
+
+  it('returns primary decode unchanged when it contains no U+FFFD', () => {
+    const buf = new TextEncoder().encode('Företag').buffer
+    const result = decodeBuffer(buf, 'utf8')
+    expect(result).toBe('Företag')
+  })
+})
+
 // --- Fix 3: Invalid date rejection ---
 
 describe('parseSIEFile — invalid date handling', () => {

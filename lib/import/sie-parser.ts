@@ -85,6 +85,10 @@ const WIN1252_SWEDISH_BYTES = new Set([
  *    so presence in one range rules out the other.
  * 4. UTF-8 multi-byte sequences (0xC3 + continuation) are detected with proper
  *    skipping of continuation bytes to avoid false CP437 counts.
+ *
+ * Scans the entire buffer (not a sample): SIE files are capped at 50 MB and
+ * Swedish characters often only appear deep in voucher descriptions, well past
+ * any small header sample.
  */
 export function detectEncoding(buffer: ArrayBuffer): SIEEncoding {
   const bytes = new Uint8Array(buffer)
@@ -99,19 +103,17 @@ export function detectEncoding(buffer: ArrayBuffer): SIEEncoding {
   // (Fortnox, Bokio, Dooer etc. export UTF-8 with #FORMAT PC8).
   // Instead, we detect encoding from actual byte patterns.
 
-  // Scan sample for encoding-specific byte ranges
-  const sampleSize = Math.min(bytes.length, 4000)
   let cp437Count = 0   // Swedish chars in 0x80-0x9F (CP437 range)
   let utf8Count = 0     // Valid UTF-8 multi-byte Swedish sequences
   let win1252Count = 0  // Swedish chars in 0xC0-0xFF (Win-1252 range)
 
-  for (let i = 0; i < sampleSize; i++) {
+  for (let i = 0; i < bytes.length; i++) {
     const byte = bytes[i]
 
     // Check for UTF-8 multi-byte sequences for Swedish chars FIRST
     // to avoid false CP437/Win-1252 counts from continuation bytes.
     // Ä = C3 84, Å = C3 85, Ö = C3 96, ä = C3 A4, å = C3 A5, ö = C3 B6, é = C3 A9
-    if (byte === 0xc3 && i + 1 < sampleSize) {
+    if (byte === 0xc3 && i + 1 < bytes.length) {
       const nextByte = bytes[i + 1]
       if ([0x84, 0x85, 0x96, 0xa4, 0xa5, 0xb6, 0xa9].includes(nextByte)) {
         utf8Count++
@@ -140,9 +142,29 @@ export function detectEncoding(buffer: ArrayBuffer): SIEEncoding {
 }
 
 /**
- * Decode a buffer to string using the specified encoding
+ * Decode a buffer to string using the specified encoding.
+ *
+ * After decoding, validates the result for U+FFFD replacement characters
+ * (which signal that the chosen encoding was wrong). When found, retries
+ * with each alternate encoding and returns the first result without U+FFFD.
+ * This guards against `detectEncoding` heuristic misses on files where
+ * Swedish characters are rare or absent in the bytes the detector looked at.
  */
 export function decodeBuffer(buffer: ArrayBuffer, encoding: SIEEncoding): string {
+  const primary = decodeBufferRaw(buffer, encoding)
+  if (!primary.includes('\uFFFD')) return primary
+
+  const alternates: SIEEncoding[] = (['utf8', 'windows1252', 'cp437'] as const).filter(
+    (e) => e !== encoding
+  )
+  for (const alt of alternates) {
+    const candidate = decodeBufferRaw(buffer, alt)
+    if (!candidate.includes('\uFFFD')) return candidate
+  }
+  return primary
+}
+
+function decodeBufferRaw(buffer: ArrayBuffer, encoding: SIEEncoding): string {
   if (encoding === 'utf8') {
     const decoder = new TextDecoder('utf-8')
     return decoder.decode(buffer)

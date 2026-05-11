@@ -86,6 +86,7 @@ export default function JournalEntryForm({
     initialLines ?? [{ ...BLANK_LINE }, { ...BLANK_LINE }]
   )
   const [voucherSeries, setVoucherSeries] = useState('A')
+  const [nextVoucherNumber, setNextVoucherNumber] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [showNoDocWarning, setShowNoDocWarning] = useState(false)
@@ -156,6 +157,31 @@ export default function JournalEntryForm({
       setPeriodMismatch('no_period')
     }
   }, [entryDate, periods])
+
+  // Preview the upcoming voucher number for the selected period + series.
+  // Read-only hint; the actual number is reserved atomically at commit time,
+  // so this may shift by one if another entry lands first.
+  useEffect(() => {
+    if (embedded || !selectedPeriod || !voucherSeries) {
+      setNextVoucherNumber(null)
+      return
+    }
+    let cancelled = false
+    const qs = new URLSearchParams({ period_id: selectedPeriod, series: voucherSeries })
+    fetch(`/api/bookkeeping/voucher-sequences/next?${qs}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (cancelled) return
+        const next = body?.data?.next
+        setNextVoucherNumber(typeof next === 'number' ? next : null)
+      })
+      .catch(() => {
+        if (!cancelled) setNextVoucherNumber(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [embedded, selectedPeriod, voucherSeries])
 
   // Fetch exchange rate from Riksbanken when currency changes
   const fetchRate = useCallback(async (currency: Currency) => {
@@ -447,8 +473,15 @@ export default function JournalEntryForm({
             <Input
               value={voucherSeries}
               onChange={(e) => {
-                const v = e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 1)
-                setVoucherSeries(v || 'A')
+                const v = e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(-1)
+                setVoucherSeries(v)
+              }}
+              onFocus={(e) => {
+                const target = e.target
+                setTimeout(() => target.select(), 0)
+              }}
+              onBlur={() => {
+                if (!voucherSeries) setVoucherSeries('A')
               }}
               className="mt-1 text-center font-mono"
               maxLength={1}
@@ -792,7 +825,11 @@ export default function JournalEntryForm({
         onOpenChange={setShowReview}
         onConfirm={handleConfirm}
         isSubmitting={isSubmitting}
-        title="Granska verifikation"
+        title={
+          !embedded && nextVoucherNumber != null
+            ? `Granska verifikation (${voucherSeries}${nextVoucherNumber})`
+            : 'Granska verifikation'
+        }
         warningText={embedded ? '' : 'En verifikation skapas och kan inte ändras efteråt. Korrigeringar görs genom storno.'}
       >
         <JournalEntryReviewContent

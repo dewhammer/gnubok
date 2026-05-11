@@ -4,25 +4,38 @@ import { errorResponse } from '@/lib/errors/get-structured-error'
 
 export const GET = withRouteContext(
   'voucher_sequence.next',
-  async (_request, ctx) => {
+  async (request, ctx) => {
     const { supabase, companyId, log, requestId } = ctx
+
+    const url = new URL(request.url)
+    const overridePeriodId = url.searchParams.get('period_id')
+    const overrideSeries = url.searchParams.get('series')
 
     const today = new Date().toISOString().split('T')[0]
 
     const [{ data: period, error: periodError }, { data: settings, error: settingsError }] =
       await Promise.all([
-        supabase
-          .from('fiscal_periods')
-          .select('id')
-          .eq('company_id', companyId)
-          .lte('period_start', today)
-          .gte('period_end', today)
-          .maybeSingle(),
-        supabase
-          .from('company_settings')
-          .select('default_voucher_series')
-          .eq('company_id', companyId)
-          .maybeSingle(),
+        overridePeriodId
+          ? supabase
+              .from('fiscal_periods')
+              .select('id')
+              .eq('company_id', companyId)
+              .eq('id', overridePeriodId)
+              .maybeSingle()
+          : supabase
+              .from('fiscal_periods')
+              .select('id')
+              .eq('company_id', companyId)
+              .lte('period_start', today)
+              .gte('period_end', today)
+              .maybeSingle(),
+        overrideSeries
+          ? Promise.resolve({ data: null, error: null })
+          : supabase
+              .from('company_settings')
+              .select('default_voucher_series')
+              .eq('company_id', companyId)
+              .maybeSingle(),
       ])
 
     if (periodError) {
@@ -34,7 +47,7 @@ export const GET = withRouteContext(
       return errorResponse(settingsError, log, { requestId })
     }
 
-    const series = settings?.default_voucher_series || 'A'
+    const series = overrideSeries || settings?.default_voucher_series || 'A'
 
     if (!period) {
       return NextResponse.json({ data: { next: null, series, fiscal_period_id: null } })

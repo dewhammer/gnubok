@@ -87,3 +87,156 @@ export function stripBOM(content: string): string {
 export function prepareContent(content: string): string {
   return normalizeLineEndings(stripBOM(decodeStringContent(content)))
 }
+
+/**
+ * --- U+FFFD heuristic recovery ---
+ *
+ * When Windows-1252 / Latin-1 bytes are decoded as UTF-8 with `fatal: false`,
+ * invalid sequences silently become U+FFFD. The original byte is lost — but
+ * for Swedish text we can guess from context: the missing letter is almost
+ * always one of Å/Ä/Ö (uppercase context) or å/ä/ö (lowercase context).
+ *
+ * This recovery tries each Swedish vowel substitution and scores the resulting
+ * word against a small dictionary of Swedish stems. If exactly one candidate
+ * scores above the threshold, it's applied. Ambiguous cases return null and
+ * must be reviewed manually.
+ */
+
+const REPLACEMENT = '\uFFFD'
+const SWEDISH_VOWELS_UPPER = ['Å', 'Ä', 'Ö'] as const
+const SWEDISH_VOWELS_LOWER = ['å', 'ä', 'ö'] as const
+
+/**
+ * Stems of common Swedish words containing åäö that appear in business names,
+ * place names, addresses, and accounting descriptions.
+ */
+const SWEDISH_STEMS = new Set<string>([
+  // -för- prefix (extremely common)
+  'för', 'före', 'förening', 'företag', 'försäkring', 'försäljning',
+  'försäljnings', 'förskola', 'församling', 'förvaltning', 'förbund',
+  'förlag', 'föräldra', 'försök', 'förbrukning', 'förbättring', 'förskott',
+  'försening', 'förhandling', 'förbättrings',
+  // domain terms
+  'bostadsrätt', 'rätt', 'samfällighet', 'idrott', 'fastighet', 'utbildning',
+  'näring', 'växel', 'värme', 'köp', 'köpa', 'inköp', 'sälja', 'säljs',
+  // accounting
+  'kostnad', 'kostnader', 'intäkt', 'intäkter', 'avskrivning', 'avsättning',
+  'lön', 'lönekostnad', 'pension', 'utgående', 'ingående', 'momspliktig',
+  'redovisning', 'företagskonto', 'bankkonto', 'överavskrivning',
+  'överskott', 'underskott', 'överföring', 'överlåtelse', 'återbetalning',
+  'utlägg', 'utgift',
+  // common short prepositions and adverbs
+  'från', 'för', 'över', 'är', 'när', 'där', 'även', 'någon', 'något',
+  'många', 'själv', 'små', 'väg', 'gång', 'tjänst', 'tjänster', 'räkning',
+  'räntor', 'år',
+  // common cities
+  'göteborg', 'malmö', 'örebro', 'östersund', 'jönköping', 'linköping',
+  'norrköping', 'lidköping', 'köping', 'helsingborg', 'umeå', 'skellefteå',
+  'piteå', 'luleå', 'borås', 'växjö', 'östhammar', 'södertälje', 'västerås',
+  'härnösand', 'värnamo', 'mölndal', 'mörrum', 'mönsterås', 'färjestaden',
+  'eskilstuna',
+  // directions / common geo terms
+  'östra', 'västra', 'södra', 'norra', 'öster', 'väster', 'söder',
+  // legal forms
+  'aktiebolag', 'handelsbolag', 'ekonomisk', 'allmännyttig',
+  // misc
+  'företagsledare', 'koncernbidrag', 'utländsk', 'utländska', 'främmande',
+  'vägen', 'gatan', 'allén', 'gränden', 'torget',
+  // surnames containing åäö
+  'lindström', 'sjöberg', 'söderberg', 'öberg', 'åström', 'åkerlund',
+  'östlund', 'lindgren', 'sjögren', 'hägglund', 'bäckström',
+])
+
+/**
+ * Score a candidate word.
+ *  - 1000 if the entire word matches a known stem (highest confidence).
+ *  - Otherwise the count of distinct stems that appear as substrings.
+ *    Counting (not boolean-returning) is required: when the same word has
+ *    multiple U+FFFD positions, the correct combination must outscore wrong
+ *    combinations that still happen to contain *one* stem each.
+ */
+function scoreCandidate(word: string): number {
+  const lower = word.toLowerCase()
+  if (SWEDISH_STEMS.has(lower)) return 1000
+  let score = 0
+  for (const stem of SWEDISH_STEMS) {
+    if (lower.includes(stem)) score++
+  }
+  return score
+}
+
+function chooseCase(word: string): 'upper' | 'lower' {
+  let upper = 0
+  let lower = 0
+  for (const ch of word) {
+    if (ch === REPLACEMENT) continue
+    if (ch >= 'A' && ch <= 'Z') upper++
+    else if (ch >= 'a' && ch <= 'z') lower++
+  }
+  return upper > lower ? 'upper' : 'lower'
+}
+
+/**
+ * Try every Swedish-vowel substitution for the U+FFFDs in `word`, then return
+ * the highest-scoring candidate. Returns null if no candidate matches a
+ * dictionary stem (i.e. ambiguous — operator must review).
+ */
+export function recoverWordWithFFFD(word: string): string | null {
+  if (!word.includes(REPLACEMENT)) return word
+
+  const vowels = chooseCase(word) === 'upper' ? SWEDISH_VOWELS_UPPER : SWEDISH_VOWELS_LOWER
+  const positions: number[] = []
+  for (let i = 0; i < word.length; i++) {
+    if (word[i] === REPLACEMENT) positions.push(i)
+  }
+
+  // Words with more than ~6 lost bytes blow up the combinatorial space —
+  // bail out rather than spend cycles on something that's likely garbage anyway.
+  const totalCombos = Math.pow(vowels.length, positions.length)
+  if (totalCombos > 729) return null
+
+  let best: { word: string; score: number } | null = null
+  for (let combo = 0; combo < totalCombos; combo++) {
+    const chars = word.split('')
+    let c = combo
+    for (const pos of positions) {
+      chars[pos] = vowels[c % vowels.length]
+      c = Math.floor(c / vowels.length)
+    }
+    const candidate = chars.join('')
+    const score = scoreCandidate(candidate)
+    if (!best || score > best.score) {
+      best = { word: candidate, score }
+    }
+  }
+
+  if (!best || best.score === 0) return null
+  return best.word
+}
+
+/**
+ * Repair every U+FFFD-containing word in `text` via dictionary-backed
+ * substitution. Returns the repaired string when *every* corrupted word
+ * resolved to a confident candidate; returns null if any word remains
+ * ambiguous (operator must review the whole string by hand).
+ *
+ * Idempotent on clean input.
+ */
+export function recoverStringWithFFFD(text: string): string | null {
+  if (!text.includes(REPLACEMENT)) return text
+
+  // Split on runs of non-letter/non-digit characters so punctuation,
+  // whitespace, and structural characters are preserved as-is.
+  const tokens = text.split(/([^\p{L}\p{N}\uFFFD]+)/u)
+  const out: string[] = []
+  for (const token of tokens) {
+    if (!token.includes(REPLACEMENT)) {
+      out.push(token)
+      continue
+    }
+    const recovered = recoverWordWithFFFD(token)
+    if (recovered === null) return null
+    out.push(recovered)
+  }
+  return out.join('')
+}

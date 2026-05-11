@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import DashboardContent from '@/components/dashboard/DashboardContent'
 import { getActiveCompanyId } from '@/lib/company/context'
+import { getDisplayTotal } from '@/lib/invoices/rounding'
 import type { Deadline, ReceiptQueueSummary, OnboardingProgress } from '@/types'
 
 export const dynamic = 'force-dynamic'
@@ -159,8 +160,14 @@ export default async function DashboardPage() {
     .filter((t) => t.amount < 0)
     .reduce((sum, t) => sum + Math.abs(Number(t.amount_sek || t.amount)), 0)
 
+  // Mirror the per-invoice öresavrundning rule used on the invoice list/detail
+  // pages: sum the displayed (rounded) SEK amount per invoice so the dashboard
+  // total matches what the user sees on the invoice list when the setting is on.
   const unpaidTotal = (unpaidInvoices || []).reduce(
-    (sum, inv) => sum + Number(inv.total_sek || inv.total),
+    (sum, inv) => sum + getDisplayTotal(
+      { total: Number(inv.total_sek || inv.total), currency: 'SEK' },
+      settings,
+    ).displayed,
     0
   )
 
