@@ -422,7 +422,7 @@ describe('ensureFiscalPeriod validation', () => {
     expect(id).toBe('existing-period-id')
   })
 
-  it('rejects when an existing period overlaps the range but does not fully contain it', async () => {
+  it('rejects when an existing period overlaps the range but already has posted entries', async () => {
     // Regression: previously fell through to the overlapping period silently,
     // which stamped every imported voucher with a fiscal_period_id whose
     // window did not cover the voucher's own entry_date — breaking the SIE
@@ -437,6 +437,80 @@ describe('ensureFiscalPeriod validation', () => {
             period_start: '2026-01-01',
             period_end: '2026-12-31',
             name: 'Räkenskapsår 2026',
+            is_closed: false,
+            locked_at: null,
+            opening_balances_set: false,
+          },
+        ],
+        error: null,
+      },
+      { data: [{ id: 'entry-1' }], error: null }, // journal_entries — has at least one
+    ])
+
+    await expect(
+      ensureFiscalPeriod(
+        supabase as unknown as Supabase,
+        'company-id',
+        '2025-03-01', // Capelix-style broken FY March–Feb
+        '2026-02-28',
+      ),
+    ).rejects.toThrow(/Inställningar → Företag/)
+  })
+
+  it('replaces an overlapping period when it is empty (onboarding-seeded)', async () => {
+    // Real-world Zerify AB case: onboarding seeded Räkenskapsår 2026 =
+    // 2026-01-01 – 2026-12-31; the user has a förlängt första räkenskapsår
+    // 2025-10-20 – 2026-12-31 (BFL 3 kap.) and imports an SIE for it.
+    // The seeded period carries no data, so we replace it.
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    enqueueMany([
+      { data: null, error: null }, // containing check — no match
+      {
+        data: [
+          {
+            id: 'seeded-2026',
+            period_start: '2026-01-01',
+            period_end: '2026-12-31',
+            name: 'Räkenskapsår 2026',
+            is_closed: false,
+            locked_at: null,
+            opening_balances_set: false,
+          },
+        ],
+        error: null,
+      },
+      { data: [], error: null }, // journal_entries — none
+      { data: [], error: null }, // earlier-period check — none (mid-month start)
+      { data: null, error: null }, // delete result
+      { data: { id: 'replaced-id' }, error: null }, // insert result
+    ])
+
+    const id = await ensureFiscalPeriod(
+      supabase as unknown as Supabase,
+      'company-id',
+      '2025-10-20',
+      '2026-12-31',
+    )
+
+    expect(id).toBe('replaced-id')
+  })
+
+  it('refuses to replace an overlapping period whose opening balances are already set', async () => {
+    // opening_balances_set: true short-circuits the replaceability gate before
+    // we even look at journal_entries — the period clearly carries user data.
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    enqueueMany([
+      { data: null, error: null },
+      {
+        data: [
+          {
+            id: 'with-ib-2026',
+            period_start: '2026-01-01',
+            period_end: '2026-12-31',
+            name: 'Räkenskapsår 2026',
+            is_closed: false,
+            locked_at: null,
+            opening_balances_set: true,
           },
         ],
         error: null,
@@ -447,8 +521,38 @@ describe('ensureFiscalPeriod validation', () => {
       ensureFiscalPeriod(
         supabase as unknown as Supabase,
         'company-id',
-        '2025-03-01', // Capelix-style broken FY March–Feb
-        '2026-02-28',
+        '2025-10-20',
+        '2026-12-31',
+      ),
+    ).rejects.toThrow(/Inställningar → Företag/)
+  })
+
+  it('refuses to replace an overlapping period that is locked', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    enqueueMany([
+      { data: null, error: null },
+      {
+        data: [
+          {
+            id: 'locked-2026',
+            period_start: '2026-01-01',
+            period_end: '2026-12-31',
+            name: 'Räkenskapsår 2026',
+            is_closed: false,
+            locked_at: '2026-03-15T10:00:00Z',
+            opening_balances_set: false,
+          },
+        ],
+        error: null,
+      },
+    ])
+
+    await expect(
+      ensureFiscalPeriod(
+        supabase as unknown as Supabase,
+        'company-id',
+        '2025-10-20',
+        '2026-12-31',
       ),
     ).rejects.toThrow(/överlappar men matchar inte/)
   })

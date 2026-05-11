@@ -6,13 +6,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
-import { Loader2, Upload } from 'lucide-react'
+import { AlertTriangle, Loader2, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCompany } from '@/contexts/CompanyContext'
 import { BankSelector, type Bank } from './BankSelector'
 import { BankConnectionStatus } from './BankConnectionStatus'
+import { AccountPickerDialog } from './AccountPickerDialog'
 import type { BankConnection } from '@/types'
+import type { StoredAccount } from '../types'
 
 /**
  * Self-contained banking settings panel for the enable-banking extension.
@@ -34,6 +36,7 @@ export default function BankingSettingsPanel() {
   const [isLoading, setIsLoading] = useState(true)
   const [showCsvFallback, setShowCsvFallback] = useState(false)
   const [psuType, setPsuType] = useState<'personal' | 'business'>('business')
+  const [pickerConnectionId, setPickerConnectionId] = useState<string | null>(null)
 
   // Must match STALE_THRESHOLD_MS in extensions/general/enable-banking/index.ts
   const PENDING_LOCK_MS = 30 * 1000
@@ -44,6 +47,28 @@ export default function BankingSettingsPanel() {
       if (releaseTimerRef.current) clearTimeout(releaseTimerRef.current)
     }
   }, [])
+
+  // Auto-open the picker when the user lands here from the OAuth callback
+  // (URL: /settings/banking?select_accounts=<id>). The query param is stripped
+  // afterwards so a refresh doesn't keep reopening it.
+  useEffect(() => {
+    if (isLoading) return
+    if (typeof window === 'undefined') return
+
+    const params = new URLSearchParams(window.location.search)
+    const targetId = params.get('select_accounts')
+    if (!targetId) return
+
+    const match = bankConnections.find(c => c.id === targetId)
+    if (match) {
+      setPickerConnectionId(targetId)
+    }
+
+    params.delete('select_accounts')
+    const newQuery = params.toString()
+    const newUrl = `${window.location.pathname}${newQuery ? `?${newQuery}` : ''}`
+    window.history.replaceState({}, '', newUrl)
+  }, [isLoading, bankConnections])
 
   function releaseConnectingLock() {
     connectingRef.current = false
@@ -252,11 +277,33 @@ export default function BankingSettingsPanel() {
   }
 
   const activeConnections = bankConnections.filter((c) => c.status === 'active')
+  const pendingSelectionConnections = bankConnections.filter((c) => c.status === 'pending_selection')
   const actionRequiredConnections = bankConnections.filter((c) => ['expired', 'error'].includes(c.status))
+
+  const pickerConnection = pickerConnectionId
+    ? bankConnections.find(c => c.id === pickerConnectionId)
+    : null
+  const pickerAccounts = pickerConnection
+    ? ((pickerConnection.accounts_data as StoredAccount[] | null) || [])
+    : []
 
   return (
     <div className="space-y-6">
       <DestructiveConfirmDialog {...dialogProps} />
+
+      {pickerConnection && (
+        <AccountPickerDialog
+          open={!!pickerConnection}
+          onOpenChange={(open) => {
+            if (!open) setPickerConnectionId(null)
+          }}
+          connectionId={pickerConnection.id}
+          bankName={pickerConnection.bank_name}
+          accounts={pickerAccounts}
+          isInitialSelection={pickerConnection.status === 'pending_selection'}
+          onSaved={() => fetchConnections()}
+        />
+      )}
 
       {/* Persistent CSV fallback after connection/sync failure */}
       {showCsvFallback && (
@@ -269,6 +316,54 @@ export default function BankingSettingsPanel() {
             <Link href="/import?mode=bank">Importera bankfil</Link>
           </Button>
         </div>
+      )}
+
+      {/* Pending account selection — new connections waiting for the user to pick accounts */}
+      {pendingSelectionConnections.length > 0 && (
+        <Card className="border-warning/30">
+          <CardHeader>
+            <CardTitle>Välj konton att synka</CardTitle>
+            <CardDescription>
+              Banken har gett åtkomst till flera konton. Välj vilka du vill synka innan några transaktioner hämtas.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {pendingSelectionConnections.map((connection) => {
+              const accountsList = (connection.accounts_data as StoredAccount[] | null) || []
+              return (
+                <div
+                  key={connection.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-4"
+                >
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="h-5 w-5 shrink-0 text-warning" />
+                    <div>
+                      <p className="font-medium">{connection.bank_name}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {accountsList.length} konton tillgängliga — inga transaktioner synkas ännu
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => setPickerConnectionId(connection.id)}
+                    >
+                      Välj konton
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDisconnectBank(connection.id)}
+                    >
+                      Avbryt
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
       )}
 
       {/* Action required — expired/error connections */}
@@ -288,6 +383,7 @@ export default function BankingSettingsPanel() {
                 onSync={handleSyncTransactions}
                 onDisconnect={handleDisconnectBank}
                 onReconnect={handleConnectBank}
+                onManageAccounts={() => setPickerConnectionId(connection.id)}
                 isSyncing={syncingConnectionId === connection.id}
               />
             ))}
@@ -308,6 +404,7 @@ export default function BankingSettingsPanel() {
                 connection={connection}
                 onSync={handleSyncTransactions}
                 onDisconnect={handleDisconnectBank}
+                onManageAccounts={() => setPickerConnectionId(connection.id)}
                 isSyncing={syncingConnectionId === connection.id}
               />
             ))}

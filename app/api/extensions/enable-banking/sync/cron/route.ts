@@ -143,7 +143,29 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
         .toISOString()
         .split('T')[0]
 
-      const accounts = (connection.accounts_data as StoredAccount[] || []).map(a => ({ ...a }))
+      // Keep the full list for the DB write-back so we don't drop accounts
+      // the user has opted out of. Sync only the enabled subset (treating
+      // undefined as enabled for back-compat with older rows).
+      const allAccounts = (connection.accounts_data as StoredAccount[] || []).map(a => ({ ...a }))
+      const accounts = allAccounts.filter(a => a.enabled !== false)
+
+      if (accounts.length === 0) {
+        ctx.log.info('all accounts disabled — skipping sync', {
+          connectionId: connection.id,
+          totalAccounts: allAccounts.length,
+        })
+        results.push({
+          connectionId: connection.id,
+          userId: connection.user_id,
+          bankName: connection.bank_name,
+          imported: 0,
+          duplicates: 0,
+          errors: 0,
+          status: 'synced',
+          daysUntilExpiry: daysLeft,
+        })
+        continue
+      }
 
       // Detect SIE overlap — skip auto-categorization if the sync range
       // overlaps with a completed SIE import to prevent double-booking
@@ -194,11 +216,12 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
         }
       }
 
-      // Successful sync: update connection and clear any previous error state
+      // Successful sync: update connection and clear any previous error state.
+      // Write allAccounts (not accounts) so disabled accounts stay in the row.
       await supabase
         .from('bank_connections')
         .update({
-          accounts_data: accounts,
+          accounts_data: allAccounts,
           last_synced_at: new Date().toISOString(),
           ...(connection.error_message ? { error_message: null } : {}),
         })

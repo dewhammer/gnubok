@@ -1,7 +1,8 @@
 import { createServiceClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { createSession, getAccountBalance, type AccountInfo } from '@/extensions/general/enable-banking/lib/api-client'
+import { createSession, type AccountInfo } from '@/extensions/general/enable-banking/lib/api-client'
 import type { StoredAccount } from '@/extensions/general/enable-banking/types'
+import { eventBus } from '@/lib/events/bus'
 
 /**
  * GET /api/extensions/enable-banking/callback
@@ -106,7 +107,6 @@ export async function GET(request: Request) {
     }
 
     const userId = pendingConnection.user_id
-    const companyId = pendingConnection.company_id
 
     console.log('[enable-banking] Exchanging code for session', {
       connectionId: pendingConnection.id,
@@ -125,44 +125,41 @@ export async function GET(request: Request) {
       consentExpiresAt,
     })
 
-    const accountsWithBalances: StoredAccount[] = await Promise.all(
-      accounts.map(async (account: AccountInfo) => {
-        try {
-          const balance = await getAccountBalance(account.uid)
-          return {
-            uid: account.uid,
-            iban: account.account_id?.iban,
-            name: account.name || account.product,
-            currency: account.currency,
-            balance: balance.amount,
-          }
-        } catch (balanceError) {
-          console.error(`Failed to get balance for account ${account.uid}:`, balanceError)
-          return {
-            uid: account.uid,
-            iban: account.account_id?.iban,
-            name: account.name || account.product,
-            currency: account.currency,
-            balance: undefined,
-          }
-        }
-      })
-    )
+    // GDPR Art.5(1)(c) / Art.25(1): data minimization. We only store the
+    // metadata the user needs to pick which accounts to sync (uid, name, IBAN,
+    // currency). Balances are bank account financial data — we don't fetch
+    // them here. The first sync (after the user enables specific accounts)
+    // populates balance + balance_updated_at via lib/sync.ts. Accounts the
+    // user deselects never have their balance pulled.
+    const accountsMetadata: StoredAccount[] = accounts.map((account: AccountInfo) => ({
+      uid: account.uid,
+      iban: account.account_id?.iban,
+      name: account.name || account.product,
+      currency: account.currency,
+      // Default to enabled. The user is presented with a picker
+      // immediately after this callback to uncheck unwanted accounts
+      // before any transactions are fetched.
+      enabled: true,
+    }))
 
-    // Do not set last_synced_at here. The session is created but no transactions
-    // have been fetched yet; setting it now causes the cron's first-sync 90-day
-    // backfill path to be skipped if the manual sync triggered by the redirect
-    // never lands. The first successful sync (manual or cron) will set it.
-    const { error: updateError } = await supabase
+    // Stay in 'pending_selection' until the user confirms which accounts to sync.
+    // The cron and manual sync routes both skip this status, so no transactions
+    // can be pulled before the user has had a chance to deselect accounts.
+    // Do not set last_synced_at here either: no transactions have been fetched
+    // yet, and setting it would cause the cron's first-sync 90-day backfill
+    // path to be skipped. The first successful sync sets it.
+    const { data: updatedConnection, error: updateError } = await supabase
       .from('bank_connections')
       .update({
         session_id,
-        status: 'active',
-        accounts_data: accountsWithBalances,
+        status: 'pending_selection',
+        accounts_data: accountsMetadata,
         consent_expires: consentExpiresAt,
         oauth_state: null, // Clear to prevent replay
       })
       .eq('id', pendingConnection.id)
+      .select('id, bank_name, company_id, user_id')
+      .single()
 
     if (updateError) {
       console.error('[enable-banking] Failed to update connection after session creation', {
@@ -173,15 +170,33 @@ export async function GET(request: Request) {
       throw new Error(`Failed to update connection: ${updateError.message}`)
     }
 
-    const connectionId = pendingConnection.id
+    // Audit trail: PSD2 consent has been exchanged and account metadata stored.
+    // ASVS V16 requires this transition to be logged as a security event; emit
+    // here so the event_log handler persists it (30-day TTL).
+    try {
+      await eventBus.emit({
+        type: 'bank_connection.consent_granted',
+        payload: {
+          connectionId: updatedConnection.id,
+          bankName: updatedConnection.bank_name ?? null,
+          accountCount: accounts.length,
+          consentExpiresAt: consentExpiresAt ?? null,
+          userId: updatedConnection.user_id,
+          companyId: updatedConnection.company_id,
+        },
+      })
+    } catch (emitError) {
+      // Non-fatal: redirect the user even if the audit event fails. Sentry
+      // surfaces the error; the underlying DB write (the source of truth for
+      // the connection state) has already succeeded.
+      console.error('[enable-banking] Failed to emit consent_granted event', {
+        connectionId: updatedConnection.id,
+        error: emitError instanceof Error ? emitError.message : String(emitError),
+      })
+    }
 
-    const { data: userSettings } = await supabase
-      .from('company_settings')
-      .select('onboarding_complete')
-      .eq('company_id', companyId)
-      .single()
-
-    const redirectTarget = `/settings/banking?bank_connected=true&connection_id=${connectionId}`
+    const connectionId = updatedConnection.id
+    const redirectTarget = `/settings/banking?select_accounts=${connectionId}`
 
     return NextResponse.redirect(`${baseUrl}${redirectTarget}`)
   } catch (error) {

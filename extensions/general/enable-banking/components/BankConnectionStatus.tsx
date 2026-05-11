@@ -9,6 +9,7 @@ import {
   CreditCard,
   AlertTriangle,
   RefreshCw,
+  Settings,
   Trash2,
   Loader2,
   CheckCircle,
@@ -22,6 +23,7 @@ interface BankConnectionStatusProps {
   onSync: (connectionId: string) => void
   onDisconnect: (connectionId: string) => void
   onReconnect?: (bank: { name: string; country: string }) => void
+  onManageAccounts?: (connectionId: string) => void
   isSyncing?: boolean
 }
 
@@ -30,6 +32,7 @@ export function BankConnectionStatus({
   onSync,
   onDisconnect,
   onReconnect,
+  onManageAccounts,
   isSyncing = false,
 }: BankConnectionStatusProps) {
   const daysUntilExpiry = getDaysUntilExpiry(connection.consent_expires)
@@ -86,7 +89,10 @@ export function BankConnectionStatus({
     currency: string
     balance?: number
     balance_updated_at?: string
+    enabled?: boolean
   }>) || []
+
+  const enabledCount = accounts.filter((a) => a.enabled !== false).length
 
   const [now] = useState(() => Date.now())
 
@@ -168,6 +174,16 @@ export function BankConnectionStatus({
               )}
             </Button>
           )}
+          {onManageAccounts && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onManageAccounts(connection.id)}
+              title="Hantera konton"
+            >
+              <Settings className="h-4 w-4" />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -228,40 +244,55 @@ export function BankConnectionStatus({
       {/* Accounts list */}
       {accounts.length > 0 && (
         <div className="space-y-2">
-          <p className="text-sm font-medium text-muted-foreground">Konton</p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-muted-foreground">Konton</p>
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {enabledCount} av {accounts.length} synkas
+            </p>
+          </div>
           <div className="space-y-2">
-            {accounts.map((account) => (
-              <div
-                key={account.uid}
-                className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
-              >
-                <div>
-                  <p className="text-sm font-medium">
-                    {account.name || account.iban || 'Okänt konto'}
-                  </p>
-                  {account.iban && (
-                    <p className="text-xs text-muted-foreground">
-                      {account.iban.replace(/(.{4})/g, '$1 ').trim()}
-                    </p>
-                  )}
-                </div>
-                {account.balance !== undefined && (
-                  <div className="text-right">
-                    <p className="text-sm font-medium">
-                      {new Intl.NumberFormat('sv-SE', {
-                        style: 'currency',
-                        currency: account.currency,
-                      }).format(account.balance)}
-                    </p>
-                    {account.balance_updated_at && (
-                      <p className="text-[10px] text-muted-foreground">
-                        {formatBalanceAge(account.balance_updated_at)}
+            {accounts.map((account) => {
+              const isDisabled = account.enabled === false
+              return (
+                <div
+                  key={account.uid}
+                  className={`flex items-center justify-between p-3 rounded-lg ${isDisabled ? 'bg-muted/20 opacity-60' : 'bg-muted/50'}`}
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium">
+                        {account.name || account.iban || 'Okänt konto'}
+                      </p>
+                      {isDisabled && (
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground border border-border rounded px-1.5 py-0.5">
+                          Synkas ej
+                        </span>
+                      )}
+                    </div>
+                    {account.iban && (
+                      <p className="text-xs text-muted-foreground">
+                        {account.iban.replace(/(.{4})/g, '$1 ').trim()}
                       </p>
                     )}
                   </div>
-                )}
-              </div>
-            ))}
+                  {account.balance !== undefined && (
+                    <div className="text-right">
+                      <p className="text-sm font-medium tabular-nums">
+                        {new Intl.NumberFormat('sv-SE', {
+                          style: 'currency',
+                          currency: account.currency,
+                        }).format(account.balance)}
+                      </p>
+                      {account.balance_updated_at && (
+                        <p className="text-[10px] text-muted-foreground">
+                          {formatBalanceAge(account.balance_updated_at)}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

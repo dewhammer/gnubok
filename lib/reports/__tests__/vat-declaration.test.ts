@@ -918,3 +918,135 @@ describe('SKV §4.1.1.4 cross-field contracts', () => {
     expect(r.ruta49).toBe(expected)
   })
 })
+
+// ============================================================
+// Parent/summary BAS accounts — 2610/2620/2630 (output),
+// 2618/2628/2638 (vilande), 2640 (input parent).
+//
+// Users who post directly to the group account (manual entries, SIE imports,
+// alternate templates) had their balances silently dropped before this fix
+// because only the leaf accounts were mapped.
+// ============================================================
+
+describe('calculateVatDeclaration — parent/summary accounts', () => {
+  it('maps 2610 (parent) to ruta10 when posted directly', async () => {
+    results = [
+      {
+        data: [
+          { account_number: '1910', debit_amount: 12500, credit_amount: 0 },
+          { account_number: '3001', debit_amount: 0, credit_amount: 10000 },
+          { account_number: '2610', debit_amount: 0, credit_amount: 2500 },
+        ],
+        error: null,
+      },
+      { data: [], error: null },
+    ]
+
+    const result = await calculateVatDeclaration(supabase, 'company-1', 'monthly', 2024, 1)
+
+    expect(result.rutor.ruta05).toBe(10000)
+    expect(result.rutor.ruta10).toBe(2500)
+    expect(result.rutor.ruta49).toBe(2500) // owed, not refund
+  })
+
+  it('maps 2620 (parent) to ruta11 and 2630 (parent) to ruta12', async () => {
+    results = [
+      {
+        data: [
+          { account_number: '2620', debit_amount: 0, credit_amount: 600 },
+          { account_number: '2630', debit_amount: 0, credit_amount: 180 },
+        ],
+        error: null,
+      },
+      { data: [], error: null },
+    ]
+
+    const result = await calculateVatDeclaration(supabase, 'company-1', 'monthly', 2024, 1)
+
+    expect(result.rutor.ruta11).toBe(600)
+    expect(result.rutor.ruta12).toBe(180)
+  })
+
+  it('maps vilande output VAT (2618/2628/2638) to ruta10/11/12', async () => {
+    // Vilande accounts hold output VAT for invoices that have been sent but not
+    // yet paid, used by cash-method bookkeepers per BFNAR 2006:1.
+    results = [
+      {
+        data: [
+          { account_number: '2618', debit_amount: 0, credit_amount: 500 },
+          { account_number: '2628', debit_amount: 0, credit_amount: 120 },
+          { account_number: '2638', debit_amount: 0, credit_amount: 60 },
+        ],
+        error: null,
+      },
+      { data: [], error: null },
+    ]
+
+    const result = await calculateVatDeclaration(supabase, 'company-1', 'monthly', 2024, 1)
+
+    expect(result.rutor.ruta10).toBe(500)
+    expect(result.rutor.ruta11).toBe(120)
+    expect(result.rutor.ruta12).toBe(60)
+  })
+
+  it('sums parent and sub-account balances on the same ruta', async () => {
+    // If a ledger has activity on both the parent and the sub-accounts (mixed
+    // bookkeeping practice, SIE imports, etc.), the ruta reflects the literal
+    // ledger total — accounting truth wins.
+    results = [
+      {
+        data: [
+          { account_number: '2610', debit_amount: 0, credit_amount: 1000 },
+          { account_number: '2611', debit_amount: 0, credit_amount: 500 },
+        ],
+        error: null,
+      },
+      { data: [], error: null },
+    ]
+
+    const result = await calculateVatDeclaration(supabase, 'company-1', 'monthly', 2024, 1)
+
+    expect(result.rutor.ruta10).toBe(1500)
+  })
+
+  it('maps 2640 (input VAT parent) to ruta48', async () => {
+    results = [
+      {
+        data: [
+          { account_number: '2640', debit_amount: 200, credit_amount: 0 },
+        ],
+        error: null,
+      },
+      { data: [], error: null },
+    ]
+
+    const result = await calculateVatDeclaration(supabase, 'company-1', 'monthly', 2024, 1)
+
+    expect(result.rutor.ruta48).toBe(200)
+    expect(result.rutor.ruta49).toBe(-200) // refund
+  })
+
+  it('reproduces the user-reported bug: 2610 balance now reaches ruta10', async () => {
+    // Customer screenshot scenario (simplified): 3001 + 2610 booked with the
+    // correct VAT amount on the parent account. Before the fix, ruta10 read 0
+    // and ruta49 incorrectly showed a refund.
+    results = [
+      {
+        data: [
+          { account_number: '3001', debit_amount: 0, credit_amount: 21600 },
+          { account_number: '2610', debit_amount: 0, credit_amount: 9768 },
+          { account_number: '2641', debit_amount: 7048.45, credit_amount: 0 },
+        ],
+        error: null,
+      },
+      { data: [], error: null },
+    ]
+
+    const result = await calculateVatDeclaration(supabase, 'company-1', 'yearly', 2025, 1)
+
+    expect(result.rutor.ruta05).toBe(21600)
+    expect(result.rutor.ruta10).toBe(9768)
+    expect(result.rutor.ruta48).toBe(7048.45)
+    expect(result.rutor.ruta49).toBe(2719.55) // 9768 − 7048.45, owed (was −7048.45 pre-fix)
+  })
+})

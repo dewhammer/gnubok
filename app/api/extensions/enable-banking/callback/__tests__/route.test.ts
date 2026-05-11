@@ -61,36 +61,67 @@ describe('GET /api/extensions/enable-banking/callback', () => {
     expect(location).toContain('bank_error=invalid_state')
   })
 
-  it('activates connection and clears oauth_state on success', async () => {
+  it('writes pending_selection and redirects to picker on success', async () => {
+    const capturedUpdates: Record<string, unknown>[] = []
     let callIndex = 0
     mockFrom.mockImplementation(() => {
       callIndex++
       if (callIndex === 1) {
         // Find pending connection by oauth_state
-        return mockChain({ data: { id: 'conn-1', user_id: 'user-1' }, error: null })
+        return mockChain({ data: { id: 'conn-1', user_id: 'user-1', company_id: 'company-1' }, error: null })
       }
-      if (callIndex === 2) {
-        // Update connection
-        return mockChain({ data: null, error: null })
-      }
-      // Company settings lookup
-      return mockChain({ data: { onboarding_complete: true }, error: null })
+      // Update connection — capture the payload, then chain returns the
+      // updated row via .select().single() for the audit event emission.
+      const chain: Record<string, unknown> = {}
+      chain.update = vi.fn((payload: Record<string, unknown>) => {
+        capturedUpdates.push(payload)
+        return chain
+      })
+      chain.eq = vi.fn().mockReturnValue(chain)
+      chain.select = vi.fn().mockReturnValue(chain)
+      chain.single = vi.fn().mockResolvedValue({
+        data: {
+          id: 'conn-1',
+          bank_name: 'TestBank',
+          company_id: 'company-1',
+          user_id: 'user-1',
+        },
+        error: null,
+      })
+      // Back-compat fallthrough for chains that aren't terminated by .single()
+      chain.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null })
+      return chain
     })
 
     mockCreateSession.mockResolvedValue({
       session_id: 'sess-1',
-      accounts: [],
+      accounts: [
+        { uid: 'acc-1', account_id: { iban: 'SE1234' }, name: 'Företagskonto', currency: 'SEK' },
+        { uid: 'acc-2', account_id: { iban: 'SE5678' }, name: 'Privatkonto', currency: 'SEK' },
+      ],
       access: { valid_until: '2024-12-31T00:00:00Z' },
       aspsp: { name: 'TestBank', country: 'SE' },
     })
+    mockGetAccountBalance.mockRejectedValue(new Error('skip balance fetch'))
 
     const response = await GET(makeRequest({ code: 'auth-code', state: 'valid-state' }))
 
     expect(response.status).toBe(307)
     const location = response.headers.get('location') || ''
     expect(location).toContain('/settings/banking?')
-    expect(location).toContain('bank_connected=true')
-    expect(location).toContain('connection_id=conn-1')
+    expect(location).toContain('select_accounts=conn-1')
+    expect(location).not.toContain('bank_connected=true')
+
+    // Verify the update payload: status=pending_selection, no last_synced_at,
+    // and every account defaults to enabled=true so the picker can simply
+    // mirror current state without back-filling.
+    expect(capturedUpdates).toHaveLength(1)
+    const payload = capturedUpdates[0]
+    expect(payload.status).toBe('pending_selection')
+    expect(payload).not.toHaveProperty('last_synced_at')
+    const accountsData = payload.accounts_data as Array<{ uid: string; enabled: boolean }>
+    expect(accountsData).toHaveLength(2)
+    expect(accountsData.every(a => a.enabled === true)).toBe(true)
   })
 
   it('redirects with error when bank returns error param (no state)', async () => {

@@ -151,7 +151,9 @@ export interface ProcessingHistoryEvent {
 }
 
 // Bank connection status
-export type BankConnectionStatus = 'pending' | 'active' | 'expired' | 'revoked' | 'error'
+// 'pending_selection' = PSD2 consent granted, awaiting user to pick which
+// accounts to actually sync. No transactions are pulled in this state.
+export type BankConnectionStatus = 'pending' | 'pending_selection' | 'active' | 'expired' | 'revoked' | 'error'
 
 // Currency types
 export type Currency = 'SEK' | 'EUR' | 'USD' | 'GBP' | 'NOK' | 'DKK'

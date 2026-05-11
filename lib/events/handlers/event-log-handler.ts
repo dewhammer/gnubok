@@ -39,6 +39,11 @@ const PERSISTED_EVENT_TYPES: CoreEventType[] = [
   'mcp.tool_called',
   'mcp.tools_list_called',
   'mcp.resource_read',
+  // Bank connection consent lifecycle — required audit trail per ASVS V16
+  // and GDPR Art.30 (records of processing) for PSD2 consent decisions.
+  'bank_connection.consent_granted',
+  'bank_connection.account_selection_changed',
+  'bank_connection.revoked',
 ]
 
 // Excluded (with reasoning):
@@ -63,6 +68,13 @@ function extractEntityId(payload: Record<string, unknown>): string | null {
       const id = (entity as Record<string, unknown>).id
       if (typeof id === 'string') return id
     }
+  }
+
+  // Flat-string ID fields on events that don't carry a full entity object.
+  // Bank connection events fall into this category — the connection lives in
+  // an extension table, so we record its id directly.
+  if (typeof payload.connectionId === 'string') {
+    return payload.connectionId
   }
 
   // For journal_entry.corrected: use the corrected entry's ID

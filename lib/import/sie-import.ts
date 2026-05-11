@@ -236,28 +236,53 @@ export async function ensureFiscalPeriod(
     return containing.id
   }
 
-  // If an existing period overlaps the requested range but does not fully
-  // contain it, we MUST refuse — silently reusing it would stamp every
-  // imported voucher with a fiscal_period_id whose date window doesn't match
-  // the voucher's own date. That breaks the SIE invariant that #VER dates fall
-  // inside #RAR, breaks BFL 5 kap. (verifikationsnummer per räkenskapsår),
-  // and produces wrong-shaped trial balances per period.
+  // An overlapping-but-not-containing period needs to be split into two cases:
+  //   - The period has any real content (posted entries, opening balances set,
+  //     closed, or locked): refuse. Silently reusing it would stamp imported
+  //     vouchers with a fiscal_period_id whose date window doesn't match the
+  //     voucher's own date — breaking the SIE invariant that #VER dates fall
+  //     inside #RAR and BFL 5 kap. (verifikationsnummer per räkenskapsår).
+  //   - The period is empty (onboarding-seeded with the default calendar year
+  //     but never used): replace it. The user has a förlängt räkenskapsår per
+  //     BFL 3 kap. that doesn't match the seeded period, and the seeded period
+  //     carries no data to preserve.
   const { data: overlapping } = await supabase
     .from('fiscal_periods')
-    .select('id, period_start, period_end, name')
+    .select('id, period_start, period_end, name, is_closed, locked_at, opening_balances_set')
     .eq('company_id', companyId)
     .lte('period_start', endDate)
     .gte('period_end', startDate)
     .order('period_start', { ascending: false })
     .limit(1)
 
+  let periodToReplaceId: string | null = null
+
   if (overlapping && overlapping.length > 0) {
     const existing = overlapping[0]
-    throw new Error(
-      `SIE-filens räkenskapsår (${startDate} – ${endDate}) överlappar men matchar inte ett befintligt räkenskapsår i gnubok ` +
-        `(${existing.name}: ${existing.period_start} – ${existing.period_end}). ` +
-        `Justera räkenskapsåret i Inställningar → Räkenskap så att det matchar SIE-filen exakt, eller importera en SIE-fil som täcker exakt samma period.`
-    )
+
+    const replaceableGateOpen =
+      !existing.is_closed && !existing.locked_at && !existing.opening_balances_set
+
+    let hasEntries = true
+    if (replaceableGateOpen) {
+      const { data: existingEntries } = await supabase
+        .from('journal_entries')
+        .select('id')
+        .eq('fiscal_period_id', existing.id)
+        .eq('company_id', companyId)
+        .limit(1)
+      hasEntries = (existingEntries?.length ?? 0) > 0
+    }
+
+    if (!replaceableGateOpen || hasEntries) {
+      throw new Error(
+        `SIE-filens räkenskapsår (${startDate} – ${endDate}) överlappar men matchar inte ett befintligt räkenskapsår i gnubok ` +
+          `(${existing.name}: ${existing.period_start} – ${existing.period_end}). ` +
+          `Justera räkenskapsåret i Inställningar → Företag så att det matchar SIE-filen exakt, eller importera en SIE-fil som täcker exakt samma period.`
+      )
+    }
+
+    periodToReplaceId = existing.id
   }
 
   // Pre-validate against the DB-side enforce_period_start_day trigger so the
@@ -293,6 +318,25 @@ export async function ensureFiscalPeriod(
     throw new Error(
       `SIE-filens räkenskapsår slutar ${endDate} — räkenskapsår måste sluta på månadens sista dag (BFL 3 kap.). Kontrollera datumen i #RAR-raden.`
     )
+  }
+
+  // All date validation passed. If we identified an empty seeded period above,
+  // delete it now — deferring the destructive step until after every check
+  // keeps the seeded period intact when an SIE has malformed dates.
+  // FK cascades: account_balances, voucher_sequences, voucher_gap_explanations
+  // are ON DELETE CASCADE (all empty for a seeded period); sie_imports is
+  // ON DELETE SET NULL; journal_entries is ON DELETE RESTRICT but we already
+  // verified zero rows above.
+  if (periodToReplaceId) {
+    const { error: deleteError } = await supabase
+      .from('fiscal_periods')
+      .delete()
+      .eq('id', periodToReplaceId)
+      .eq('company_id', companyId)
+
+    if (deleteError) {
+      throw new Error(`Kunde inte ersätta automatiskt skapat räkenskapsår: ${deleteError.message}`)
+    }
   }
 
   // Create new fiscal period

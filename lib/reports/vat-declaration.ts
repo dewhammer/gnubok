@@ -28,9 +28,12 @@ import type {
  * (`.claude/skills/swedish-vat/references/vat-compliance-reference.md` §7).
  *
  * Output VAT (261x/262x/263x) → ruta 10/11/12 per rate (credit balance)
+ *   Includes parent/summary accounts (2610/2620/2630) for users who post
+ *   directly to the group account, and vilande accounts (2618/2628/2638)
+ *   used by cash-method bookkeepers for invoices not yet paid.
  * Reverse charge output (2614/2624/2634) → ruta 30/31/32 (credit)
  * Import VAT (2615/2625/2635) → ruta 60/61/62 (credit)
- * Input VAT (2641-2649) → ruta 48 (debit)
+ * Input VAT (2640-2649) → ruta 48 (debit), incl. parent 2640
  * Domestic taxable sales (3001-3003) → ruta 05 (credit)
  * Uttag (3401-3403) → ruta 06 (credit)
  * EU goods (3108) → ruta 35; EU services (3308) → ruta 39 (credit)
@@ -46,25 +49,32 @@ import type {
  */
 const ACCOUNT_RUTA: Record<string, { box: keyof VatDeclarationRutor; side: 'credit' | 'debit' }> = {
   // Output VAT 25% → ruta 10
+  '2610': { box: 'ruta10', side: 'credit' },  // Utgående moms 25% (summary/parent)
   '2611': { box: 'ruta10', side: 'credit' },  // Försäljning inom Sverige
   '2612': { box: 'ruta10', side: 'credit' },  // Egna uttag
   '2613': { box: 'ruta10', side: 'credit' },  // Uthyrning (frivillig skattskyldighet)
   '2616': { box: 'ruta10', side: 'credit' },  // Vinstmarginalbeskattning
+  '2618': { box: 'ruta10', side: 'credit' },  // Vilande utgående moms 25%
   // Output VAT 12% → ruta 11
+  '2620': { box: 'ruta11', side: 'credit' },  // Utgående moms 12% (summary/parent)
   '2621': { box: 'ruta11', side: 'credit' },
   '2622': { box: 'ruta11', side: 'credit' },  // Egna uttag
   '2623': { box: 'ruta11', side: 'credit' },  // Uthyrning
   '2626': { box: 'ruta11', side: 'credit' },  // VMB
+  '2628': { box: 'ruta11', side: 'credit' },  // Vilande utgående moms 12%
   // Output VAT 6% → ruta 12
+  '2630': { box: 'ruta12', side: 'credit' },  // Utgående moms 6% (summary/parent)
   '2631': { box: 'ruta12', side: 'credit' },
   '2632': { box: 'ruta12', side: 'credit' },  // Egna uttag
   '2633': { box: 'ruta12', side: 'credit' },  // Uthyrning
   '2636': { box: 'ruta12', side: 'credit' },  // VMB
+  '2638': { box: 'ruta12', side: 'credit' },  // Vilande utgående moms 6%
   // Reverse charge output VAT → ruta 30/31/32
   '2614': { box: 'ruta30', side: 'credit' },
   '2624': { box: 'ruta31', side: 'credit' },
   '2634': { box: 'ruta32', side: 'credit' },
   // Input VAT → ruta 48
+  '2640': { box: 'ruta48', side: 'debit' },   // Ingående moms (summary/parent)
   '2641': { box: 'ruta48', side: 'debit' },   // Debiterad ingående moms
   '2642': { box: 'ruta48', side: 'debit' },   // Frivillig skattskyldighet
   '2645': { box: 'ruta48', side: 'debit' },   // Förvärv utlandet (EU/non-EU RC)
