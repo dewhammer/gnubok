@@ -83,6 +83,22 @@ export async function POST(
     return NextResponse.json({ error: 'Failed to attach document' }, { status: 500 })
   }
 
+  // If this document came from an invoice_inbox_items row, mark that row
+  // as matched so the inbox UI can show it as "Kopplad" + link back to the
+  // transaction. Best-effort: a failure here must not roll back the
+  // (compliant) document attach.
+  try {
+    await supabase
+      .from('invoice_inbox_items')
+      .update({ matched_transaction_id: transactionId })
+      .eq('document_id', document_id)
+      .eq('company_id', companyId)
+      .is('matched_transaction_id', null)
+      .is('created_supplier_invoice_id', null)
+  } catch (linkErr) {
+    console.error('[attach-document] Failed to link inbox item:', linkErr)
+  }
+
   // Rättelse audit trail (BFL 5 kap 5 §): record swaps where a non-null doc
   // was replaced. Best-effort — a logging failure must not roll back the
   // (compliant) attach.

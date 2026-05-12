@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { AnimatePresence } from 'framer-motion'
+import { useSearchParams } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -123,6 +124,11 @@ export default function TransactionsPage() {
   const { toast } = useToast()
   const { dialogProps: deleteDialogProps, confirm: confirmDelete } = useDestructiveConfirm()
   const supabase = createClient()
+  const searchParams = useSearchParams()
+  const highlightId = searchParams.get('highlight')
+  // Tracks the last highlight target we acted on so re-renders don't re-trigger
+  // the auto-open every time the user closes the categorize panel.
+  const handledHighlightRef = useRef<string | null>(null)
 
   // Computed lists
   const uncategorizedTransactions = transactions
@@ -292,6 +298,35 @@ export default function TransactionsPage() {
 
     return () => { cancelled = true }
   }, [])
+
+  // Auto-open categorize panel when arriving via /transactions?highlight=<id>
+  // (used by the inbox "Bokför transaktionen" link). Runs once per distinct
+  // highlight id so closing the panel doesn't re-trigger it.
+  useEffect(() => {
+    if (!highlightId) return
+    if (handledHighlightRef.current === highlightId) return
+    if (transactions.length === 0) return
+    const tx = transactions.find((t) => t.id === highlightId)
+    if (!tx) return
+    handledHighlightRef.current = highlightId
+
+    // Defer the scroll until React has committed the list to the DOM.
+    // Without rAF the data-tx-id node may not exist yet when this fires
+    // immediately after fetchTransactions resolves.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-tx-id="${tx.id}"]`)
+        if (el && 'scrollIntoView' in el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+      })
+    })
+
+    if (tx.is_business === null && !tx.journal_entry_id) {
+      setTemplatePickerTransaction(tx)
+      setTemplatePickerOpen(true)
+    }
+  }, [highlightId, transactions])
 
   // Auto-fetch suggestions when transactions load
   useEffect(() => {

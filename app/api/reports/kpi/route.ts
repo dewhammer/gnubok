@@ -51,19 +51,32 @@ export async function GET(request: Request) {
     (prefsData?.value as Partial<KPIPreferences>) ?? {}
   )
 
-  const [incomeStatement, trialBalanceResult, arLedger, monthlyBreakdown, paidInvoicesResult] =
-    await Promise.all([
-      generateIncomeStatement(supabase, companyId, periodId),
-      generateTrialBalance(supabase, companyId, periodId),
-      generateARLedger(supabase, companyId),
-      generateMonthlyBreakdown(supabase, companyId, periodId),
-      supabase
-        .from('invoices')
-        .select('invoice_date, paid_at')
-        .eq('company_id', companyId)
-        .eq('status', 'paid')
-        .not('paid_at', 'is', null),
-    ])
+  const [
+    incomeStatement,
+    trialBalanceResult,
+    arLedger,
+    monthlyBreakdown,
+    paidInvoicesResult,
+    topSuppliersResult,
+  ] = await Promise.all([
+    generateIncomeStatement(supabase, companyId, periodId),
+    generateTrialBalance(supabase, companyId, periodId),
+    generateARLedger(supabase, companyId),
+    generateMonthlyBreakdown(supabase, companyId, periodId),
+    supabase
+      .from('invoices')
+      .select('invoice_date, paid_at')
+      .eq('company_id', companyId)
+      .eq('status', 'paid')
+      .not('paid_at', 'is', null),
+    supabase
+      .from('supplier_invoices')
+      .select('supplier_id, total_sek, total, supplier:suppliers(id, name)')
+      .eq('company_id', companyId)
+      .gte('invoice_date', period.period_start)
+      .lte('invoice_date', period.period_end)
+      .neq('status', 'credited'),
+  ])
 
   // Cash position — use account overrides if set
   const cashOverrides = preferences.accountOverrides['cashPosition']
@@ -108,6 +121,59 @@ export async function GET(request: Request) {
     paid_at: inv.paid_at as string,
   }))
 
+  // Expense composition by BAS class (4-7). Expense accounts have a debit
+  // normal balance, so amount = closing_debit - closing_credit. Negative
+  // values (rare reclassifications) are clamped to 0 so the donut renders
+  // sensibly.
+  const expenseComposition = trialBalanceResult.rows.reduce(
+    (acc, r) => {
+      if (r.account_class < 4 || r.account_class > 7) return acc
+      const amount = r.closing_debit - r.closing_credit
+      if (amount <= 0) return acc
+      if (r.account_class === 4) acc.class4 += amount
+      else if (r.account_class === 5) acc.class5 += amount
+      else if (r.account_class === 6) acc.class6 += amount
+      else if (r.account_class === 7) acc.class7 += amount
+      return acc
+    },
+    { class4: 0, class5: 0, class6: 0, class7: 0 }
+  )
+
+  // Top suppliers by spend within the fiscal period. Sum total_sek to avoid
+  // mixing currencies. Drop FX invoices without a SEK conversion (total_sek
+  // null) — they would otherwise inflate a supplier's total with raw
+  // foreign-currency amounts.
+  type SupplierInvoiceRow = {
+    supplier_id: string | null
+    total_sek: number | null
+    total: number | null
+    supplier: { id: string; name: string } | { id: string; name: string }[] | null
+  }
+  if (topSuppliersResult.error) {
+    // Surface the failure rather than silently rendering an empty chart that
+    // matches the legitimate "no supplier invoices" empty state.
+    console.error('[kpi] topSuppliersResult error:', topSuppliersResult.error)
+  }
+  const supplierTotals = new Map<string, { name: string; total: number }>()
+  for (const row of (topSuppliersResult.data ?? []) as SupplierInvoiceRow[]) {
+    if (!row.supplier_id) continue
+    const supplier = Array.isArray(row.supplier) ? row.supplier[0] : row.supplier
+    if (!supplier?.name) continue
+    const amount = row.total_sek ?? null
+    if (amount == null) continue
+    const existing = supplierTotals.get(row.supplier_id)
+    if (existing) existing.total += amount
+    else supplierTotals.set(row.supplier_id, { name: supplier.name, total: amount })
+  }
+  const topSuppliers = Array.from(supplierTotals.entries())
+    .map(([supplier_id, v]) => ({
+      supplier_id,
+      supplier_name: v.name,
+      total: Math.round(v.total * 100) / 100,
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 7)
+
   const report: KPIReport = {
     netResult: incomeStatement.net_result,
     cashPosition,
@@ -122,6 +188,13 @@ export async function GET(request: Request) {
     periodComplete: period.is_closed,
     months: monthlyBreakdown.months,
     period: { start: period.period_start, end: period.period_end },
+    expenseComposition: {
+      class4: Math.round(expenseComposition.class4 * 100) / 100,
+      class5: Math.round(expenseComposition.class5 * 100) / 100,
+      class6: Math.round(expenseComposition.class6 * 100) / 100,
+      class7: Math.round(expenseComposition.class7 * 100) / 100,
+    },
+    topSuppliers,
   }
 
   return NextResponse.json({ data: report })

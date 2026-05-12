@@ -11,6 +11,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/comp
 import { getAccountName, formatAccountWithName } from '@/lib/bookkeeping/client-account-names'
 import { getTemplateById } from '@/lib/bookkeeping/booking-templates'
 import { isCounterpartyTemplateId } from '@/lib/bookkeeping/counterparty-templates'
+import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
 import type { TransactionWithInvoice, CategorizeHandler } from './transaction-types'
 import type { SuggestedCategory, SuggestedTemplate } from '@/lib/transactions/category-suggestions'
 
@@ -83,6 +84,7 @@ export default function TransactionInboxCard({
       }}
     >
       <Card
+        data-tx-id={transaction.id}
         className={cn(
           'transition-colors',
           hasInvoiceMatch || hasSupplierInvoiceMatch ? 'border-primary/50' : 'border-warning/50',
@@ -114,7 +116,10 @@ export default function TransactionInboxCard({
                 )}
               </div>
               <div className="min-w-0">
-                <p className="font-medium truncate">{transaction.description}</p>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <p className="font-medium truncate">{transaction.description}</p>
+                  <TransactionAttachmentIndicator documentId={transaction.document_id} />
+                </div>
                 <p className="text-sm text-muted-foreground">{formatDate(transaction.date)}</p>
               </div>
             </div>

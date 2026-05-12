@@ -82,7 +82,8 @@ describe('POST /api/transactions/[id]/attach-document', () => {
   it('attaches when both rows exist', async () => {
     enqueue({ data: { id: 'tx-1' }, error: null }) // tx fetch
     enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
-    enqueue({ data: null, error: null }) // update
+    enqueue({ data: null, error: null }) // transactions update
+    enqueue({ data: null, error: null }) // inbox-link best-effort update
     const res = await POST(
       makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
       createMockRouteParams({ id: 'tx-1' }),
@@ -91,6 +92,41 @@ describe('POST /api/transactions/[id]/attach-document', () => {
     expect(status).toBe(200)
     expect(body.data.transaction_id).toBe('tx-1')
     expect(body.data.document_id).toBe('11111111-1111-4111-8111-111111111111')
+  })
+
+  it('attempts to update invoice_inbox_items.matched_transaction_id after successful attach', async () => {
+    // The side effect lets the inbox UI flip an item from "needs action" to
+    // "Kopplad till transaktion" without an extra round-trip.
+    enqueue({ data: { id: 'tx-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
+    enqueue({ data: null, error: null }) // transactions update
+    enqueue({ data: null, error: null }) // inbox-link update
+
+    await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    // Verify the inbox_items table was touched.
+    const fromCalls = mockSupabase.from.mock.calls.map((c) => c[0])
+    expect(fromCalls).toContain('invoice_inbox_items')
+  })
+
+  it('tolerates a failing inbox-link update — the document attach is the primary effect', async () => {
+    enqueue({ data: { id: 'tx-1' }, error: null }) // tx fetch
+    enqueue({ data: { id: 'doc-1' }, error: null }) // doc fetch
+    enqueue({ data: null, error: null }) // transactions update
+    enqueue({ data: null, error: { message: 'rls denied' } }) // inbox-link fails
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await POST(
+      makeReq({ document_id: '11111111-1111-4111-8111-111111111111' }),
+      createMockRouteParams({ id: 'tx-1' }),
+    )
+    const { status, body } = await parseJsonResponse<{ data: { transaction_id: string } }>(res)
+    // Side-effect failure must not roll back the (compliant) document attach.
+    expect(status).toBe(200)
+    expect(body.data.transaction_id).toBe('tx-1')
+    spy.mockRestore()
   })
 })
 

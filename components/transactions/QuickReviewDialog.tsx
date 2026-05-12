@@ -65,6 +65,27 @@ export default function QuickReviewDialog({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [showUploadZone, setShowUploadZone] = useState(false)
   const [showVatDropdown, setShowVatDropdown] = useState(false)
+  const [isOpeningDoc, setIsOpeningDoc] = useState(false)
+
+  const preAttachedDocumentId = transaction?.document_id ?? null
+
+  const handleOpenAttachedDoc = useCallback(async () => {
+    if (!preAttachedDocumentId || isOpeningDoc) return
+    setIsOpeningDoc(true)
+    try {
+      const res = await fetch(`/api/documents/${preAttachedDocumentId}`)
+      if (!res.ok) {
+        toast({ title: 'Kunde inte öppna underlaget', variant: 'destructive' })
+        return
+      }
+      const { data } = await res.json()
+      if (data?.download_url) {
+        window.open(data.download_url, '_blank', 'noopener,noreferrer')
+      }
+    } finally {
+      setIsOpeningDoc(false)
+    }
+  }, [preAttachedDocumentId, isOpeningDoc, toast])
 
   // Handle account changes — clear VAT for liability/equity accounts (class 2)
   const handleAccountChange = useCallback((account: string) => {
@@ -292,38 +313,59 @@ export default function QuickReviewDialog({
           </>
         )}
 
-        {/* Document upload */}
-        <div className="rounded-lg border">
-          <button
-            type="button"
-            onClick={() => setShowUploadZone(!showUploadZone)}
-            className="flex items-center justify-between w-full px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors"
-          >
-            <div className="flex items-center gap-2">
-              <Paperclip className="h-4 w-4 text-muted-foreground" />
-              <span className="font-medium">Underlag</span>
-              {uploadedFiles.filter((f) => f.status === 'uploaded').length > 0 && (
-                <span className="text-xs text-muted-foreground">
-                  {uploadedFiles.filter((f) => f.status === 'uploaded').length} bifogade
-                </span>
+        {/* Document — either show the doc the inbox attached pre-categorize,
+            or let the user upload one if none is attached yet. */}
+        {preAttachedDocumentId ? (
+          <div className="rounded-lg border flex items-center justify-between px-3 py-2.5 text-sm">
+            <div className="flex items-center gap-2 min-w-0">
+              <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span className="font-medium">Underlag bifogat</span>
+              <span className="text-xs text-muted-foreground truncate">
+                från dokumentinkorgen
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleOpenAttachedDoc}
+              disabled={isOpeningDoc}
+              className="text-xs text-primary hover:underline shrink-0"
+            >
+              {isOpeningDoc ? 'Öppnar…' : 'Visa'}
+            </button>
+          </div>
+        ) : (
+          <div className="rounded-lg border">
+            <button
+              type="button"
+              onClick={() => setShowUploadZone(!showUploadZone)}
+              className="flex items-center justify-between w-full px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Paperclip className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">Underlag</span>
+                {uploadedFiles.filter((f) => f.status === 'uploaded').length > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    {uploadedFiles.filter((f) => f.status === 'uploaded').length} bifogade
+                  </span>
+                )}
+              </div>
+              {showUploadZone ? (
+                <ChevronUp className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
               )}
-            </div>
-            {showUploadZone ? (
-              <ChevronUp className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            </button>
+            {showUploadZone && (
+              <div className="px-3 pb-3">
+                <DocumentUploadZone
+                  files={uploadedFiles}
+                  onFilesChange={setUploadedFiles}
+                  compact
+                />
+              </div>
             )}
-          </button>
-          {showUploadZone && (
-            <div className="px-3 pb-3">
-              <DocumentUploadZone
-                files={uploadedFiles}
-                onFilesChange={setUploadedFiles}
-                compact
-              />
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {error && (
           <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">

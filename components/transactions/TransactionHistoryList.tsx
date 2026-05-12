@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { getCategoryDisplayName } from '@/lib/tax/expense-warnings'
 import { Search, ArrowUpRight, ArrowDownRight, ArrowLeftRight, Check, Link2, FileText, Loader2 } from 'lucide-react'
+import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
 import type { TransactionWithInvoice, HistoryFilter } from './transaction-types'
 
 interface TransactionHistoryListProps {
@@ -83,7 +84,11 @@ export default function TransactionHistoryList({
       ) : (
         <div className="space-y-2">
           {filtered.map((transaction) => (
-            <Card key={transaction.id} className="hover:border-primary/50 transition-colors">
+            <Card
+              key={transaction.id}
+              data-tx-id={transaction.id}
+              className="hover:border-primary/50 transition-colors"
+            >
               <CardContent className="py-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -101,7 +106,10 @@ export default function TransactionHistoryList({
                       )}
                     </div>
                     <div>
-                      <p className="font-medium">{transaction.description}</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-medium">{transaction.description}</p>
+                        <TransactionAttachmentIndicator documentId={transaction.document_id} />
+                      </div>
                       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                         <span>{formatDate(transaction.date)}</span>
                         {transaction.is_business !== null &&

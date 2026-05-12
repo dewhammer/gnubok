@@ -17,6 +17,7 @@ import { SupplierInvoiceReviewContent } from '@/components/suppliers/SupplierInv
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import { getAccountDescription } from '@/lib/bookkeeping/account-descriptions'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
+import { cn, formatCurrency } from '@/lib/utils'
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import BankTransactionPicker from '@/components/transactions/BankTransactionPicker'
@@ -106,6 +107,7 @@ export default function NewSupplierInvoicePage() {
   const { toast } = useToast()
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [suppliersLoaded, setSuppliersLoaded] = useState(false)
   const [accounts, setAccounts] = useState<BASAccount[]>([])
   const [entityType, setEntityType] = useState<EntityType>('enskild_firma')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -174,8 +176,11 @@ export default function NewSupplierInvoicePage() {
 
   // One-shot: load inbox item and prefill form. Runs after suppliers are
   // loaded so we can resolve matched_supplier_id to a real picker value.
+  // Gate on `suppliersLoaded`, not `suppliers.length > 0` — otherwise the
+  // effect never fires for users who haven't booked a supplier yet and
+  // the "Laddar uppgifter från inkorgen…" spinner sticks forever.
   useEffect(() => {
-    if (!inboxItemId || hasPrefilled || suppliers.length === 0) return
+    if (!inboxItemId || hasPrefilled || !suppliersLoaded) return
     let cancelled = false
 
     ;(async () => {
@@ -266,7 +271,7 @@ export default function NewSupplierInvoicePage() {
       cancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inboxItemId, suppliers])
+  }, [inboxItemId, suppliersLoaded, suppliers])
 
   // Auto-fill due date and defaults when supplier is selected — but never
   // overwrite a value the AI already filled in for us.
@@ -298,6 +303,50 @@ export default function NewSupplierInvoicePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watchedSupplierId, suppliers])
 
+  // Auto-fetch Riksbanken exchange rate when currency switches to non-SEK and
+  // the user hasn't typed a custom rate yet. Re-fetches when the invoice
+  // date changes too. Never overwrites a user-entered rate.
+  const watchedInvoiceDate = watch('invoice_date')
+  // The "user has manually edited the rate" flag is scoped *per currency*.
+  // Switching from EUR (rate 11.8 edited by hand) to USD must re-fetch — the
+  // EUR rate is meaningless for a USD invoice. Tracking last-fetched currency
+  // lets us reset the touched flag on a currency switch while still honoring
+  // a manual edit when only the invoice date changes within the same currency.
+  const userTouchedRateRef = useRef(false)
+  const lastFxCurrencyRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (watchedCurrency === 'SEK') {
+      setValue('exchange_rate', '')
+      userTouchedRateRef.current = false
+      lastFxCurrencyRef.current = null
+      return
+    }
+    if (lastFxCurrencyRef.current !== watchedCurrency) {
+      // Currency switched — drop the previous currency's manual-edit flag.
+      userTouchedRateRef.current = false
+      lastFxCurrencyRef.current = watchedCurrency
+    }
+    if (userTouchedRateRef.current) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const url = `/api/currency/rate?currency=${watchedCurrency}${
+          watchedInvoiceDate ? `&date=${watchedInvoiceDate}` : ''
+        }`
+        const res = await fetch(url)
+        if (!res.ok) return
+        const { data } = await res.json()
+        if (cancelled || !data?.rate) return
+        // Don't clobber a value the user typed while we were fetching.
+        if (userTouchedRateRef.current) return
+        setValue('exchange_rate', String(Math.round(data.rate * 10000) / 10000))
+      } catch {
+        // Non-critical — user can type the rate manually.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [watchedCurrency, watchedInvoiceDate, setValue])
+
   // Auto-select newly created supplier once it shows up in the list
   useEffect(() => {
     if (pendingSupplierSelect && suppliers.find((s) => s.id === pendingSupplierSelect)) {
@@ -307,9 +356,13 @@ export default function NewSupplierInvoicePage() {
   }, [suppliers, pendingSupplierSelect, setValue])
 
   async function fetchSuppliers() {
-    const res = await fetch('/api/suppliers')
-    const { data } = await res.json()
-    setSuppliers(data || [])
+    try {
+      const res = await fetch('/api/suppliers')
+      const { data } = await res.json()
+      setSuppliers(data || [])
+    } finally {
+      setSuppliersLoaded(true)
+    }
   }
 
   async function fetchAccounts() {
@@ -546,6 +599,9 @@ export default function NewSupplierInvoicePage() {
 
     // Auto-approve for EF
     const approveRes = await fetch(`/api/supplier-invoices/${result.data.id}/approve`, { method: 'POST' })
+    // Clear dirty state so useUnsavedChanges doesn't fire the
+    // beforeunload prompt while we navigate away on a successful submit.
+    reset(data)
     if (!approveRes.ok) {
       toast({
         title: 'Varning',
@@ -572,6 +628,8 @@ export default function NewSupplierInvoicePage() {
       const invoiceId = result.data.id
       const arrivalNumber = result.data.arrival_number
       setShowReview(false)
+      // Clear dirty state — see comment in handleDirectSubmit.
+      reset(pendingData)
 
       if (pendingTransactionId) {
         const matchRes = await fetch(`/api/transactions/${pendingTransactionId}/match-supplier-invoice`, {
@@ -663,6 +721,7 @@ export default function NewSupplierInvoicePage() {
         title: 'Kreditering ångrad och faktura registrerad',
         description: `Ankomstnummer: ${result.data.arrival_number}`,
       })
+      reset(pendingData)
       router.push(`/supplier-invoices/${result.data.id}`)
       return
     }
@@ -739,6 +798,7 @@ export default function NewSupplierInvoicePage() {
         variant: 'destructive',
       })
     }
+    reset(pendingData)
     router.push(`/supplier-invoices/${invoiceId}`)
   }
 
@@ -880,6 +940,75 @@ export default function NewSupplierInvoicePage() {
             </Button>
           </CardHeader>
           <CardContent>
+            {/* Valuta & moms — kept inline with the line items because they
+                drive how each row is interpreted. Hidden defaults (SEK +
+                normal moms) collapse to nothing so most users don't see this. */}
+            <div className="mb-5 pb-5 border-b grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Valuta</Label>
+                <Controller
+                  name="currency"
+                  control={control}
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="SEK">SEK</SelectItem>
+                        <SelectItem value="EUR">EUR</SelectItem>
+                        <SelectItem value="USD">USD</SelectItem>
+                        <SelectItem value="GBP">GBP</SelectItem>
+                        <SelectItem value="NOK">NOK</SelectItem>
+                        <SelectItem value="DKK">DKK</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+              {watchedCurrency !== 'SEK' && (
+                <div className="space-y-1.5">
+                  <Label className="text-xs">
+                    Växelkurs <span className="text-muted-foreground">(till SEK)</span>
+                  </Label>
+                  <Input
+                    type="number"
+                    step="0.0001"
+                    inputMode="decimal"
+                    placeholder="Hämtas från Riksbanken"
+                    className="h-9 text-right tabular-nums"
+                    {...register('exchange_rate', {
+                      onChange: () => { userTouchedRateRef.current = true },
+                    })}
+                  />
+                </div>
+              )}
+              <div
+                className={cn(
+                  'flex items-center gap-2',
+                  watchedCurrency === 'SEK' ? 'sm:col-span-2' : ''
+                )}
+              >
+                <Controller
+                  name="reverse_charge"
+                  control={control}
+                  render={({ field }) => (
+                    <Checkbox
+                      id="reverse_charge"
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  )}
+                />
+                <Label htmlFor="reverse_charge" className="text-xs cursor-pointer">
+                  Omvänd skattskyldighet
+                  <span className="block text-[11px] text-muted-foreground font-normal mt-0.5">
+                    Köp inom EU eller byggtjänster — momsen redovisas av köparen.
+                  </span>
+                </Label>
+              </div>
+            </div>
+
             {/* Desktop table */}
             <div className="hidden sm:block">
               <table className="w-full text-sm">
@@ -1032,7 +1161,7 @@ export default function NewSupplierInvoicePage() {
                   </div>
                   <div className="flex justify-between items-center pt-1 border-t">
                     <span className="text-xs text-muted-foreground">Moms</span>
-                    <span className="font-mono text-sm">{formatAmount(itemTotals[index]?.vatAmount || 0)} kr</span>
+                    <span className="font-mono text-sm">{formatCurrency(itemTotals[index]?.vatAmount || 0, watchedCurrency)}</span>
                   </div>
                 </div>
               ))}
@@ -1064,15 +1193,15 @@ export default function NewSupplierInvoicePage() {
             <div className="mt-4 pt-4 border-t space-y-2">
               <div className="flex justify-between sm:justify-end sm:gap-8">
                 <span className="text-muted-foreground">Netto (exkl. moms)</span>
-                <span className="font-mono sm:w-32 text-right">{formatAmount(subtotal)} kr</span>
+                <span className="font-mono sm:w-32 text-right">{formatCurrency(subtotal, watchedCurrency)}</span>
               </div>
               <div className="flex justify-between sm:justify-end sm:gap-8">
                 <span className="text-muted-foreground">Moms</span>
-                <span className="font-mono sm:w-32 text-right">{formatAmount(totalVat)} kr</span>
+                <span className="font-mono sm:w-32 text-right">{formatCurrency(totalVat, watchedCurrency)}</span>
               </div>
               <div className="flex justify-between sm:justify-end sm:gap-8 font-bold text-lg">
                 <span>Totalt</span>
-                <span className="font-mono sm:w-32 text-right">{formatAmount(total)} kr</span>
+                <span className="font-mono sm:w-32 text-right">{formatCurrency(total, watchedCurrency)}</span>
               </div>
             </div>
           </CardContent>
@@ -1091,49 +1220,9 @@ export default function NewSupplierInvoicePage() {
           </CardHeader>
           {advancedOpen && (
             <CardContent className="space-y-4 pt-0">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Valuta</Label>
-                  <Controller
-                    name="currency"
-                    control={control}
-                    render={({ field }) => (
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="SEK">SEK</SelectItem>
-                          <SelectItem value="EUR">EUR</SelectItem>
-                          <SelectItem value="USD">USD</SelectItem>
-                          <SelectItem value="GBP">GBP</SelectItem>
-                          <SelectItem value="NOK">NOK</SelectItem>
-                          <SelectItem value="DKK">DKK</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                </div>
-                {watchedCurrency !== 'SEK' && (
-                  <div className="space-y-2">
-                    <Label>Växelkurs</Label>
-                    <Input type="number" step="0.0001" inputMode="decimal" placeholder="1,0000" className="text-right tabular-nums" {...register('exchange_rate')} />
-                  </div>
-                )}
-              </div>
               <div className="space-y-2">
                 <Label>Leveransdatum (ML krav)</Label>
                 <Input type="date" {...register('delivery_date')} />
-              </div>
-              <div className="flex items-center gap-2">
-                <Controller
-                  name="reverse_charge"
-                  control={control}
-                  render={({ field }) => (
-                    <Checkbox checked={field.value} onCheckedChange={field.onChange} />
-                  )}
-                />
-                <Label>Omvänd skattskyldighet (reverse charge)</Label>
               </div>
               <div className="space-y-2">
                 <Label>Anteckningar</Label>

@@ -79,7 +79,59 @@ export const POST = withRouteContext(
       })
     }
 
-    const paymentAmount = Math.abs(transaction.amount)
+    const txAmountAbs = Math.abs(transaction.amount)
+
+    // Amount in the *invoice's* currency — used to update
+    // supplier_invoices.paid_amount/remaining_amount and the
+    // supplier_invoice_payments row (whose `currency` is the invoice's).
+    // When the bank transaction is in a different currency from the
+    // invoice (e.g. paying a USD invoice from a SEK account) we treat the
+    // match as a full payment of whatever remains, rather than storing the
+    // SEK number with the invoice's currency suffix — which would render
+    // as "Betalt 239 USD" on a 25 USD invoice.
+    const paymentAmountInvoiceCurrency =
+      transaction.currency === invoice.currency
+        ? txAmountAbs
+        : invoice.remaining_amount
+
+    // Actual SEK leaving the bank — what really moved out of 1930. For a
+    // SEK transaction this is just the absolute amount; for a foreign-
+    // currency transaction we use the SEK conversion stored at import.
+    const actualBankSek =
+      transaction.currency === 'SEK'
+        ? txAmountAbs
+        : (transaction.amount_sek != null
+            ? Math.abs(transaction.amount_sek)
+            : txAmountAbs)
+
+    // SEK value that's actually sitting on 2440 for this payment portion:
+    //   - SEK invoice: face value = paymentAmountInvoiceCurrency
+    //   - Non-SEK invoice w/ exchange_rate: portion × rate
+    //   - Non-SEK invoice w/o exchange_rate: can't compute precisely; fall
+    //     back to actualBankSek (no FX diff, plain SEK booking)
+    // FX diff hits 7960/3960 so 2440 clears cleanly instead of leaving a
+    // residual. Triggered whenever bank-paid SEK differs from booked SEK —
+    // happens for any currency mismatch (SEK→EUR, EUR→SEK, EUR→USD), not
+    // just non-SEK invoices.
+    const invoiceFxRate = invoice.exchange_rate ?? null
+    const originalBookedSek =
+      invoice.currency === 'SEK'
+        ? paymentAmountInvoiceCurrency
+        : invoiceFxRate && invoiceFxRate > 0
+          ? Math.round(paymentAmountInvoiceCurrency * invoiceFxRate * 100) / 100
+          : actualBankSek
+
+    // Positive = gain (AP credited at more SEK than the bank actually paid).
+    // Negative = loss (bank paid more SEK than the AP we owed).
+    const exchangeRateDifference =
+      Math.round((originalBookedSek - actualBankSek) * 100) / 100
+
+    // `paymentAmountSek` is what we pass to the payment-entry builder. In
+    // the FX branch (non-zero exchangeRateDifference) it represents the
+    // ORIGINAL booked SEK on 2440; the builder then computes actualSekPaid
+    // as paymentAmountSek - exchangeRateDifference internally.
+    const paymentAmountSek = exchangeRateDifference !== 0 ? originalBookedSek : actualBankSek
+
     const now = new Date().toISOString()
 
     const { data: settings } = await supabase
@@ -89,6 +141,23 @@ export const POST = withRouteContext(
       .single()
 
     const accountingMethod = settings?.accounting_method || 'accrual'
+
+    // Cash method (kontantmetoden) collapses registration + payment into a
+    // single entry that credits 1930 at sum(expenses_SEK). It has no
+    // exchange_rate_difference path — if the actual bank SEK differs from
+    // the invoice's booked SEK, the 1930 credit won't match the bank
+    // transaction and we'd silently leave a reconciliation gap. Block the
+    // combination and ask the user to switch to accrual or do a manual JE.
+    if (accountingMethod === 'cash' && exchangeRateDifference !== 0) {
+      return errorResponseFromCode('MATCH_SI_CASH_FX_UNSUPPORTED', txLog, {
+        requestId,
+        details: {
+          exchangeRateDifference,
+          invoiceCurrency: invoice.currency,
+          transactionCurrency: transaction.currency,
+        },
+      })
+    }
 
     let journalEntryId: string | null = null
     let journalEntryError: string | null = null
@@ -105,7 +174,8 @@ export const POST = withRouteContext(
       } else {
         const journalEntry = await createSupplierInvoicePaymentEntry(
           supabase, companyId, user.id, invoice as SupplierInvoice,
-          paymentAmount, transaction.date,
+          paymentAmountSek, transaction.date,
+          exchangeRateDifference !== 0 ? exchangeRateDifference : undefined,
         )
         if (journalEntry) journalEntryId = journalEntry.id
       }
@@ -120,8 +190,8 @@ export const POST = withRouteContext(
       }
     }
 
-    const newRemaining = Math.max(0, Math.round((invoice.remaining_amount - paymentAmount) * 100) / 100)
-    const newPaidAmount = Math.round((invoice.paid_amount + paymentAmount) * 100) / 100
+    const newRemaining = Math.max(0, Math.round((invoice.remaining_amount - paymentAmountInvoiceCurrency) * 100) / 100)
+    const newPaidAmount = Math.round((invoice.paid_amount + paymentAmountInvoiceCurrency) * 100) / 100
     const isFullyPaid = newRemaining <= 0
     const newStatus = isFullyPaid ? 'paid' : 'partially_paid'
 
@@ -155,7 +225,7 @@ export const POST = withRouteContext(
         company_id: companyId,
         supplier_invoice_id,
         payment_date: transaction.date,
-        amount: paymentAmount,
+        amount: paymentAmountInvoiceCurrency,
         currency: invoice.currency,
         journal_entry_id: journalEntryId,
         transaction_id: transactionId,

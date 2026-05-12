@@ -3,9 +3,11 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useToast } from '@/components/ui/use-toast'
+import { ToastAction } from '@/components/ui/toast'
 import {
   Inbox,
   Upload,
@@ -20,8 +22,12 @@ import {
   ArrowRight,
   Plus,
   Link2,
+  Search,
+  Circle,
+  X,
 } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { cn, formatCurrency } from '@/lib/utils'
 import type { WorkspaceComponentProps } from '@/lib/extensions/workspace-registry'
 import type { InvoiceExtractionResult } from '@/types'
@@ -46,6 +52,7 @@ interface InboxItem {
   document_id: string | null
   extracted_data: InvoiceExtractionResult | null
   matched_supplier_id: string | null
+  matched_transaction_id: string | null
   created_supplier_invoice_id: string | null
   error_message: string | null
   // Set client-side only while a manual upload is in flight. Replaced by a
@@ -105,11 +112,32 @@ function WorkspaceSkeleton() {
 
 export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const { toast } = useToast()
+  const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const [items, setItems] = useState<InboxItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Phone-only master-detail toggle. On screens <md the three panes don't
+  // fit side-by-side and stacking them produces a long vertical scroll, so
+  // we show the list xor the detail view, with a back button to return.
+  const [mobileView, setMobileView] = useState<'list' | 'detail'>('list')
+  // List filter + search (client-side over the already-fetched items list).
+  const [filter, setFilter] = useState<'all' | 'needs_action' | 'done' | 'error'>('all')
+  const [searchTerm, setSearchTerm] = useState('')
+  // Bulk selection. Items linked to a supplier invoice are skipped at delete
+  // time (server returns 409); we still allow them to be selected so the
+  // user can see the "X skipped" toast and learn the rule.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
+  // Onboarding card visibility. Hides when all three steps are complete or
+  // the user dismissed it. Persisted to localStorage so refresh doesn't
+  // revive a dismissed card.
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false)
+  // Multi-file upload progress. Null when no queue is running. Reflects the
+  // sequential progress through a batch ({ total, done }) so the button can
+  // show "Laddar X av N…".
+  const [uploadQueue, setUploadQueue] = useState<{ total: number; done: number } | null>(null)
   const [selected, setSelected] = useState<InboxItem | null>(null)
   const [docUrl, setDocUrl] = useState<string | null>(null)
   const [docMime, setDocMime] = useState<string | null>(null)
@@ -151,6 +179,67 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     fetchInboxAddress()
   }, [fetchItems, fetchInboxAddress])
 
+  // Read the onboarding-dismissed flag from localStorage after mount
+  // (SSR-safe — no window access during initial render).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      setOnboardingDismissed(
+        window.localStorage.getItem('gnubok.inbox.onboarding.dismissed') === '1'
+      )
+    } catch {
+      // private browsing — keep default (show card)
+    }
+  }, [])
+
+  const handleDismissOnboarding = useCallback(() => {
+    try {
+      window.localStorage.setItem('gnubok.inbox.onboarding.dismissed', '1')
+    } catch {
+      // ignore; in-memory state is enough for this session
+    }
+    setOnboardingDismissed(true)
+  }, [])
+
+  // Onboarding card visibility — derived from real progress so a user who
+  // already has a working inbox flow never sees the guide. Once they finish
+  // all three steps, the card auto-hides on next render.
+  const hasInboxAddress = !!inboxAddress
+  const hasAnyItem = items.length > 0
+  const hasResolvedItem = items.some(
+    (it) => !!it.created_supplier_invoice_id || !!it.matched_transaction_id
+  )
+  const showOnboarding =
+    !onboardingDismissed && !(hasInboxAddress && hasAnyItem && hasResolvedItem)
+
+  // ── List filter + search (client-side over the fetched list) ─
+
+  const filteredItems = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase()
+    return items.filter((item) => {
+      // Status filter
+      const isErr = item.status === 'error'
+      const isDone = !!item.created_supplier_invoice_id || !!item.matched_transaction_id
+      const needsAction = !isErr && !isDone
+      if (filter === 'error' && !isErr) return false
+      if (filter === 'done' && !isDone) return false
+      if (filter === 'needs_action' && !needsAction) return false
+
+      // Search filter — supplier name, email subject/from, placeholder filename
+      if (term === '') return true
+      const haystack = [
+        item.extracted_data?.supplier?.name,
+        item.email_subject,
+        item.email_from,
+        item.fileName,
+      ]
+        .filter((v): v is string => !!v)
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(term)
+    })
+  }, [items, filter, searchTerm])
+
   // ── Selection ──────────────────────────────────────────────
 
   const handleSelect = useCallback(async (id: string) => {
@@ -158,6 +247,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     setSelected(null)
     setDocUrl(null)
     setDocMime(null)
+    setMobileView('detail')
 
     try {
       const res = await fetch(`/api/extensions/ext/invoice-inbox/items/${id}`)
@@ -189,9 +279,15 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
 
   // ── Upload ─────────────────────────────────────────────────
 
-  const uploadFile = useCallback(async (file: File) => {
+  // `autoSelect`: jump the detail pane to the new placeholder/row. Useful
+  // for a one-off drop (user expects to see what just landed). Harmful in
+  // a multi-file queue (selection yanks around as each file processes).
+  const uploadFile = useCallback(async (
+    file: File,
+    options: { autoSelect: boolean } = { autoSelect: true },
+  ) => {
     // Optimistic placeholder — gives the user an immediate visual response
-    // for the 3–8s while Bedrock extracts. Removed once the real row arrives.
+    // for the 3–8s while extraction runs. Removed once the real row arrives.
     const tempId = `temp-${crypto.randomUUID()}`
     const placeholder: InboxItem = {
       id: tempId,
@@ -204,14 +300,17 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
       document_id: null,
       extracted_data: null,
       matched_supplier_id: null,
+      matched_transaction_id: null,
       created_supplier_invoice_id: null,
       error_message: null,
       isPlaceholder: true,
       fileName: file.name,
     }
     setItems((prev) => [placeholder, ...prev])
-    setSelectedId(tempId)
-    setSelected(placeholder)
+    if (options.autoSelect) {
+      setSelectedId(tempId)
+      setSelected(placeholder)
+    }
     setIsUploading(true)
     try {
       const fd = new FormData()
@@ -225,13 +324,15 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
       toast({ title: 'Dokument uppladdat', description: file.name })
       setItems((prev) => prev.filter((it) => it.id !== tempId))
       await fetchItems()
-      if (json.data?.inbox_item_id) {
+      if (options.autoSelect && json.data?.inbox_item_id) {
         await handleSelect(json.data.inbox_item_id)
       }
     } catch (err) {
       setItems((prev) => prev.filter((it) => it.id !== tempId))
-      setSelectedId((prev) => (prev === tempId ? null : prev))
-      setSelected((prev) => (prev?.id === tempId ? null : prev))
+      if (options.autoSelect) {
+        setSelectedId((prev) => (prev === tempId ? null : prev))
+        setSelected((prev) => (prev?.id === tempId ? null : prev))
+      }
       toast({
         title: 'Uppladdning misslyckades',
         description: err instanceof Error ? err.message : 'Försök igen.',
@@ -242,18 +343,40 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
     }
   }, [fetchItems, handleSelect, toast])
 
-  const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) await uploadFile(file)
-    if (fileInputRef.current) fileInputRef.current.value = ''
+  // Sequential queue — running multiple extractions concurrently would
+  // hammer pdfjs on slow boxes. Per-file placeholder rows + the queue
+  // counter on the upload button surface progress.
+  const uploadFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0) return
+    if (files.length === 1) {
+      // Single-file drop: keep the historic behavior of jumping the detail
+      // pane to the new item. Skip the queue counter — it would just flash.
+      await uploadFile(files[0], { autoSelect: true })
+      return
+    }
+    setUploadQueue({ total: files.length, done: 0 })
+    try {
+      for (const file of files) {
+        await uploadFile(file, { autoSelect: false })
+        setUploadQueue((q) => (q ? { ...q, done: q.done + 1 } : null))
+      }
+    } finally {
+      setUploadQueue(null)
+    }
   }, [uploadFile])
+
+  const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    if (files.length > 0) await uploadFiles(files)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [uploadFiles])
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file) await uploadFile(file)
-  }, [uploadFile])
+    const files = Array.from(e.dataTransfer.files ?? [])
+    if (files.length > 0) await uploadFiles(files)
+  }, [uploadFiles])
 
   // ── Delete ─────────────────────────────────────────────────
 
@@ -282,6 +405,59 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
       setIsDeleting(false)
     }
   }, [fetchItems, selectedId, toast])
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
+
+  const handleBulkDelete = useCallback(async () => {
+    if (selectedIds.size === 0) return
+    if (!confirm(`Ta bort ${selectedIds.size} poster ur inkorgen?`)) return
+
+    // Skip items that the server would 409 on, surface the count to the user.
+    const targets = items.filter((it) => selectedIds.has(it.id))
+    const deletable = targets.filter((it) => !it.created_supplier_invoice_id)
+    const skipped = targets.length - deletable.length
+
+    setIsBulkDeleting(true)
+    try {
+      const results = await Promise.allSettled(
+        deletable.map((it) =>
+          fetch(`/api/extensions/ext/invoice-inbox/items/${it.id}`, { method: 'DELETE' })
+            .then(async (res) => {
+              if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'fail')
+            })
+        )
+      )
+      const failed = results.filter((r) => r.status === 'rejected').length
+      const succeeded = deletable.length - failed
+      const parts: string[] = []
+      if (succeeded > 0) parts.push(`${succeeded} borttagna`)
+      if (skipped > 0) parts.push(`${skipped} kopplade till leverantörsfaktura — hoppade över`)
+      if (failed > 0) parts.push(`${failed} misslyckades`)
+      toast({
+        title: 'Bulkborttagning klar',
+        description: parts.join(' · '),
+        variant: failed > 0 ? 'destructive' : 'default',
+      })
+      clearSelection()
+      // If the currently-selected item was deleted, clear the rail.
+      if (selectedId && deletable.some((it) => it.id === selectedId)) {
+        setSelectedId(null)
+        setSelected(null)
+      }
+      await fetchItems()
+    } finally {
+      setIsBulkDeleting(false)
+    }
+  }, [selectedIds, items, selectedId, fetchItems, toast, clearSelection])
 
   // ── Inbox address ──────────────────────────────────────────
 
@@ -382,6 +558,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             accept="application/pdf,image/jpeg,image/png,image/heic,image/heif,image/webp"
             className="hidden"
             onChange={handleFileInputChange}
@@ -397,28 +574,125 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
             ) : (
               <Plus className="h-3.5 w-3.5 mr-1.5" />
             )}
-            Ladda upp
+            {uploadQueue
+              ? `Laddar ${Math.min(uploadQueue.done + 1, uploadQueue.total)} av ${uploadQueue.total}…`
+              : isUploading
+                ? 'Laddar…'
+                : 'Ladda upp'}
           </Button>
         </div>
       </header>
 
-      {/* Three-pane body */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)_340px] min-h-0">
+      {/* Three-pane body. On phone (<md) we toggle between list and detail
+          via `mobileView`; at md+ all three panes show side-by-side. */}
+      <div className="flex-1 grid grid-cols-1 md:grid-cols-[240px_minmax(0,1fr)_320px] lg:grid-cols-[280px_minmax(0,1fr)_340px] min-h-0">
         {/* List */}
-        <aside className="border-r overflow-y-auto bg-muted/20 pt-4">
+        <aside
+          className={cn(
+            'border-r overflow-y-auto bg-muted/20 pt-3 md:block',
+            mobileView === 'detail' && 'hidden'
+          )}
+        >
+          {items.length > 0 && (
+            <div className="px-3 pb-3 space-y-2 border-b">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Sök i inkorgen…"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-8 h-8 text-xs"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {(
+                  [
+                    { key: 'all', label: 'Alla' },
+                    { key: 'needs_action', label: 'Behöver åtgärd' },
+                    { key: 'done', label: 'Bearbetade' },
+                    { key: 'error', label: 'Fel' },
+                  ] as const
+                ).map((pill) => (
+                  <button
+                    key={pill.key}
+                    type="button"
+                    onClick={() => setFilter(pill.key)}
+                    className={cn(
+                      'text-[11px] px-2 py-0.5 rounded-full border transition-colors',
+                      filter === pill.key
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-background text-muted-foreground border-border hover:text-foreground'
+                    )}
+                  >
+                    {pill.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {selectedIds.size > 0 && (
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b bg-background/95 backdrop-blur px-3 py-2 text-xs">
+              <span className="font-medium">{selectedIds.size} valda</span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={clearSelection}
+                  disabled={isBulkDeleting}
+                >
+                  Avmarkera
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={handleBulkDelete}
+                  disabled={isBulkDeleting}
+                >
+                  {isBulkDeleting ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3 w-3 mr-1" />
+                  )}
+                  Ta bort
+                </Button>
+              </div>
+            </div>
+          )}
           {items.length === 0 ? (
-            <div className="p-6 text-center text-sm text-muted-foreground">
-              <Inbox className="h-6 w-6 mx-auto mb-2 opacity-50" />
-              Inkorgen är tom.
+            showOnboarding ? (
+              <OnboardingCard
+                hasInboxAddress={hasInboxAddress}
+                hasAnyItem={hasAnyItem}
+                hasResolvedItem={hasResolvedItem}
+                onActivateInbox={handleRotateAddress}
+                onUploadClick={() => fileInputRef.current?.click()}
+                onDismiss={handleDismissOnboarding}
+                isActivating={isRotating}
+                compact
+              />
+            ) : (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                <Inbox className="h-6 w-6 mx-auto mb-2 opacity-50" />
+                Inkorgen är tom.
+              </div>
+            )
+          ) : filteredItems.length === 0 ? (
+            <div className="p-6 text-center text-xs text-muted-foreground">
+              Inga poster matchar filtret.
             </div>
           ) : (
             <ul>
-              {items.map((item) => (
+              {filteredItems.map((item) => (
                 <InboxRow
                   key={item.id}
                   item={item}
                   selected={item.id === selectedId}
                   onClick={() => handleSelect(item.id)}
+                  isChecked={selectedIds.has(item.id)}
+                  onToggleChecked={() => toggleSelected(item.id)}
+                  anyChecked={selectedIds.size > 0}
                 />
               ))}
             </ul>
@@ -426,9 +700,37 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         </aside>
 
         {/* Document preview (hero) */}
-        <main className="overflow-hidden bg-muted/10 relative">
+        <main
+          className={cn(
+            'overflow-hidden bg-muted/10 relative md:block',
+            mobileView === 'list' && 'hidden'
+          )}
+        >
+          {/* Phone-only back-to-list button */}
+          {selected && (
+            <button
+              type="button"
+              onClick={() => setMobileView('list')}
+              className="md:hidden absolute top-2 left-2 z-10 flex items-center gap-1 rounded-md bg-background/90 backdrop-blur px-2 py-1 text-xs text-foreground border shadow-sm"
+            >
+              <ArrowRight className="h-3 w-3 rotate-180" />
+              Inkorg
+            </button>
+          )}
           {selected ? (
             <DocumentPreview docUrl={docUrl} docMime={docMime} isProcessing={!!selected.isPlaceholder} />
+          ) : showOnboarding ? (
+            <div className="h-full flex items-center justify-center px-4 py-6">
+              <OnboardingCard
+                hasInboxAddress={hasInboxAddress}
+                hasAnyItem={hasAnyItem}
+                hasResolvedItem={hasResolvedItem}
+                onActivateInbox={handleRotateAddress}
+                onUploadClick={() => fileInputRef.current?.click()}
+                onDismiss={handleDismissOnboarding}
+                isActivating={isRotating}
+              />
+            </div>
           ) : (
             <EmptyPreview
               onUploadClick={() => fileInputRef.current?.click()}
@@ -443,14 +745,23 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
           )}
         </main>
 
-        {/* Fields rail */}
-        <aside className="border-l overflow-y-auto pt-4">
+        {/* Fields rail. On phone, sits below the preview (same screen as detail);
+            on md+ it's the third pane. */}
+        <aside
+          className={cn(
+            'border-l overflow-y-auto pt-4 md:block',
+            mobileView === 'list' && 'hidden'
+          )}
+        >
           {selected ? (
             <FieldsRail
               item={selected}
               onDelete={() => handleDelete(selected.id)}
               onAttach={() => setAttachOpen(true)}
               isDeleting={isDeleting}
+              onRetryRequested={async () => {
+                await Promise.all([fetchItems(), handleSelect(selected.id)])
+              }}
               onFieldsUpdated={(nextData) => {
                 // Guard against stale closure: if the user navigated to a
                 // different item between sending the PATCH and the response
@@ -482,10 +793,21 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         open={attachOpen}
         onOpenChange={setAttachOpen}
         item={selected}
-        onAttached={async () => {
+        onAttached={async (transactionId) => {
           setAttachOpen(false)
           await fetchItems()
-          toast({ title: 'Bilaga kopplad till transaktion' })
+          toast({
+            title: 'Bilaga kopplad till transaktion',
+            description: 'Bokför direkt, eller fortsätt med inkorgen och bokför senare.',
+            action: (
+              <ToastAction
+                altText="Bokför nu"
+                onClick={() => router.push(`/transactions?highlight=${transactionId}`)}
+              >
+                Bokför nu
+              </ToastAction>
+            ),
+          })
         }}
       />
     )}
@@ -512,15 +834,53 @@ function AttachToTransactionDialog({
   open: boolean
   onOpenChange: (v: boolean) => void
   item: InboxItem
-  onAttached: () => void | Promise<void>
+  onAttached: (transactionId: string) => void | Promise<void>
 }) {
   const { toast } = useToast()
   const [transactions, setTransactions] = useState<PickerTransaction[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [attachingId, setAttachingId] = useState<string | null>(null)
+  const [isCreating, setIsCreating] = useState(false)
+  const [searchTerm, setSearchTerm] = useState('')
 
   const targetAmount = pickAmount(item)
   const targetCurrency = pickCurrency(item)
+
+  // Prefill for "create transaction from this document" — defaults to a
+  // negative amount because the typical inbox item is an expense receipt
+  // (money out). The user can flip the sign in the form if it's an income
+  // document.
+  const defaultDate =
+    item.extracted_data?.invoice?.invoiceDate ||
+    new Date().toISOString().slice(0, 10)
+  const defaultAmount = targetAmount != null ? -Math.abs(targetAmount) : 0
+  const defaultDescription = [
+    pickSupplierName(item),
+    item.extracted_data?.invoice?.invoiceNumber,
+  ]
+    .filter(Boolean)
+    .join(' · ') || 'Manuell transaktion'
+
+  const [formDate, setFormDate] = useState(defaultDate)
+  const [formAmount, setFormAmount] = useState<string>(
+    defaultAmount !== 0 ? String(defaultAmount) : ''
+  )
+  const [formDescription, setFormDescription] = useState(defaultDescription)
+
+  useEffect(() => {
+    setFormDate(defaultDate)
+    setFormAmount(defaultAmount !== 0 ? String(defaultAmount) : '')
+    setFormDescription(defaultDescription)
+    setSearchTerm('')
+    // Reset whenever a different inbox item opens the dialog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.id])
+
+  const filteredTransactions = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase()
+    if (term === '') return transactions
+    return transactions.filter((t) => (t.description || '').toLowerCase().includes(term))
+  }, [transactions, searchTerm])
 
   useEffect(() => {
     if (!open) return
@@ -564,9 +924,54 @@ function AttachToTransactionDialog({
         toast({ title: json.error || 'Kunde inte koppla bilaga', variant: 'destructive' })
         return
       }
-      await onAttached()
+      await onAttached(tx.id)
     } finally {
       setAttachingId(null)
+    }
+  }
+
+  const handleCreateTransaction = async () => {
+    const amountNum = Number(formAmount)
+    if (!Number.isFinite(amountNum) || amountNum === 0) {
+      toast({ title: 'Ange ett belopp skilt från noll', variant: 'destructive' })
+      return
+    }
+    if (!formDate || !formDescription.trim()) {
+      toast({ title: 'Fyll i datum och beskrivning', variant: 'destructive' })
+      return
+    }
+    setIsCreating(true)
+    try {
+      const res = await fetch('/api/transactions/create-from-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          inbox_item_id: item.id,
+          amount: amountNum,
+          transaction_date: formDate,
+          description: formDescription.trim(),
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast({
+          title: json.error || 'Kunde inte skapa transaktion',
+          variant: 'destructive',
+        })
+        return
+      }
+      const newTxId = json?.data?.transaction_id as string | undefined
+      if (newTxId) {
+        await onAttached(newTxId)
+      } else {
+        // No id back — fall back to closing without the "Bokför nu" CTA.
+        toast({
+          title: 'Transaktion skapad',
+          description: 'Hittas under Transaktioner för kategorisering.',
+        })
+      }
+    } finally {
+      setIsCreating(false)
     }
   }
 
@@ -581,18 +986,114 @@ function AttachToTransactionDialog({
               : 'Välj en transaktion att koppla bilagan till.'}
           </DialogDescription>
         </DialogHeader>
+        {!isLoading && transactions.length > 0 && (
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              autoFocus
+              placeholder="Sök på beskrivning…"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+            />
+          </div>
+        )}
         <div className="max-h-[60vh] overflow-y-auto -mx-6 px-6">
           {isLoading ? (
             <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Laddar transaktioner…
             </div>
           ) : transactions.length === 0 ? (
+            <div className="py-10">
+              <div className="text-center space-y-1.5 mb-6">
+                <p className="text-sm font-medium">Hittade ingen transaktion</p>
+                <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                  Skapa en manuell transaktion från underlaget och kategorisera
+                  den i transaktionsvyn efter att den är skapad.
+                </p>
+              </div>
+              <div className="max-w-sm mx-auto space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="manual-tx-date"
+                      className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+                    >
+                      Datum
+                    </label>
+                    <Input
+                      id="manual-tx-date"
+                      type="date"
+                      value={formDate}
+                      onChange={(e) => setFormDate(e.target.value)}
+                      disabled={isCreating}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="manual-tx-amount"
+                      className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+                    >
+                      Belopp
+                    </label>
+                    <Input
+                      id="manual-tx-amount"
+                      type="number"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={formAmount}
+                      onChange={(e) => setFormAmount(e.target.value)}
+                      placeholder="-0.00"
+                      className="tabular-nums"
+                      disabled={isCreating}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <label
+                    htmlFor="manual-tx-description"
+                    className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+                  >
+                    Beskrivning
+                  </label>
+                  <Input
+                    id="manual-tx-description"
+                    type="text"
+                    value={formDescription}
+                    onChange={(e) => setFormDescription(e.target.value)}
+                    disabled={isCreating}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Negativt belopp för utgift, positivt för inkomst.
+                </p>
+                <Button
+                  type="button"
+                  className="w-full"
+                  onClick={handleCreateTransaction}
+                  disabled={isCreating}
+                >
+                  {isCreating ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      Skapar transaktion…
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-3.5 w-3.5 mr-2" />
+                      Skapa transaktion från underlag
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          ) : filteredTransactions.length === 0 ? (
             <p className="py-12 text-center text-sm text-muted-foreground">
-              Inga okategoriserade transaktioner hittades.
+              Inga transaktioner matchar &ldquo;{searchTerm}&rdquo;.
             </p>
           ) : (
             <ul className="divide-y">
-              {transactions.map((tx) => (
+              {filteredTransactions.map((tx) => (
                 <li key={tx.id}>
                   <button
                     type="button"
@@ -657,27 +1158,57 @@ function InboxRow({
   item,
   selected,
   onClick,
+  isChecked,
+  onToggleChecked,
+  anyChecked,
 }: {
   item: InboxItem
   selected: boolean
   onClick: () => void
+  isChecked: boolean
+  onToggleChecked: () => void
+  /** True when bulk-select mode is active anywhere in the list — keeps the
+      checkbox visible (otherwise it's hover-only on desktop). */
+  anyChecked: boolean
 }) {
   const amount = pickAmount(item)
   const supplierName = pickSupplierName(item)
   const isErrored = item.status === 'error'
   const isProcessed = !!item.created_supplier_invoice_id
+  const isLinkedToTransaction = !isProcessed && !!item.matched_transaction_id
   const isPlaceholder = !!item.isPlaceholder
 
   return (
-    <li>
+    <li
+      className={cn(
+        'group flex items-stretch border-b transition-colors',
+        selected ? 'bg-background border-l-2 border-l-primary' : 'hover:bg-background',
+        isErrored && !selected && 'bg-destructive/[0.03]'
+      )}
+    >
+      {!isPlaceholder && (
+        <div
+          className={cn(
+            'flex items-center pl-2.5 pr-1.5 transition-opacity',
+            // Always visible on touch (no hover), or when any selection is active.
+            anyChecked ? 'opacity-100' : 'md:opacity-0 md:group-hover:opacity-100 opacity-100'
+          )}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Checkbox
+            checked={isChecked}
+            onCheckedChange={onToggleChecked}
+            aria-label="Markera post"
+            className="h-3.5 w-3.5"
+          />
+        </div>
+      )}
       <button
         type="button"
         onClick={onClick}
         disabled={isPlaceholder}
         className={cn(
-          'w-full text-left px-3 py-2 border-b transition-colors flex flex-col gap-0.5',
-          selected ? 'bg-background border-l-2 border-l-primary' : 'hover:bg-background',
-          isErrored && !selected && 'bg-destructive/[0.03]',
+          'flex-1 text-left px-3 py-2 flex flex-col gap-0.5 min-w-0',
           isPlaceholder && 'cursor-default'
         )}
       >
@@ -696,6 +1227,9 @@ function InboxRow({
           </span>
           {isErrored && (
             <AlertTriangle className="h-3 w-3 text-destructive shrink-0" />
+          )}
+          {isLinkedToTransaction && (
+            <Link2 className="h-3 w-3 text-emerald-600 shrink-0" aria-label="Kopplad till transaktion" />
           )}
           {isProcessed && (
             <Check className="h-3 w-3 text-emerald-600 shrink-0" />
@@ -719,6 +1253,7 @@ function InboxRow({
 }
 
 // ── Document preview pane ────────────────────────────────────
+// (placed below the row so editors can fold the row cleanly)
 
 function DocumentPreview({
   docUrl,
@@ -768,6 +1303,193 @@ function DocumentPreview({
 }
 
 // ── Empty preview state ──────────────────────────────────────
+
+// ── Onboarding card ──────────────────────────────────────────
+
+interface OnboardingCardProps {
+  hasInboxAddress: boolean
+  hasAnyItem: boolean
+  hasResolvedItem: boolean
+  onActivateInbox: () => void
+  onUploadClick: () => void
+  onDismiss: () => void
+  isActivating: boolean
+  compact?: boolean
+}
+
+function OnboardingCard({
+  hasInboxAddress,
+  hasAnyItem,
+  hasResolvedItem,
+  onActivateInbox,
+  onUploadClick,
+  onDismiss,
+  isActivating,
+  compact = false,
+}: OnboardingCardProps) {
+  const steps = [
+    {
+      done: hasInboxAddress,
+      title: 'Aktivera din inkorgsadress',
+      hint: 'Få en unik e-postadress som leverantörer kan skicka fakturor och kvitton till.',
+    },
+    {
+      done: hasAnyItem,
+      title: 'Ladda upp eller maila in ett underlag',
+      hint: 'gnubok tolkar fakturan eller kvittot åt dig och fyller i fält automatiskt.',
+    },
+    {
+      done: hasResolvedItem,
+      title: 'Matcha mot en transaktion eller bokför',
+      hint: 'Eller skapa en manuell transaktion om underlaget saknar bankhändelse.',
+    },
+  ]
+  // First incomplete step drives the active CTA. Falls back to -1 if all done
+  // (the parent should have hidden the card by then, but guard anyway).
+  const currentStep = steps.findIndex((s) => !s.done)
+
+  return (
+    <div
+      className={cn(
+        'relative rounded-xl border bg-card shadow-sm',
+        compact ? 'mx-3 my-3 p-4 text-xs' : 'max-w-md mx-auto p-6'
+      )}
+    >
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dölj guide"
+        className="absolute top-2 right-2 h-7 w-7 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+
+      <div className={cn('space-y-1', compact ? 'pr-6' : 'pr-8')}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h2
+            className={cn(
+              'font-display font-medium tracking-tight',
+              compact ? 'text-sm' : 'text-lg'
+            )}
+          >
+            Så funkar dokumentinkorgen
+          </h2>
+          <Badge variant="secondary" className="text-[10px] uppercase tracking-wider">
+            Beta
+          </Badge>
+        </div>
+        <p className={cn('text-muted-foreground', compact ? 'text-[11px]' : 'text-xs')}>
+          Underlagen samlas här — från mail eller filuppladdning — och kan
+          matchas mot bankhändelser eller bokföras direkt.
+        </p>
+        <p className={cn('text-muted-foreground', compact ? 'text-[11px]' : 'text-xs')}>
+          Gratis under beta för Open-användare. Ingår senare i Pro-planen.{' '}
+          <a
+            href="https://www.gnubok.se/priser"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline"
+          >
+            Se priser →
+          </a>
+        </p>
+      </div>
+
+      <ol className={cn('space-y-2.5', compact ? 'mt-3' : 'mt-5')}>
+        {steps.map((step, i) => {
+          const isDone = step.done
+          const isCurrent = !isDone && i === currentStep
+          return (
+            <li
+              key={step.title}
+              className={cn('flex items-start gap-2.5', compact && 'gap-2')}
+            >
+              <span className="shrink-0 mt-0.5">
+                {isDone ? (
+                  <Check className={cn('text-emerald-600', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} />
+                ) : isCurrent ? (
+                  <span
+                    className={cn(
+                      'inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground font-medium',
+                      compact ? 'h-3.5 w-3.5 text-[9px]' : 'h-4 w-4 text-[10px]'
+                    )}
+                  >
+                    {i + 1}
+                  </span>
+                ) : (
+                  <Circle className={cn('text-muted-foreground/40', compact ? 'h-3.5 w-3.5' : 'h-4 w-4')} />
+                )}
+              </span>
+              <div className="min-w-0">
+                <p
+                  className={cn(
+                    'font-medium',
+                    isDone ? 'text-muted-foreground line-through decoration-muted-foreground/40' : 'text-foreground',
+                    compact ? 'text-xs' : 'text-sm'
+                  )}
+                >
+                  {step.title}
+                </p>
+                {!isDone && (
+                  <p
+                    className={cn(
+                      'text-muted-foreground mt-0.5',
+                      compact ? 'text-[11px]' : 'text-xs'
+                    )}
+                  >
+                    {step.hint}
+                  </p>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+
+      {/* CTA matches the current step. No CTA for step 3 — it requires the user to pick a row. */}
+      {currentStep === 0 && (
+        <Button
+          size={compact ? 'sm' : 'default'}
+          className={cn('w-full mt-4', compact && 'h-8 text-xs')}
+          onClick={onActivateInbox}
+          disabled={isActivating}
+        >
+          {isActivating ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+          ) : (
+            <Mail className="h-3.5 w-3.5 mr-1.5" />
+          )}
+          Aktivera inkorgsadress
+        </Button>
+      )}
+      {currentStep === 1 && (
+        <div className={cn('mt-4 space-y-2', compact && 'mt-3')}>
+          <Button
+            size={compact ? 'sm' : 'default'}
+            className={cn('w-full', compact && 'h-8 text-xs')}
+            onClick={onUploadClick}
+          >
+            <Upload className="h-3.5 w-3.5 mr-1.5" />
+            Ladda upp en fil
+          </Button>
+          <p className={cn('text-center text-muted-foreground', compact ? 'text-[10px]' : 'text-[11px]')}>
+            …eller maila underlagen till din inkorgsadress.
+          </p>
+        </div>
+      )}
+      {currentStep === 2 && (
+        <p
+          className={cn(
+            'mt-4 text-center italic text-muted-foreground',
+            compact ? 'text-[11px]' : 'text-xs'
+          )}
+        >
+          Välj en post i listan för att matcha eller bokföra.
+        </p>
+      )}
+    </div>
+  )
+}
 
 function EmptyPreview({
   onUploadClick,
@@ -819,15 +1541,118 @@ function FieldsRail({
   onAttach,
   isDeleting,
   onFieldsUpdated,
+  onRetryRequested,
 }: {
   item: InboxItem
   onDelete: () => void
   onAttach: () => void
   isDeleting: boolean
   onFieldsUpdated: (data: InvoiceExtractionResult) => void
+  onRetryRequested: () => Promise<void>
 }) {
+  const { toast } = useToast()
   const data = item.extracted_data
   const isProcessed = !!item.created_supplier_invoice_id
+  const isLinkedToTransaction = !isProcessed && !!item.matched_transaction_id
+  const isResolved = isProcessed || isLinkedToTransaction
+  const [isRetrying, setIsRetrying] = useState(false)
+  const [isCreatingSupplier, setIsCreatingSupplier] = useState(false)
+
+  // "Skapa leverantör" — surface when extraction caught a supplier name
+  // but no existing supplier matched. Frees the user from navigating to
+  // /suppliers/new manually for the very common "first invoice from this
+  // vendor" case.
+  const extractedSupplierName = data?.supplier?.name?.trim() || null
+  const showCreateSupplierCta =
+    !isResolved &&
+    !item.matched_supplier_id &&
+    !!extractedSupplierName
+
+  const handleCreateSupplier = async () => {
+    if (!extractedSupplierName) return
+    setIsCreatingSupplier(true)
+    try {
+      // Heuristic supplier_type: any extracted VAT number starting with "SE"
+      // (or a 10-digit org_number) → Swedish; otherwise default to
+      // non_eu_business. The user can correct on the supplier detail page.
+      const vat = data?.supplier?.vatNumber?.trim() || ''
+      const org = data?.supplier?.orgNumber?.trim() || ''
+      const supplierType =
+        vat.toUpperCase().startsWith('SE') || /^\d{6}-?\d{4}$/.test(org)
+          ? 'swedish_business'
+          : 'non_eu_business'
+
+      const createRes = await fetch('/api/suppliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: extractedSupplierName,
+          supplier_type: supplierType,
+          org_number: org || undefined,
+          vat_number: vat || undefined,
+          address_line1: data?.supplier?.address || undefined,
+          bankgiro: data?.supplier?.bankgiro || undefined,
+          plusgiro: data?.supplier?.plusgiro || undefined,
+        }),
+      })
+      const createJson = await createRes.json().catch(() => ({}))
+      if (!createRes.ok || !createJson?.data?.id) {
+        toast({
+          title: 'Kunde inte skapa leverantör',
+          description: createJson?.error || 'Försök igen.',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      // Link the new supplier back to the inbox item so the next action
+      // (Skapa leverantörsfaktura) prefills correctly.
+      const matchRes = await fetch(
+        `/api/extensions/ext/invoice-inbox/items/${item.id}/match-supplier`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ supplier_id: createJson.data.id }),
+        },
+      )
+      if (!matchRes.ok) {
+        const matchErr = await matchRes.json().catch(() => ({}))
+        toast({
+          title: 'Leverantör skapad, men inte kopplad',
+          description: matchErr?.error || 'Välj leverantören manuellt på leverantörsfakturan.',
+          variant: 'destructive',
+        })
+      } else {
+        toast({ title: 'Leverantör skapad', description: extractedSupplierName })
+      }
+      await onRetryRequested()
+    } finally {
+      setIsCreatingSupplier(false)
+    }
+  }
+
+  const handleRetry = async () => {
+    setIsRetrying(true)
+    try {
+      const res = await fetch(
+        `/api/extensions/ext/invoice-inbox/items/${item.id}/retry-extraction`,
+        { method: 'POST' },
+      )
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast({
+          title: 'Tolkning misslyckades',
+          description: json.error || 'Försök igen om en stund.',
+          variant: 'destructive',
+        })
+        return
+      }
+      toast({ title: 'Tolkning lyckades' })
+      await onRetryRequested()
+    } finally {
+      setIsRetrying(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -856,12 +1681,53 @@ function FieldsRail({
       )}
 
       {item.error_message && (
-        <div className="border-b border-destructive/30 bg-destructive/5 px-4 py-3 text-xs flex items-start gap-2">
-          <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0 mt-0.5" />
-          <div>
-            <p className="font-medium">Fel vid bearbetning</p>
-            <p className="text-muted-foreground mt-0.5">{item.error_message}</p>
+        <div className="border-b border-destructive/30 bg-destructive/5 px-4 py-3 text-xs space-y-2">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium">Fel vid bearbetning</p>
+              <p className="text-muted-foreground mt-0.5">{item.error_message}</p>
+            </div>
           </div>
+          {item.document_id && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full h-7 text-xs"
+              onClick={handleRetry}
+              disabled={isRetrying}
+            >
+              {isRetrying ? (
+                <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3 w-3 mr-1.5" />
+              )}
+              Försök igen
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Skapa leverantör hint — only when no existing supplier matched */}
+      {showCreateSupplierCta && (
+        <div className="border-b bg-primary/5 px-4 py-2.5 text-xs flex items-center justify-between gap-2">
+          <span className="text-muted-foreground">
+            Ingen leverantör matchade <span className="text-foreground font-medium">{extractedSupplierName}</span>
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs shrink-0"
+            onClick={handleCreateSupplier}
+            disabled={isCreatingSupplier}
+          >
+            {isCreatingSupplier ? (
+              <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+            ) : (
+              <Plus className="h-3 w-3 mr-1.5" />
+            )}
+            Skapa leverantör
+          </Button>
         </div>
       )}
 
@@ -884,7 +1750,7 @@ function FieldsRail({
           <EditableFieldsList
             itemId={item.id}
             data={data ?? emptyExtraction()}
-            disabled={isProcessed}
+            disabled={isResolved}
             onUpdated={onFieldsUpdated}
           />
         )}
@@ -898,6 +1764,13 @@ function FieldsRail({
             <Button variant="default" size="sm" className="w-full">
               <ArrowRight className="h-3.5 w-3.5 mr-1.5" />
               Öppna leverantörsfaktura
+            </Button>
+          </Link>
+        ) : isLinkedToTransaction && item.matched_transaction_id ? (
+          <Link href={`/transactions?highlight=${item.matched_transaction_id}`} className="block">
+            <Button variant="default" size="sm" className="w-full">
+              <ArrowRight className="h-3.5 w-3.5 mr-1.5" />
+              Bokför transaktionen
             </Button>
           </Link>
         ) : (
@@ -925,8 +1798,14 @@ function FieldsRail({
           size="sm"
           className="w-full"
           onClick={onDelete}
-          disabled={isDeleting || isProcessed}
-          title={isProcessed ? 'Kopplad till leverantörsfaktura — kan inte tas bort' : undefined}
+          disabled={isDeleting || isResolved}
+          title={
+            isProcessed
+              ? 'Kopplad till leverantörsfaktura — kan inte tas bort'
+              : isLinkedToTransaction
+                ? 'Kopplad till transaktion — koppla loss innan borttagning'
+                : undefined
+          }
         >
           {isDeleting ? (
             <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
@@ -939,6 +1818,12 @@ function FieldsRail({
           <Badge variant="secondary" className="w-full justify-center text-[10px]">
             <Check className="h-2.5 w-2.5 mr-1" />
             Bearbetad
+          </Badge>
+        )}
+        {isLinkedToTransaction && (
+          <Badge variant="secondary" className="w-full justify-center text-[10px]">
+            <Link2 className="h-2.5 w-2.5 mr-1" />
+            Kopplad till transaktion
           </Badge>
         )}
       </div>

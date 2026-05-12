@@ -273,6 +273,7 @@ export async function POST(request: Request) {
 | `bankgiro/` | Luhn checksum validation |
 | `calendar/` | ICS generator, calendar utilities |
 | `errors/` | Swedish error message mapping (Zod → Postgres → HTTP → fallback) |
+| `rate-limits/` | Per-company Postgres-backed rate limiter (`checkInboxUploadRateLimit`) — used by inbox upload + email-inbound + retry-extraction. Calls `check_and_increment_inbox_quota` RPC; fails open on infra error. |
 | `hooks/` | React hooks (e.g., `use-unsaved-changes`, `use-can-write`) |
 | `logger.ts` | Structured logger with module prefixes, env-aware filtering |
 | `support.ts` | Server-side support recipient email (used by `/api/support/contact`) |

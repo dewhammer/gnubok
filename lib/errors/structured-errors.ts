@@ -365,6 +365,13 @@ const MATCH_SI: Record<string, StructuredErrorEntry> = {
     message_sv: 'Kunde inte koppla transaktionen till leverantörsfakturan.',
     message_en: 'Failed to link transaction to supplier invoice.',
   },
+  MATCH_SI_CASH_FX_UNSUPPORTED: {
+    httpStatus: 400,
+    message_sv:
+      'Kontantmetoden stödjer inte valutakursdifferenser. Byt till löpande bokföring eller bokför valutakursdifferensen manuellt.',
+    message_en:
+      'Cash accounting does not support exchange-rate differences. Switch to accrual or book the FX difference manually.',
+  },
 }
 
 const INVOICE: Record<string, StructuredErrorEntry> = {

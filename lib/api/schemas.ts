@@ -340,6 +340,13 @@ export const MatchInvoiceSchema = z.object({
   invoice_id: uuid,
 })
 
+export const CreateTransactionFromDocumentSchema = z.object({
+  inbox_item_id: uuid,
+  amount: z.number().refine((n) => n !== 0, 'Amount must be non-zero'),
+  transaction_date: isoDate,
+  description: z.string().min(1).max(500),
+})
+
 export const MatchSupplierInvoiceSchema = z.object({
   supplier_invoice_id: uuid,
 })

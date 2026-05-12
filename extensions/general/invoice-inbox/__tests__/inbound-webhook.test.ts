@@ -19,6 +19,12 @@ vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(),
 }))
 
+// Rate limiter is a thin RPC wrapper; bypass it so the queued-mock sequence
+// in each test doesn't have to account for the extra Supabase call.
+vi.mock('@/lib/rate-limits/inbox', () => ({
+  checkInboxUploadRateLimit: vi.fn().mockResolvedValue({ ok: true }),
+}))
+
 import { verifyInboundWebhook, fetchReceivingEmail, fetchInboundAttachment } from '@/extensions/general/invoice-inbox/lib/resend-inbound'
 import { createClient } from '@supabase/supabase-js'
 

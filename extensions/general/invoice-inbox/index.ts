@@ -20,9 +20,11 @@ import {
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { CreateSupplierInvoiceSchema } from '@/lib/api/schemas'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
+import { checkInboxUploadRateLimit } from '@/lib/rate-limits/inbox'
 import type { InvoiceExtractionResult, InvoiceInboxItem, SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
+const MAX_ATTACHMENTS_PER_EMAIL = 20
 
 // Partial-update schema for the /items/:id/fields PATCH route. Only the
 // scalar fields the UI exposes for inline editing — line items and
@@ -250,6 +252,23 @@ export const invoiceInboxExtension: Extension = {
       path: '/upload',
       handler: async (request: Request, ctx?: ExtensionContext) => {
         if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+        // Per-company rate limit (30/min, 500/day). Defense against script
+        // floods and compromised sessions; never hit by real users in normal
+        // monthly receipt-clearing.
+        const limit = await checkInboxUploadRateLimit(ctx.supabase, ctx.companyId)
+        if (!limit.ok) {
+          return NextResponse.json(
+            {
+              error:
+                limit.scope === 'minute'
+                  ? 'För många uppladdningar på kort tid. Försök igen om en stund.'
+                  : 'Dagsgränsen för uppladdningar är nådd. Försök igen imorgon.',
+              retry_after: limit.retryAfterSec,
+            },
+            { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec ?? 60) } },
+          )
+        }
 
         const formData = await request.formData()
         const file = formData.get('file') as File | null
@@ -547,6 +566,179 @@ export const invoiceInboxExtension: Extension = {
       },
     },
 
+    // ── Match a supplier to an inbox item ───────────────────
+    {
+      method: 'POST',
+      path: '/items/:id/match-supplier',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+        const url = new URL(request.url)
+        const id = url.searchParams.get('_id')
+        if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+
+        let body: { supplier_id?: string }
+        try {
+          body = await request.json()
+        } catch {
+          return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+        }
+        if (!body.supplier_id || typeof body.supplier_id !== 'string') {
+          return NextResponse.json({ error: 'supplier_id required' }, { status: 400 })
+        }
+
+        // Confirm supplier exists in this company before linking.
+        const { data: supplier } = await ctx.supabase
+          .from('suppliers')
+          .select('id')
+          .eq('id', body.supplier_id)
+          .eq('company_id', ctx.companyId)
+          .maybeSingle()
+        if (!supplier) {
+          return NextResponse.json({ error: 'Supplier not found' }, { status: 404 })
+        }
+
+        const { error: updateError } = await ctx.supabase
+          .from('invoice_inbox_items')
+          .update({ matched_supplier_id: body.supplier_id })
+          .eq('id', id)
+          .eq('company_id', ctx.companyId)
+
+        if (updateError) {
+          return NextResponse.json({ error: updateError.message }, { status: 500 })
+        }
+        return NextResponse.json({ data: { id, matched_supplier_id: body.supplier_id } })
+      },
+    },
+
+    // ── Retry extraction on a stored document ──────────────
+    {
+      method: 'POST',
+      path: '/items/:id/retry-extraction',
+      handler: async (request: Request, ctx?: ExtensionContext) => {
+        if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+        // Retry runs pdfjs extraction synchronously and is CPU-heavy; counts
+        // against the same per-company quota as a fresh upload so an
+        // attacker can't burn server CPU by repeatedly re-extracting one doc.
+        const limit = await checkInboxUploadRateLimit(ctx.supabase, ctx.companyId)
+        if (!limit.ok) {
+          return NextResponse.json(
+            {
+              error:
+                limit.scope === 'minute'
+                  ? 'För många tolkningsförsök på kort tid. Försök igen om en stund.'
+                  : 'Dagsgränsen för tolkningar är nådd. Försök igen imorgon.',
+              retry_after: limit.retryAfterSec,
+            },
+            { status: 429, headers: { 'Retry-After': String(limit.retryAfterSec ?? 60) } },
+          )
+        }
+
+        const url = new URL(request.url)
+        const id = url.searchParams.get('_id')
+        if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
+
+        const { data: item } = await ctx.supabase
+          .from('invoice_inbox_items')
+          .select('id, document_id, correlation_id, created_supplier_invoice_id')
+          .eq('id', id)
+          .eq('company_id', ctx.companyId)
+          .maybeSingle()
+
+        if (!item) return NextResponse.json({ error: 'Inbox item not found' }, { status: 404 })
+        if (item.created_supplier_invoice_id) {
+          return NextResponse.json(
+            { error: 'Redan bokfört — kan inte köra om tolkningen.' },
+            { status: 409 },
+          )
+        }
+        if (!item.document_id) {
+          return NextResponse.json(
+            { error: 'Ingen bilaga att tolka om.' },
+            { status: 400 },
+          )
+        }
+
+        const { data: doc } = await ctx.supabase
+          .from('document_attachments')
+          .select('storage_path, mime_type, file_name')
+          .eq('id', item.document_id)
+          .eq('company_id', ctx.companyId)
+          .maybeSingle()
+
+        if (!doc) {
+          return NextResponse.json({ error: 'Bilagan kunde inte hittas.' }, { status: 404 })
+        }
+
+        const { data: blob, error: dlError } = await ctx.supabase.storage
+          .from('documents')
+          .download(doc.storage_path)
+
+        if (dlError || !blob) {
+          console.error('[invoice-inbox/retry-extraction] download failed:', dlError)
+          return NextResponse.json(
+            { error: 'Kunde inte ladda ner bilagan.' },
+            { status: 500 },
+          )
+        }
+
+        try {
+          const buffer = Buffer.from(await blob.arrayBuffer())
+          const { data: extracted } = await extractInvoiceFields({
+            buffer,
+            mimeType: doc.mime_type,
+            fileName: doc.file_name,
+          })
+
+          const { error: updateError } = await ctx.supabase
+            .from('invoice_inbox_items')
+            .update({
+              status: 'received',
+              error_message: null,
+              extracted_data: extracted as unknown as Record<string, unknown>,
+            })
+            .eq('id', id)
+            .eq('company_id', ctx.companyId)
+
+          if (updateError) {
+            return NextResponse.json({ error: updateError.message }, { status: 500 })
+          }
+
+          if (item.correlation_id) {
+            try {
+              await appendProcessingHistory({
+                companyId: ctx.companyId,
+                correlationId: item.correlation_id,
+                aggregateType: 'Document',
+                aggregateId: item.document_id,
+                eventType: 'DocumentExtractionRetried',
+                payload: {
+                  inbox_item_id: id,
+                  document_id: item.document_id,
+                },
+                actor: { type: 'user', id: ctx.userId },
+                occurredAt: new Date(),
+              })
+            } catch (logErr) {
+              console.error('[invoice-inbox/retry-extraction] history append failed:', logErr)
+            }
+          }
+
+          return NextResponse.json({ data: { extracted_data: extracted } })
+        } catch (error) {
+          console.error('[invoice-inbox/retry-extraction] extraction failed:', error)
+          const message = error instanceof Error ? error.message : 'Tolkning misslyckades'
+          await ctx.supabase
+            .from('invoice_inbox_items')
+            .update({ status: 'error', error_message: message })
+            .eq('id', id)
+            .eq('company_id', ctx.companyId)
+          return NextResponse.json({ error: message }, { status: 500 })
+        }
+      },
+    },
+
     // ── Get this company's inbox address ────────────────────
     {
       method: 'GET',
@@ -692,7 +884,64 @@ export const invoiceInboxExtension: Extension = {
         }
 
         const bodyText = fullEmail.text ?? null
-        const attachments = fullEmail.attachments ?? []
+        const rawAttachments = fullEmail.attachments ?? []
+
+        // Per-company rate limit (30/min, 500/day). Same Postgres-backed
+        // RPC as /upload. Acknowledge + drop on cap — returning 429 to
+        // Resend would just consume more budget via their retry.
+        const limit = await checkInboxUploadRateLimit(serviceSupabase, inbox.company_id)
+        if (!limit.ok) {
+          try {
+            await appendProcessingHistory({
+              companyId: inbox.company_id,
+              correlationId: email_id,
+              aggregateType: 'System',
+              aggregateId: email_id,
+              eventType: 'RateLimitedDropped',
+              payload: {
+                scope: limit.scope,
+                retry_after_sec: limit.retryAfterSec,
+                attachment_count: rawAttachments.length,
+                from,
+                subject,
+              },
+              actor: { type: 'system', id: 'resend-inbound' },
+              occurredAt: new Date(),
+            })
+          } catch (err) {
+            console.error('[invoice-inbox/inbound] RateLimitedDropped append failed:', err)
+          }
+          return NextResponse.json({ data: { processed: 0, reason: 'rate_limited' } })
+        }
+
+        // Per-email attachment cap. 20 covers any legitimate batched
+        // supplier email; an attacker stuffing 500 PDFs into one message
+        // gets truncated and a single history event records the drop.
+        const totalAttachments = rawAttachments.length
+        const attachments = rawAttachments.slice(0, MAX_ATTACHMENTS_PER_EMAIL)
+        const truncatedCount = totalAttachments - attachments.length
+        if (truncatedCount > 0) {
+          try {
+            await appendProcessingHistory({
+              companyId: inbox.company_id,
+              correlationId: email_id,
+              aggregateType: 'System',
+              aggregateId: email_id,
+              eventType: 'AttachmentsTruncated',
+              payload: {
+                total: totalAttachments,
+                processed: attachments.length,
+                dropped: truncatedCount,
+                from,
+                subject,
+              },
+              actor: { type: 'system', id: 'resend-inbound' },
+              occurredAt: new Date(),
+            })
+          } catch (err) {
+            console.error('[invoice-inbox/inbound] AttachmentsTruncated append failed:', err)
+          }
+        }
 
         if (attachments.length === 0) {
           await serviceSupabase.from('invoice_inbox_items').insert({

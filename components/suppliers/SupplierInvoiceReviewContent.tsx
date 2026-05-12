@@ -52,15 +52,21 @@ function buildJournalPreview(
   totalVat: number,
   total: number,
   reverseCharge: boolean,
-  supplierType?: string,
+  supplierType: string | undefined,
+  // FX multiplier applied to every amount. 1 when the invoice is in SEK or
+  // when no rate is set. Matches what the backend writes — items go through
+  // resolveSekAmount(item.line_total, null, currency, exchange_rate), so the
+  // saved verifikation is always in SEK, never in invoice currency.
+  fxRate: number,
 ): JournalPreviewLine[] {
   const lines: JournalPreviewLine[] = []
+  const toSek = (n: number) => Math.round(n * fxRate * 100) / 100
 
-  // Aggregate expense amounts by account number
+  // Aggregate expense amounts by account number (in SEK)
   const expenseByAccount = new Map<string, number>()
   for (const item of items) {
     const current = expenseByAccount.get(item.account_number) || 0
-    expenseByAccount.set(item.account_number, current + Math.round(item.amount * 100) / 100)
+    expenseByAccount.set(item.account_number, current + toSek(item.amount))
   }
 
   // Debit: Expense accounts
@@ -68,7 +74,7 @@ function buildJournalPreview(
     lines.push({
       account_number: accountNumber,
       description: accountNumber,
-      debit: Math.round(amount * 100) / 100,
+      debit: amount,
       credit: 0,
     })
   }
@@ -82,7 +88,7 @@ function buildJournalPreview(
     for (const item of items) {
       if (item.vat_rate > 0) {
         const current = vatByRate.get(item.vat_rate) || 0
-        vatByRate.set(item.vat_rate, current + Math.round(item.amount * 100) / 100)
+        vatByRate.set(item.vat_rate, current + toSek(item.amount))
       }
     }
 
@@ -108,14 +114,14 @@ function buildJournalPreview(
       account_number: '2440',
       description: 'Leverantörsskulder',
       debit: 0,
-      credit: Math.round(subtotal * 100) / 100,
+      credit: toSek(subtotal),
     })
   } else {
     if (totalVat > 0) {
       lines.push({
         account_number: '2641',
         description: 'Ingående moms',
-        debit: Math.round(totalVat * 100) / 100,
+        debit: toSek(totalVat),
         credit: 0,
       })
     }
@@ -124,7 +130,7 @@ function buildJournalPreview(
       account_number: '2440',
       description: 'Leverantörsskulder',
       debit: 0,
-      credit: Math.round(total * 100) / 100,
+      credit: toSek(total),
     })
   }
 
@@ -156,9 +162,12 @@ export function SupplierInvoiceReviewContent({
   totalVat,
   total,
 }: SupplierInvoiceReviewContentProps) {
-  const journalLines = buildJournalPreview(items, subtotal, totalVat, total, reverseCharge, supplier.supplier_type)
+  const parsedRate = exchangeRate ? parseFloat(exchangeRate) : NaN
+  const fxRate = currency !== 'SEK' && Number.isFinite(parsedRate) && parsedRate > 0 ? parsedRate : 1
+  const journalLines = buildJournalPreview(items, subtotal, totalVat, total, reverseCharge, supplier.supplier_type, fxRate)
   const totalDebit = journalLines.reduce((sum, l) => sum + l.debit, 0)
   const totalCredit = journalLines.reduce((sum, l) => sum + l.credit, 0)
+  const showingSek = fxRate !== 1
 
   return (
     <div className="space-y-4">
@@ -274,7 +283,12 @@ export function SupplierInvoiceReviewContent({
 
       {/* Verifikation preview */}
       <div className="bg-muted/50 border rounded-lg p-3 sm:p-4 space-y-2">
-        <p className="text-sm font-semibold text-muted-foreground">Verifikation som bokförs</p>
+        <p className="text-sm font-semibold text-muted-foreground">
+          Verifikation som bokförs
+          {showingSek && (
+            <span className="ml-1.5 font-normal text-xs">(i SEK)</span>
+          )}
+        </p>
         <div className="hidden sm:block">
           <table className="w-full text-sm font-mono">
             <thead className="[&_th]:font-medium [&_th]:text-[11px] [&_th]:uppercase [&_th]:tracking-wider [&_th]:text-muted-foreground">

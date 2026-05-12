@@ -58,7 +58,13 @@ export default function BankTransactionPicker({
 
     ;(async () => {
       setIsLoading(true)
-      const query = supabase
+      // No strict currency filter — the bank transaction that pays a
+      // foreign-currency invoice is almost always in the company's domestic
+      // currency (e.g. SEK bank account paying a USD invoice). The user
+      // would see "no matches" if we filtered to the invoice currency.
+      // Cross-currency amount diff is hidden in the row below so the user
+      // isn't shown a misleading "Diff X kr" against a USD target.
+      const { data, error } = await supabase
         .from('transactions')
         .select('id, date, description, amount, currency')
         .eq('company_id', company.id)
@@ -69,10 +75,6 @@ export default function BankTransactionPicker({
         .order('date', { ascending: false })
         .limit(200)
 
-      const { data, error } = targetCurrency
-        ? await query.eq('currency', targetCurrency)
-        : await query
-
       if (!cancelled) {
         if (!error) setTransactions(data || [])
         setIsLoading(false)
@@ -82,20 +84,26 @@ export default function BankTransactionPicker({
     return () => {
       cancelled = true
     }
-  }, [open, company, targetCurrency])
+  }, [open, company])
 
   const filtered = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
     const matches = transactions.filter((t) =>
       term === '' ? true : (t.description || '').toLowerCase().includes(term),
     )
-    // Rank by closeness to target (treat target as the absolute outflow)
+    // Rank by amount proximity only when currencies match — comparing a USD
+    // target to a SEK transaction numerically would produce a meaningless
+    // ranking. Cross-currency rows fall back to date-desc order.
     return matches.sort((a, b) => {
+      const aSame = a.currency === targetCurrency
+      const bSame = b.currency === targetCurrency
+      if (aSame !== bSame) return aSame ? -1 : 1
+      if (!aSame) return 0
       const da = Math.abs(Math.abs(a.amount) - targetAmount)
       const db = Math.abs(Math.abs(b.amount) - targetAmount)
       return da - db
     })
-  }, [transactions, searchTerm, targetAmount])
+  }, [transactions, searchTerm, targetAmount, targetCurrency])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -133,9 +141,10 @@ export default function BankTransactionPicker({
             </div>
           ) : (
             filtered.map((tx) => {
+              const sameCurrency = tx.currency === targetCurrency
               const absAmount = Math.abs(tx.amount)
-              const diff = Math.abs(absAmount - targetAmount)
-              const isExact = diff < 0.01
+              const diff = sameCurrency ? Math.abs(absAmount - targetAmount) : null
+              const isExact = diff != null && diff < 0.01
               return (
                 <button
                   key={tx.id}
@@ -154,9 +163,13 @@ export default function BankTransactionPicker({
                       </p>
                       {isExact ? (
                         <p className="text-xs text-success">Belopp matchar</p>
-                      ) : targetAmount > 0 ? (
+                      ) : diff != null && targetAmount > 0 ? (
                         <p className="text-xs text-muted-foreground">
                           Diff {formatCurrency(diff, tx.currency)}
+                        </p>
+                      ) : !sameCurrency ? (
+                        <p className="text-xs text-muted-foreground">
+                          Annan valuta
                         </p>
                       ) : null}
                     </div>

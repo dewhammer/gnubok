@@ -6,6 +6,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import { KPIHeroCards } from '@/components/kpi/KPIHeroCards'
 import { KPITrendChart } from '@/components/kpi/KPITrendChart'
+import { KPIExpenseMixChart } from '@/components/kpi/KPIExpenseMixChart'
+import { KPITopSuppliersChart } from '@/components/kpi/KPITopSuppliersChart'
 import { KPISettingsDialog } from '@/components/kpi/KPISettingsDialog'
 import { getDefaultPreferences } from '@/lib/reports/kpi-definitions'
 import type { KPIReport, KPIPreferences } from '@/types'
@@ -107,6 +109,10 @@ export default function KpiPage() {
         <>
           <KPIHeroCards report={report} preferences={preferences} />
           {report.months.length > 0 && <KPITrendChart months={report.months} />}
+          <div className="grid gap-4 md:grid-cols-2">
+            <KPIExpenseMixChart composition={report.expenseComposition} />
+            <KPITopSuppliersChart suppliers={report.topSuppliers} />
+          </div>
         </>
       )}
     </div>
@@ -133,6 +139,16 @@ function LoadingSkeleton() {
           <Skeleton className="h-56" />
         </CardContent>
       </Card>
+      <div className="grid gap-4 md:grid-cols-2">
+        {[1, 2].map((i) => (
+          <Card key={i}>
+            <CardContent className="p-6 space-y-3">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-40" />
+            </CardContent>
+          </Card>
+        ))}
+      </div>
     </div>
   )
 }
