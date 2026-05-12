@@ -37,6 +37,7 @@ function RegisterPageContent() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isRegistered, setIsRegistered] = useState(false)
+  const [duplicateEmail, setDuplicateEmail] = useState<string | null>(null)
   const [inviteEmail, setInviteEmail] = useState<string | null>(null)
   const [bankIdUser, setBankIdUser] = useState<{ givenName?: string; surname?: string } | null>(null)
   const [bankIdSessionId, setBankIdSessionId] = useState<string | null>(null)
@@ -277,6 +278,15 @@ function RegisterPageContent() {
         return
       }
 
+      // Supabase obfuscates duplicate signups (to prevent user enumeration):
+      // when the email already belongs to a confirmed account, it returns
+      // data.user with identities: [] and no error, and sends no email.
+      // Detect that case so we don't show a misleading "check your email" screen.
+      if (data.user && (data.user.identities?.length ?? 0) === 0) {
+        setDuplicateEmail(emailValue)
+        return
+      }
+
       setEmail(emailValue)
       setIsRegistered(true)
     } catch (error) {
@@ -295,6 +305,50 @@ function RegisterPageContent() {
     } finally {
       setIsLoading(false)
     }
+  }
+
+  if (duplicateEmail) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-background to-primary/[0.03] p-4">
+        <div className="w-full max-w-sm animate-slide-up space-y-8">
+          <div className="flex justify-center">
+            <div className="h-14 w-14 rounded-2xl bg-primary/8 flex items-center justify-center">
+              <Mail className="h-7 w-7 text-primary" />
+            </div>
+          </div>
+
+          <div className="text-center space-y-2">
+            <h1 className="text-2xl font-medium tracking-tight">Kontot finns redan</h1>
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              Det finns redan ett konto kopplat till{' '}
+              <span className="font-medium text-foreground">{duplicateEmail}</span>.
+            </p>
+          </div>
+
+          <div className="rounded-xl border bg-card p-4">
+            <p className="text-sm text-muted-foreground text-center leading-relaxed">
+              Logga in med din e-post och lösenord. Om du har glömt lösenordet kan du återställa det via &quot;Glömt lösenord?&quot; på inloggningssidan.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Button className="w-full" asChild>
+              <Link href={`/login?email=${encodeURIComponent(duplicateEmail)}`}>
+                Logga in
+              </Link>
+            </Button>
+            <Button
+              variant="ghost"
+              className="w-full text-muted-foreground"
+              onClick={() => setDuplicateEmail(null)}
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Tillbaka
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   if (isRegistered) {

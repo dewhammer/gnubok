@@ -19,6 +19,14 @@ export const API_KEY_SCOPES = {
   'bookkeeping:write':  { label: 'Bokföring — skriv',    description: 'Stänga/låsa perioder, ingående balans, bokslut, SIE-import, voucher-gap-förklaringar' },
   'payroll:read':       { label: 'Löner — läs',          description: 'Lista anställda, lönekörningar, lönejournal (3 verktyg)' },
   'payroll:write':      { label: 'Löner — skriv',        description: 'Skapa lönekörning, beräkna, generera AGI (3 verktyg)' },
+  // v1 REST API — added Phase 1
+  'companies:read':     { label: 'Företag — läs',        description: 'Lista och visa företagsprofiler som API-nyckeln har tillgång till' },
+  'events:read':        { label: 'Händelser — läs',      description: 'Polla händelseloggen (event_log) som webhook-fallback' },
+  'webhooks:manage':    { label: 'Webhooks — hantera',   description: 'Skapa, lista, uppdatera och radera webhook-prenumerationer' },
+  'operations:read':    { label: 'Operationer — läs',    description: 'Hämta status för långkörande operationer (importer, bokslut, omvärdering)' },
+  'documents:read':     { label: 'Dokument — läs',       description: 'Lista och hämta dokumentbilagor' },
+  'documents:write':    { label: 'Dokument — skriv',     description: 'Ladda upp och koppla dokument till verifikationer' },
+  'compliance:read':    { label: 'Compliance — läs',     description: 'Pre-flight-kontroller: momsstängning, bokslutsberedskap, voucher-gap, IB/UB-kontinuitet' },
 } as const
 
 export type ApiKeyScope = keyof typeof API_KEY_SCOPES
@@ -189,6 +197,13 @@ export function extractBearerToken(request: Request): string | null {
  * They may be undefined when the deployed DB hasn't yet run the migration
  * that adds them to the RPC return shape.
  */
+/**
+ * Operating mode of the API key. 'live' keys see real company data; 'test' keys
+ * are bound to deterministic sandbox companies. Keys created before the Phase 1
+ * migration default to 'live' for backwards compatibility.
+ */
+export type ApiKeyMode = 'live' | 'test'
+
 export async function validateApiKey(
   key: string
 ): Promise<
@@ -198,6 +213,7 @@ export async function validateApiKey(
       apiKeyId?: string
       apiKeyName?: string
       scopes: ApiKeyScope[]
+      mode: ApiKeyMode
     }
   | { error: string; status: number }
 > {
@@ -235,6 +251,10 @@ export async function validateApiKey(
     apiKeyId: row.api_key_id,
     apiKeyName: row.api_key_name,
     scopes: validateScopes(row.scopes) ?? DEFAULT_SCOPES,
+    // `mode` may be undefined when the deployed DB hasn't yet run the Phase 1
+    // migration that adds it to the RPC return. Default to 'live' so existing
+    // keys behave unchanged.
+    mode: (row.mode === 'test' ? 'test' : 'live') as ApiKeyMode,
   }
 }
 

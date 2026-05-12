@@ -218,7 +218,10 @@ describe('validateApiKey', () => {
     expect(result).toEqual({
       userId: 'user-123',
       companyId: 'company-456',
+      apiKeyId: undefined,
+      apiKeyName: undefined,
       scopes: ['transactions:read', 'reports:read'],
+      mode: 'live',
     })
   })
 
@@ -237,7 +240,35 @@ describe('validateApiKey', () => {
     expect(result).toEqual({
       userId: 'user-123',
       companyId: 'company-456',
+      apiKeyId: undefined,
+      apiKeyName: undefined,
       scopes: DEFAULT_SCOPES,
+      mode: 'live',
+    })
+  })
+
+  it('surfaces mode from the RPC row', async () => {
+    setupMockRpc({
+      data: [{
+        user_id: 'user-123',
+        company_id: 'company-456',
+        api_key_id: 'ak_1',
+        api_key_name: 'CI test key',
+        scopes: ['transactions:read'],
+        rate_limited: false,
+        mode: 'test',
+      }],
+      error: null,
+    })
+
+    const result = await validateApiKey('gnubok_sk_test-key-value')
+    expect(result).toEqual({
+      userId: 'user-123',
+      companyId: 'company-456',
+      apiKeyId: 'ak_1',
+      apiKeyName: 'CI test key',
+      scopes: ['transactions:read'],
+      mode: 'test',
     })
   })
 })

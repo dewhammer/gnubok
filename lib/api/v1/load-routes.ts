@@ -1,0 +1,18 @@
+/**
+ * Side-effect import that ensures every v1 route module's top-level
+ * `registerEndpoint()` call has been executed before the OpenAPI generator
+ * reads the registry.
+ *
+ * Why this exists: route files register themselves at module load time. The
+ * OpenAPI endpoint runs in its own module which would otherwise not pull in
+ * the other route files. Importing them here as side-effects populates the
+ * shared `ENDPOINTS` map.
+ *
+ * When a new v1 route is added, append a `import '...'` line.
+ */
+
+// Phase 1 surface.
+import '@/app/api/v1/health/route'
+import '@/app/api/v1/companies/route'
+
+export {}
