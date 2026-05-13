@@ -87,6 +87,29 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'POST /api/v1/companies/:companyId/supplier-invoices/:id/mark-paid': 'suppliers:write',
   'POST /api/v1/companies/:companyId/supplier-invoices/:id/credit': 'suppliers:write',
 
+  // Phase 4 PR-2 — Engine, periods async ops, documents, compliance-check.
+  // Journal-entries primitives (highest-risk surface).
+  'GET /api/v1/companies/:companyId/journal-entries': 'reports:read',
+  'GET /api/v1/companies/:companyId/journal-entries/:id': 'reports:read',
+  'POST /api/v1/companies/:companyId/journal-entries': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/journal-entries/:id/commit': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/journal-entries/:id/reverse': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/journal-entries/:id/correct': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/journal-entries/batch-create': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/voucher-gap-explanations': 'bookkeeping:write',
+  // Fiscal-periods async ops.
+  'POST /api/v1/companies/:companyId/fiscal-periods/:id/lock': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/fiscal-periods/:id/close': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/fiscal-periods/:id/year-end': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/fiscal-periods/:id/opening-balances': 'bookkeeping:write',
+  'POST /api/v1/companies/:companyId/fiscal-periods/:id/currency-revaluation': 'bookkeeping:write',
+  // Compliance check (gnubok's defensible edge).
+  'GET /api/v1/companies/:companyId/compliance/check': 'compliance:read',
+  // Note: documents (multipart) scopes are intentionally NOT pre-registered
+  // here — they ship in the dedicated documents follow-up PR so an API key
+  // issued today with documents:write cannot match a route that doesn't
+  // yet exist.
+
   // Phase 3 — transactions + reconciliation vertical.
   // Reads
   'GET /api/v1/companies/:companyId/transactions': 'transactions:read',
