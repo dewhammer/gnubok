@@ -336,7 +336,7 @@ function SIEImportWizard() {
   const [step, setStep] = useState<ImportWizardStep>('upload')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [errorType, setErrorType] = useState<'duplicate' | 'duplicate_period' | 'validation' | 'parse' | undefined>()
+  const [errorType, setErrorType] = useState<'duplicate' | 'duplicate_period' | 'validation' | 'parse' | 'network' | undefined>()
   const [validationErrors, setValidationErrors] = useState<string[]>([])
   const [validationWarnings, setValidationWarnings] = useState<string[]>([])
   const [duplicateImportId, setDuplicateImportId] = useState<string | null>(null)
@@ -450,9 +450,9 @@ function SIEImportWizard() {
       const message = isNetworkError
         ? 'Kunde inte nå servern. Kontrollera din internetanslutning och försök igen.'
         : err instanceof Error ? err.message : 'Ett oväntat fel uppstod.'
-      setErrorType('parse')
+      setErrorType(isNetworkError ? 'network' : 'parse')
       setError(message)
-      toast({ title: 'Anslutningsfel', description: message, variant: 'destructive' })
+      toast({ title: isNetworkError ? 'Anslutningsfel' : 'Ett fel uppstod', description: message, variant: 'destructive' })
     } finally {
       setIsLoading(false)
     }

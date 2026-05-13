@@ -388,6 +388,26 @@ const MATCH_SI: Record<string, StructuredErrorEntry> = {
     message_en:
       'Cash accounting does not support exchange-rate differences. Switch to accrual or book the FX difference manually.',
   },
+  TX_UNCATEGORIZE_NOT_BOOKED: {
+    httpStatus: 400,
+    message_sv: 'Transaktionen är inte bokförd. Det finns inget att av-kategorisera.',
+    message_en: 'Transaction has no journal entry — nothing to uncategorize.',
+  },
+  TX_UNCATEGORIZE_JE_NOT_POSTED: {
+    httpStatus: 400,
+    message_sv: 'Verifikationen är inte bokförd. Reversal kan inte utföras.',
+    message_en: 'Journal entry is not in posted status; reversal is not possible.',
+  },
+  TX_INGEST_INSERT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Transaktionerna kunde inte importeras.',
+    message_en: 'Transaction ingest failed.',
+  },
+  TX_BATCH_CATEGORIZE_EMPTY: {
+    httpStatus: 400,
+    message_sv: 'Batchen är tom.',
+    message_en: 'Batch is empty — pass at least one item.',
+  },
 }
 
 const INVOICE: Record<string, StructuredErrorEntry> = {

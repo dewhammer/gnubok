@@ -17,7 +17,7 @@ interface SIEUploadStepProps {
   onFileSelect: (file: File) => void
   isLoading: boolean
   error: string | null
-  errorType?: 'duplicate' | 'duplicate_period' | 'validation' | 'parse'
+  errorType?: 'duplicate' | 'duplicate_period' | 'validation' | 'parse' | 'network'
   validationErrors?: string[]
   validationWarnings?: string[]
   duplicateImportId?: string | null
@@ -186,6 +186,7 @@ export default function SIEUploadStep({ onFileSelect, isLoading, error, errorTyp
                     {errorType === 'duplicate_period' && 'Överlappande räkenskapsår'}
                     {errorType === 'validation' && 'Filen innehåller valideringsfel'}
                     {errorType === 'parse' && 'Kunde inte tolka filen'}
+                    {errorType === 'network' && 'Uppladdningen misslyckades'}
                     {!errorType && 'Ett fel uppstod'}
                   </p>
                   <p className="text-sm text-muted-foreground">{error}</p>
@@ -220,6 +221,9 @@ export default function SIEUploadStep({ onFileSelect, isLoading, error, errorTyp
                     )}
                     {errorType === 'parse' && (
                       <p>Kontrollera att filen är en SIE4-fil exporterad från ett bokföringsprogram (Fortnox, Visma, Bokio etc). Filen kan vara skadad om den redigerats manuellt.</p>
+                    )}
+                    {errorType === 'network' && (
+                      <p>Kontrollera din internetanslutning och försök igen. Om problemet kvarstår, prova att ladda upp filen från en dator eller hör av dig till support.</p>
                     )}
                   </div>
                 </div>

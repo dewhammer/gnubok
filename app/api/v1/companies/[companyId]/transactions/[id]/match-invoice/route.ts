@@ -1,0 +1,454 @@
+/**
+ * POST /api/v1/companies/{companyId}/transactions/{id}/match-invoice
+ *
+ * Match a positive (income) transaction to an open customer invoice. The
+ * full flow:
+ *   1. Storno any conflicting auto-categorization JE.
+ *   2. Create the payment journal entry (1930 debit / 1510 credit under
+ *      accrual; cash-method path delegates to createInvoiceCashEntry).
+ *   3. Re-attach the invoice PDF to the new payment JE (BFL 7 kap underlag).
+ *   4. Update invoice status (paid / partially_paid) with optimistic lock.
+ *   5. Insert invoice_payments row; link transaction to invoice.
+ *
+ * Mirrors the internal route's failure ordering exactly. Idempotent on
+ * (transaction, key). NOT dry-runnable — the multi-row interlock makes a
+ * meaningful preview infeasible without staging the JE for real, and dry-
+ * run is reserved for endpoints where the caller benefits from a fully
+ * resolved preview before commit. Skip the flag here; document it.
+ */
+import { z } from 'zod'
+import { ok } from '@/lib/api/v1/response'
+import { registerEndpoint } from '@/lib/api/v1/registry'
+import { withApiV1 } from '@/lib/api/v1/with-api-v1'
+import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
+import { MatchInvoiceSchema } from '@/lib/api/schemas'
+import {
+  createInvoicePaymentJournalEntry,
+  createInvoiceCashEntry,
+} from '@/lib/bookkeeping/invoice-entries'
+import { reverseEntry } from '@/lib/bookkeeping/engine'
+import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
+import { logMatchEvent } from '@/lib/invoices/match-log'
+import { eventBus } from '@/lib/events/bus'
+import type { EntityType, Invoice, Transaction } from '@/types'
+
+const MatchInvoiceResponse = z.object({
+  success: z.boolean(),
+  invoice_status: z.string(),
+  paid_at: z.string().nullable(),
+  paid_amount: z.number(),
+  remaining_amount: z.number(),
+  journal_entry_id: z.string().uuid().nullable(),
+  // Preserved from the prior :categorize call (or whatever the existing
+  // value was). Returns null when the transaction had never been
+  // categorized — the v1 surface no longer guesses 'income_services'
+  // for unmatched-revenue rows because the wrong default flows into
+  // BAS 3001/3041/3530 selection and INK2R/SRU reporting.
+  category: z.string().nullable(),
+})
+
+registerEndpoint({
+  operation: 'transactions.match-invoice',
+  method: 'POST',
+  path: '/api/v1/companies/:companyId/transactions/:id/match-invoice',
+  summary: 'Match a positive bank transaction to a customer invoice.',
+  description:
+    'Confirms an invoice match for a transaction. Storno any conflicting auto-categorization JE, create the payment journal entry, update the invoice status (paid / partially_paid), insert into invoice_payments, and link the transaction. Idempotent.',
+  useWhen:
+    'You have a bank receipt and a known open invoice it pays. The transaction must be positive (income) and unlinked.',
+  doNotUseFor:
+    'Categorizing a transaction without an invoice — use `:categorize`. Matching to a supplier invoice — use `:match-supplier-invoice`. Bulk auto-match — use `POST /reconciliation/bank/run`.',
+  pitfalls: [
+    'Proforma + delivery notes are rejected (MATCH_INVOICE_NOT_INVOICE_TYPE) — only document_type=\'invoice\' can be matched.',
+    'Transaction must be positive (amount > 0) — negative transactions return MATCH_INVOICE_NOT_INCOME.',
+    'Invoice must be in sent / overdue / partially_paid status — paid or draft invoices return MATCH_INVOICE_NOT_OPEN.',
+    'Idempotency-Key is mandatory.',
+  ],
+  example: {
+    request: { invoice_id: 'inv_…' },
+    response: {
+      data: {
+        success: true,
+        invoice_status: 'paid',
+        paid_amount: 12500,
+        remaining_amount: 0,
+        journal_entry_id: 'je_…',
+        category: null,
+      },
+      meta: { request_id: 'req_…', api_version: '2026-05-12' },
+    },
+  },
+  scope: 'transactions:write',
+  risk: 'high',
+  idempotent: true,
+  reversible: false,
+  dryRunSupported: false,
+  request: { body: MatchInvoiceSchema },
+  response: { success: MatchInvoiceResponse },
+})
+
+export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string }> }>(
+  'transactions.match-invoice',
+  async (request, ctx, params) => {
+    const { id } = await params.params
+    const idParse = z.string().uuid().safeParse(id)
+    if (!idParse.success) {
+      return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        details: { field: 'id', message: 'Transaction id must be a UUID.' },
+      })
+    }
+    const txId = idParse.data
+
+    let rawBody: unknown
+    try {
+      rawBody = await request.json()
+    } catch {
+      return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        details: { field: 'body', message: 'Body is not valid JSON.' },
+      })
+    }
+    const parsed = MatchInvoiceSchema.safeParse(rawBody)
+    if (!parsed.success) {
+      return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        details: {
+          issues: parsed.error.issues.map((i) => ({
+            field: i.path.join('.'),
+            message: i.message,
+          })),
+        },
+      })
+    }
+    const { invoice_id } = parsed.data
+    const txLog = ctx.log.child({ transactionId: txId, invoiceId: invoice_id })
+
+    const { data: transaction, error: fetchTxErr } = await ctx.supabase
+      .from('transactions')
+      .select('*')
+      .eq('id', txId)
+      .eq('company_id', ctx.companyId!)
+      .single()
+    if (fetchTxErr || !transaction) {
+      return v1ErrorResponseFromCode('TX_CATEGORIZE_TX_NOT_FOUND', txLog, {
+        requestId: ctx.requestId,
+      })
+    }
+    // Preserve any prior category (e.g. income_products for goods sales).
+    // Only fall back to the generic 'income_services' default if the
+    // transaction has never been categorized — Greptile + Swedish-compliance
+    // flagged the dashboard's hardcode-on-write as a wrong BAS classification
+    // for goods/rental income flows.
+    const existingTxCategory = (transaction as { category?: string | null }).category ?? null
+    if (transaction.amount <= 0) {
+      return v1ErrorResponseFromCode('MATCH_INVOICE_NOT_INCOME', txLog, {
+        requestId: ctx.requestId,
+        details: { amount: transaction.amount },
+      })
+    }
+    if (transaction.invoice_id) {
+      return v1ErrorResponseFromCode('MATCH_INVOICE_TX_ALREADY_LINKED', txLog, {
+        requestId: ctx.requestId,
+        details: { existingInvoiceId: transaction.invoice_id },
+      })
+    }
+
+    const { data: invoice, error: fetchInvErr } = await ctx.supabase
+      .from('invoices')
+      .select('*, customer:customers(*), items:invoice_items(*)')
+      .eq('id', invoice_id)
+      .eq('company_id', ctx.companyId!)
+      .single()
+    if (fetchInvErr || !invoice) {
+      return v1ErrorResponseFromCode('MATCH_INVOICE_NOT_FOUND', txLog, {
+        requestId: ctx.requestId,
+      })
+    }
+    const docType = (invoice as { document_type?: string }).document_type ?? 'invoice'
+    if (docType !== 'invoice') {
+      return v1ErrorResponseFromCode('MATCH_INVOICE_NOT_INVOICE_TYPE', txLog, {
+        requestId: ctx.requestId,
+        details: { documentType: docType },
+      })
+    }
+    if (
+      invoice.status !== 'sent' &&
+      invoice.status !== 'overdue' &&
+      invoice.status !== 'partially_paid'
+    ) {
+      return v1ErrorResponseFromCode('MATCH_INVOICE_NOT_OPEN', txLog, {
+        requestId: ctx.requestId,
+        details: { currentStatus: invoice.status },
+      })
+    }
+
+    if (transaction.journal_entry_id) {
+      try {
+        await reverseEntry(ctx.supabase, ctx.companyId!, ctx.userId, transaction.journal_entry_id)
+        const { error: clearErr } = await ctx.supabase
+          .from('transactions')
+          .update({ journal_entry_id: null })
+          .eq('id', txId)
+          .eq('company_id', ctx.companyId!)
+        if (clearErr) {
+          txLog.warn('failed to clear journal_entry_id after storno', clearErr)
+        }
+        logMatchEvent(ctx.supabase, ctx.userId, txId, 'storno_conflict_resolved', {
+          invoiceId: invoice_id,
+          previousState: { journal_entry_id: transaction.journal_entry_id },
+          newState: { journal_entry_id: null },
+        })
+      } catch (err) {
+        txLog.error('storno failed', err as Error)
+        return v1ErrorResponse(err, txLog, { requestId: ctx.requestId })
+      }
+    }
+
+    const now = new Date().toISOString()
+    const paidAmount = transaction.amount
+    const newPaidAmount =
+      Math.round(((invoice.paid_amount || 0) + paidAmount) * 100) / 100
+    const currentRemaining =
+      invoice.remaining_amount ?? invoice.total - (invoice.paid_amount || 0)
+    const newRemaining = Math.max(
+      0,
+      Math.round((currentRemaining - paidAmount) * 100) / 100,
+    )
+    const isFullyPaid = newRemaining <= 0
+    const newStatus = isFullyPaid ? 'paid' : 'partially_paid'
+
+    const { data: settings } = await ctx.supabase
+      .from('company_settings')
+      .select('accounting_method, entity_type')
+      .eq('company_id', ctx.companyId!)
+      .single()
+    const accountingMethod = settings?.accounting_method || 'accrual'
+    const entityType: EntityType =
+      (settings?.entity_type as EntityType) || 'enskild_firma'
+
+    // Reject cash-method partial payments. Under kontantmetoden, utgående
+    // moms must be reported in the period of actual receipt (ML 13 kap 8 §);
+    // the partial-payment branch below uses createInvoicePaymentJournalEntry
+    // (the accrual-style 1510/1930 clearing entry), which doesn't model the
+    // per-installment moms event. Rather than silently over-report moms,
+    // refuse the operation and document the constraint. Full payments
+    // (isFullyPaid=true) flow through createInvoiceCashEntry which IS the
+    // correct kontantmetod path.
+    if (accountingMethod === 'cash' && !isFullyPaid) {
+      return v1ErrorResponseFromCode('VALIDATION_ERROR', txLog, {
+        requestId: ctx.requestId,
+        details: {
+          field: 'accounting_method',
+          message:
+            'Kontantmetoden does not support partial-payment matching via this endpoint. ' +
+            'Match the full payment when received, or switch to accrual (faktureringsmetoden).',
+          accounting_method: 'cash',
+          payment_amount: paidAmount,
+          invoice_total: invoice.total,
+        },
+      })
+    }
+
+    // Strict-mode for the public API: if the payment JE can't be created we
+    // ABORT before touching invoice / payment / transaction state. The
+    // dashboard's internal route soft-fails here and surfaces a banner so
+    // the user can re-book manually; the v1 caller is an automation with
+    // no UI, so a partial state (invoice marked paid, GL has no entry) is
+    // strictly worse than a clean failure to retry.
+    let journalEntryId: string | null = null
+    try {
+      if (accountingMethod === 'cash' && isFullyPaid) {
+        const je = await createInvoiceCashEntry(
+          ctx.supabase,
+          ctx.companyId!,
+          ctx.userId,
+          invoice as Invoice,
+          transaction.date,
+          entityType,
+          invoice.customer?.name,
+        )
+        journalEntryId = je?.id ?? null
+      } else {
+        const je = await createInvoicePaymentJournalEntry(
+          ctx.supabase,
+          ctx.companyId!,
+          ctx.userId,
+          invoice as Invoice,
+          transaction.date,
+          undefined,
+          invoice.customer?.name,
+          paidAmount,
+        )
+        journalEntryId = je?.id ?? null
+      }
+    } catch (err) {
+      if (err instanceof AccountsNotInChartError) {
+        return v1ErrorResponse(err, txLog, { requestId: ctx.requestId })
+      }
+      txLog.error('match-invoice: payment JE creation failed — aborting before state mutation', err as Error)
+      const message = isBookkeepingError(err)
+        ? getErrorMessage(err, { context: 'invoice' })
+        : err instanceof Error
+          ? err.message
+          : 'Unknown error'
+      return v1ErrorResponseFromCode('INVOICE_PAID_BOOK_FAILED', txLog, {
+        requestId: ctx.requestId,
+        details: { reason: message },
+      })
+    }
+
+    // Re-attach invoice PDF to the payment JE (BFL 7 kap underlag).
+    if (journalEntryId && invoice.journal_entry_id) {
+      try {
+        const { data: invoiceDoc } = await ctx.supabase
+          .from('document_attachments')
+          .select('storage_path, file_name, file_size_bytes, mime_type, sha256_hash')
+          .eq('journal_entry_id', invoice.journal_entry_id)
+          .eq('company_id', ctx.companyId!)
+          .eq('is_current_version', true)
+          .limit(1)
+          .maybeSingle()
+        if (invoiceDoc) {
+          const { error: attachErr } = await ctx.supabase
+            .from('document_attachments')
+            .insert({
+              user_id: ctx.userId,
+              company_id: ctx.companyId!,
+              uploaded_by: ctx.userId,
+              upload_source: 'system',
+              storage_path: invoiceDoc.storage_path,
+              file_name: invoiceDoc.file_name,
+              file_size_bytes: invoiceDoc.file_size_bytes,
+              mime_type: invoiceDoc.mime_type,
+              sha256_hash: invoiceDoc.sha256_hash,
+              journal_entry_id: journalEntryId,
+            })
+          if (attachErr) {
+            txLog.warn('failed to attach invoice PDF to payment JE', {
+              attachError: attachErr.message,
+            })
+          }
+        }
+      } catch (err) {
+        txLog.warn('attach invoice PDF threw', err as Error)
+      }
+    }
+
+    const { data: updatedRows, error: updateInvErr } = await ctx.supabase
+      .from('invoices')
+      .update({
+        status: newStatus,
+        paid_at: isFullyPaid ? now : null,
+        paid_amount: newPaidAmount,
+        remaining_amount: newRemaining,
+      })
+      .eq('id', invoice_id)
+      .eq('company_id', ctx.companyId!)
+      .in('status', ['sent', 'overdue', 'partially_paid'])
+      .select('id')
+    if (updateInvErr) return v1ErrorResponse(updateInvErr, txLog, { requestId: ctx.requestId })
+    if (!updatedRows || updatedRows.length === 0) {
+      return v1ErrorResponseFromCode('MATCH_INVOICE_ALREADY_PAID', txLog, {
+        requestId: ctx.requestId,
+      })
+    }
+
+    const paymentNotes =
+      accountingMethod === 'cash' && !isFullyPaid
+        ? 'Kontantmetoden: intäkt bokförs vid slutbetalning'
+        : null
+
+    const { error: paymentInsertErr } = await ctx.supabase
+      .from('invoice_payments')
+      .insert({
+        user_id: ctx.userId,
+        company_id: ctx.companyId!,
+        invoice_id,
+        payment_date: transaction.date,
+        amount: paidAmount,
+        currency: invoice.currency,
+        exchange_rate: invoice.exchange_rate,
+        journal_entry_id: journalEntryId,
+        transaction_id: txId,
+        notes: paymentNotes,
+      })
+    if (paymentInsertErr) {
+      if (paymentInsertErr.code === '23505') {
+        return v1ErrorResponseFromCode('MATCH_INVOICE_DUPLICATE_PAYMENT', txLog, {
+          requestId: ctx.requestId,
+        })
+      }
+      txLog.error('failed to record payment', paymentInsertErr)
+      return v1ErrorResponseFromCode('MATCH_INVOICE_RECORD_PAYMENT_FAILED', txLog, {
+        requestId: ctx.requestId,
+      })
+    }
+
+    // When the tx already has a category (set by a prior :categorize call,
+    // could be income_products / rental / etc.), preserve it. When there is
+    // none, leave the column UNTOUCHED — the existing default ('uncategorized')
+    // persists. Writing a hardcoded 'income_services' here was the source of
+    // a known mis-classification for goods/rental flows (BAS 3001/3041/3530
+    // distinct accounts → wrong INK2R field → wrong SRU).
+    const txUpdate: Record<string, unknown> = {
+      invoice_id,
+      potential_invoice_id: null,
+      journal_entry_id: journalEntryId,
+      is_business: true,
+    }
+    if (existingTxCategory) txUpdate.category = existingTxCategory
+
+    const { error: updateTxErr } = await ctx.supabase
+      .from('transactions')
+      .update(txUpdate)
+      .eq('id', txId)
+      .eq('company_id', ctx.companyId!)
+    if (updateTxErr) {
+      txLog.error('failed to link transaction to invoice', updateTxErr)
+      return v1ErrorResponseFromCode('MATCH_INVOICE_LINK_TX_FAILED', txLog, {
+        requestId: ctx.requestId,
+      })
+    }
+
+    logMatchEvent(ctx.supabase, ctx.userId, txId, 'matched', {
+      invoiceId: invoice_id,
+      matchConfidence: 1.0,
+      matchMethod: 'manual_confirm',
+      newState: {
+        status: newStatus,
+        paid_amount: newPaidAmount,
+        remaining_amount: newRemaining,
+      },
+    })
+
+    try {
+      eventBus.emit({
+        type: 'invoice.match_confirmed',
+        payload: {
+          invoice: invoice as Invoice,
+          transaction: transaction as Transaction,
+          userId: ctx.userId,
+          companyId: ctx.companyId!,
+        },
+      })
+    } catch (err) {
+      txLog.warn('event emit failed (non-critical)', err as Error)
+    }
+
+    return ok(
+      {
+        success: true,
+        invoice_status: newStatus,
+        paid_at: isFullyPaid ? now : null,
+        paid_amount: newPaidAmount,
+        remaining_amount: newRemaining,
+        journal_entry_id: journalEntryId,
+        category: existingTxCategory,
+      },
+      { requestId: ctx.requestId },
+    )
+  },
+  { requireIdempotencyKey: true },
+)

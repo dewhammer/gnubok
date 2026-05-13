@@ -30,4 +30,18 @@ import '@/app/api/v1/companies/[companyId]/invoices/bulk-create/route'
 import '@/app/api/v1/companies/[companyId]/invoices/[id]/pdf/route'
 import '@/app/api/v1/companies/[companyId]/customers/bulk-create/route'
 
+// Phase 3 — transactions + reconciliation vertical.
+import '@/app/api/v1/companies/[companyId]/transactions/route'
+import '@/app/api/v1/companies/[companyId]/transactions/[id]/route'
+import '@/app/api/v1/companies/[companyId]/accounts/route'
+import '@/app/api/v1/companies/[companyId]/fiscal-periods/route'
+import '@/app/api/v1/companies/[companyId]/transactions/[id]/categorize/route'
+import '@/app/api/v1/companies/[companyId]/transactions/[id]/uncategorize/route'
+import '@/app/api/v1/companies/[companyId]/transactions/[id]/match-invoice/route'
+import '@/app/api/v1/companies/[companyId]/transactions/[id]/match-supplier-invoice/route'
+import '@/app/api/v1/companies/[companyId]/transactions/ingest/route'
+import '@/app/api/v1/companies/[companyId]/transactions/batch-categorize/route'
+import '@/app/api/v1/companies/[companyId]/reconciliation/bank/run/route'
+import '@/app/api/v1/companies/[companyId]/reconciliation/bank/status/route'
+
 export {}

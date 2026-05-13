@@ -1,0 +1,418 @@
+/**
+ * Integration tests for the single-transaction write verbs:
+ *   POST :id/categorize
+ *   POST :id/uncategorize
+ *   POST :id/match-invoice
+ *   POST :id/match-supplier-invoice
+ *
+ * Each test stubs the bookkeeping engine (createTransactionJournalEntry,
+ * createInvoicePaymentJournalEntry, reverseEntry, etc.) so the test asserts
+ * the route's orchestration — wiring of params + scope + error codes —
+ * rather than reimplementing the engine.
+ */
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+beforeAll(() => {
+  if (process.env.NODE_ENV !== 'test') throw new Error('NODE_ENV=test required')
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||= 'http://localhost:54321'
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||= 'test-anon-key'
+})
+
+vi.mock('@/lib/auth/api-keys', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/auth/api-keys')>('@/lib/auth/api-keys')
+  return { ...actual, validateApiKey: vi.fn(), createServiceClientNoCookies: vi.fn() }
+})
+vi.mock('@supabase/supabase-js', async () => {
+  const actual = await vi.importActual<typeof import('@supabase/supabase-js')>('@supabase/supabase-js')
+  return { ...actual, createClient: vi.fn().mockReturnValue({}) }
+})
+
+// Engine stubs — happy-path returns reusable across cases.
+const { createTxJE, reverseEntryMock, createInvPmtJE, createInvCashJE, createSupplierInvPmtJE } = vi.hoisted(() => ({
+  createTxJE: vi.fn().mockResolvedValue({ id: 'je-fresh' }),
+  reverseEntryMock: vi.fn().mockResolvedValue(undefined),
+  createInvPmtJE: vi.fn().mockResolvedValue({ id: 'je-invpmt' }),
+  createInvCashJE: vi.fn().mockResolvedValue({ id: 'je-invcash' }),
+  createSupplierInvPmtJE: vi.fn().mockResolvedValue({ id: 'je-sipmt' }),
+}))
+
+vi.mock('@/lib/bookkeeping/transaction-entries', () => ({
+  createTransactionJournalEntry: createTxJE,
+}))
+vi.mock('@/lib/bookkeeping/engine', () => ({
+  reverseEntry: reverseEntryMock,
+}))
+vi.mock('@/lib/bookkeeping/invoice-entries', () => ({
+  createInvoicePaymentJournalEntry: createInvPmtJE,
+  createInvoiceCashEntry: createInvCashJE,
+}))
+vi.mock('@/lib/bookkeeping/supplier-invoice-entries', () => ({
+  createSupplierInvoicePaymentEntry: createSupplierInvPmtJE,
+  createSupplierInvoiceCashEntry: vi.fn().mockResolvedValue({ id: 'je-sicash' }),
+}))
+vi.mock('@/lib/invoices/match-log', () => ({
+  logMatchEvent: vi.fn(),
+}))
+vi.mock('@/lib/bookkeeping/mapping-engine', () => ({
+  saveUserMappingRule: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('@/lib/bookkeeping/counterparty-templates', () => ({
+  upsertCounterpartyTemplate: vi.fn().mockResolvedValue(undefined),
+  buildMappingResultFromCounterpartyTemplate: vi.fn(),
+}))
+// category mapping is real — provides the debit/credit account guarantees.
+
+import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
+import { POST as categorizePOST } from '../categorize/route'
+import { POST as uncategorizePOST } from '../uncategorize/route'
+import { POST as matchInvoicePOST } from '../match-invoice/route'
+import { POST as matchSIPOST } from '../match-supplier-invoice/route'
+
+const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
+const mockServiceClient = createServiceClientNoCookies as ReturnType<typeof vi.fn>
+
+type MockResult = { data?: unknown; error?: unknown }
+function makeFlexibleSupabase(byTable: Record<string, MockResult | MockResult[]>) {
+  const queues = new Map<string, MockResult[]>()
+  for (const [t, val] of Object.entries(byTable)) {
+    queues.set(t, Array.isArray(val) ? [...val] : [val])
+  }
+  const buildChain = (table: string): unknown => {
+    const handler: ProxyHandler<object> = {
+      get(_target, prop) {
+        if (prop === 'then') {
+          return (resolve: (v: unknown) => void) => {
+            const q = queues.get(table)
+            const next = q && q.length > 1 ? q.shift()! : (q?.[0] ?? { data: null, error: null })
+            resolve(next)
+          }
+        }
+        return (..._args: unknown[]) => buildChain(table)
+      },
+    }
+    return new Proxy({}, handler)
+  }
+  return { from: vi.fn((table: string) => buildChain(table)) }
+}
+
+const COMPANY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const TX_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const INV_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const SI_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+const JE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+
+function makeRequest(url: string, body: unknown): Request {
+  return new Request(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer test-fixture-not-a-real-key',
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'idem1234-aaaa-4abc-8def-1234567890ab',
+    },
+    body: JSON.stringify(body),
+  })
+}
+function txParams(id: string) {
+  return { params: Promise.resolve({ companyId: COMPANY_ID, id }) }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockValidate.mockResolvedValue({
+    userId: 'user-1',
+    companyId: COMPANY_ID,
+    apiKeyId: 'ak_1',
+    scopes: ['transactions:write'],
+    mode: 'live',
+  })
+})
+
+describe('POST :id/categorize', () => {
+  it('categorizes a fresh business transaction and creates the JE', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: [
+          {
+            data: {
+              id: TX_ID,
+              company_id: COMPANY_ID,
+              date: '2026-05-12',
+              amount: -349.5,
+              currency: 'SEK',
+              merchant_name: 'ICA',
+              journal_entry_id: null,
+            },
+            error: null,
+          },
+          { data: [{ id: TX_ID }], error: null }, // CAS update select
+        ],
+        company_settings: {
+          data: { entity_type: 'enskild_firma' },
+          error: null,
+        },
+      }),
+    )
+
+    const res = await categorizePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/categorize`,
+        { is_business: true, category: 'expense_office' },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.journal_entry_created).toBe(true)
+    expect(body.data.category).toBe('expense_office')
+    expect(createTxJE).toHaveBeenCalledTimes(1)
+  })
+
+  it('dry-run returns mapping preview without creating a JE', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: {
+          data: {
+            id: TX_ID,
+            company_id: COMPANY_ID,
+            date: '2026-05-12',
+            amount: -349.5,
+            currency: 'SEK',
+            merchant_name: 'ICA',
+            journal_entry_id: null,
+          },
+          error: null,
+        },
+        company_settings: { data: { entity_type: 'enskild_firma' }, error: null },
+      }),
+    )
+
+    const res = await categorizePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/categorize?dry_run=true`,
+        { is_business: true, category: 'expense_office' },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(200)
+    expect(res.headers.get('X-Dry-Run')).toBe('true')
+    expect(createTxJE).not.toHaveBeenCalled()
+  })
+
+  it('rejects unknown transaction id with TX_CATEGORIZE_TX_NOT_FOUND', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: null, error: { code: 'PGRST116' } },
+      }),
+    )
+    const res = await categorizePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/categorize`,
+        { is_business: true, category: 'expense_office' },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('TX_CATEGORIZE_TX_NOT_FOUND')
+  })
+})
+
+describe('POST :id/uncategorize', () => {
+  it('storno + reset on a booked transaction', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: { id: TX_ID, journal_entry_id: JE_ID }, error: null },
+        journal_entries: { data: { id: JE_ID, status: 'posted' }, error: null },
+      }),
+    )
+    const res = await uncategorizePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/uncategorize`,
+        {},
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(200)
+    expect(reverseEntryMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns TX_UNCATEGORIZE_NOT_BOOKED when JE missing', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: { id: TX_ID, journal_entry_id: null }, error: null },
+      }),
+    )
+    const res = await uncategorizePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/uncategorize`,
+        {},
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('TX_UNCATEGORIZE_NOT_BOOKED')
+  })
+})
+
+describe('POST :id/match-invoice', () => {
+  it('matches a positive transaction to an open invoice', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: {
+          data: {
+            id: TX_ID,
+            amount: 12500,
+            date: '2026-05-12',
+            currency: 'SEK',
+            invoice_id: null,
+            journal_entry_id: null,
+          },
+          error: null,
+        },
+        invoices: [
+          {
+            data: {
+              id: INV_ID,
+              status: 'sent',
+              document_type: 'invoice',
+              total: 12500,
+              paid_amount: 0,
+              remaining_amount: 12500,
+              currency: 'SEK',
+              exchange_rate: null,
+              customer: { name: 'Acme' },
+              items: [],
+              journal_entry_id: null,
+            },
+            error: null,
+          },
+          { data: [{ id: INV_ID }], error: null }, // status update select
+        ],
+        company_settings: { data: { accounting_method: 'accrual', entity_type: 'enskild_firma' }, error: null },
+        invoice_payments: { data: null, error: null },
+      }),
+    )
+    const res = await matchInvoicePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-invoice`,
+        { invoice_id: INV_ID },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.invoice_status).toBe('paid')
+    expect(body.data.journal_entry_id).toBe('je-invpmt')
+  })
+
+  it('rejects negative transaction with MATCH_INVOICE_NOT_INCOME', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: { id: TX_ID, amount: -100, invoice_id: null }, error: null },
+      }),
+    )
+    const res = await matchInvoicePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-invoice`,
+        { invoice_id: INV_ID },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('MATCH_INVOICE_NOT_INCOME')
+  })
+
+  it('rejects already-linked transaction', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: { id: TX_ID, amount: 100, invoice_id: 'other-id' }, error: null },
+      }),
+    )
+    const res = await matchInvoicePOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-invoice`,
+        { invoice_id: INV_ID },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('MATCH_INVOICE_TX_ALREADY_LINKED')
+  })
+})
+
+describe('POST :id/match-supplier-invoice', () => {
+  it('matches a negative transaction to an open supplier invoice', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: {
+          data: {
+            id: TX_ID,
+            amount: -5000,
+            date: '2026-05-12',
+            currency: 'SEK',
+            supplier_invoice_id: null,
+            journal_entry_id: null,
+          },
+          error: null,
+        },
+        supplier_invoices: [
+          {
+            data: {
+              id: SI_ID,
+              status: 'approved',
+              total: 5000,
+              paid_amount: 0,
+              remaining_amount: 5000,
+              currency: 'SEK',
+              exchange_rate: null,
+              supplier: { name: 'Acme', supplier_type: 'swedish_business' },
+              items: [],
+            },
+            error: null,
+          },
+          { data: [{ id: SI_ID }], error: null },
+        ],
+        company_settings: { data: { accounting_method: 'accrual' }, error: null },
+        supplier_invoice_payments: { data: null, error: null },
+      }),
+    )
+    const res = await matchSIPOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-supplier-invoice`,
+        { supplier_invoice_id: SI_ID },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.invoice_status).toBe('paid')
+  })
+
+  it('rejects positive transaction with MATCH_SI_NOT_EXPENSE', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        transactions: { data: { id: TX_ID, amount: 100, supplier_invoice_id: null }, error: null },
+      }),
+    )
+    const res = await matchSIPOST(
+      makeRequest(
+        `https://x.test/api/v1/companies/${COMPANY_ID}/transactions/${TX_ID}/match-supplier-invoice`,
+        { supplier_invoice_id: SI_ID },
+      ),
+      txParams(TX_ID),
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('MATCH_SI_NOT_EXPENSE')
+  })
+})

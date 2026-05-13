@@ -69,6 +69,24 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'GET /api/v1/companies/:companyId/invoices/:id/pdf': 'invoices:read',
   'POST /api/v1/companies/:companyId/customers/bulk-create': 'customers:write',
 
+  // Phase 3 — transactions + reconciliation vertical.
+  // Reads
+  'GET /api/v1/companies/:companyId/transactions': 'transactions:read',
+  'GET /api/v1/companies/:companyId/transactions/:id': 'transactions:read',
+  'GET /api/v1/companies/:companyId/accounts': 'reports:read',
+  'GET /api/v1/companies/:companyId/fiscal-periods': 'reports:read',
+  // Writes — single transaction verbs
+  'POST /api/v1/companies/:companyId/transactions/:id/categorize': 'transactions:write',
+  'POST /api/v1/companies/:companyId/transactions/:id/uncategorize': 'transactions:write',
+  'POST /api/v1/companies/:companyId/transactions/:id/match-invoice': 'transactions:write',
+  'POST /api/v1/companies/:companyId/transactions/:id/match-supplier-invoice': 'transactions:write',
+  // Writes — bulk
+  'POST /api/v1/companies/:companyId/transactions/ingest': 'transactions:write',
+  'POST /api/v1/companies/:companyId/transactions/batch-categorize': 'transactions:write',
+  // Reconciliation
+  'POST /api/v1/companies/:companyId/reconciliation/bank/run': 'transactions:write',
+  'GET /api/v1/companies/:companyId/reconciliation/bank/status': 'transactions:read',
+
   // Webhooks (Phase 6 — placeholder so the catalogue is complete)
   'GET /api/v1/companies/:companyId/webhooks': 'webhooks:manage',
   'POST /api/v1/companies/:companyId/webhooks': 'webhooks:manage',
