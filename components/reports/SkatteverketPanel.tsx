@@ -27,6 +27,8 @@ import {
   runVatDeclarationChecks,
   type VatDeclarationCheck,
 } from '@/lib/reports/vat-declaration-checks'
+import type { RcBasisGap } from '@/lib/reports/rc-basis-gaps'
+import { formatDate } from '@/lib/utils'
 
 interface SkatteverketStatus {
   connected: boolean
@@ -105,6 +107,75 @@ function SkatteverketPanelInner({ periodType, year, period, hasData, rutor }: Sk
   const localChecks: VatDeclarationCheck[] = rutor ? runVatDeclarationChecks(rutor) : []
   const localErrors = localChecks.filter((c) => c.status === 'ERROR')
   const localBlocked = localErrors.length > 0
+
+  // Per-voucher RC basis gap detection — fetched whenever a RC_BASIS_MISSING
+  // warning fires so we can show the user exactly which verifikationer are
+  // missing the basbelopp pair and offer a one-click correction.
+  const hasRcBasisWarning = localChecks.some((c) => c.code === 'RC_BASIS_MISSING')
+  const [gaps, setGaps] = useState<RcBasisGap[]>([])
+  const [gapsLoading, setGapsLoading] = useState(false)
+  const [fixingId, setFixingId] = useState<string | null>(null)
+  const [gapSelections, setGapSelections] = useState<
+    Record<string, { supplierType: 'eu_business' | 'non_eu_business' | 'swedish_business'; supplyType: 'service' | 'goods' }>
+  >({})
+
+  useEffect(() => {
+    if (!hasRcBasisWarning) {
+      setGaps([])
+      return
+    }
+    let cancelled = false
+    setGapsLoading(true)
+    fetch(
+      `/api/reports/vat-declaration/rc-basis-gaps?periodType=${periodType}&year=${year}&period=${period}`,
+    )
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return
+        setGaps(j?.data?.gaps || [])
+      })
+      .catch(() => {
+        if (cancelled) return
+        setGaps([])
+      })
+      .finally(() => {
+        if (cancelled) return
+        setGapsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [hasRcBasisWarning, periodType, year, period])
+
+  const handleFixGap = async (gap: RcBasisGap) => {
+    const sel = gapSelections[gap.entryId] ?? { supplierType: 'eu_business', supplyType: 'service' as const }
+    setFixingId(gap.entryId)
+    setError(null)
+    try {
+      const res = await fetch('/api/reports/vat-declaration/rc-basis-gaps/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryId: gap.entryId,
+          supplierType: sel.supplierType,
+          supplyType: sel.supplyType,
+        }),
+      })
+      const result = await res.json()
+      if (!res.ok) {
+        setError(result?.error || 'Kunde inte korrigera verifikationen')
+      } else {
+        setGaps((prev) => prev.filter((g) => g.entryId !== gap.entryId))
+        setSuccess(
+          `Verifikation ${gap.voucherSeries}-${gap.voucherNumber} korrigerad. Storno + ny verifikation skapad. Ladda om sidan för att uppdatera rutorna.`,
+        )
+      }
+    } catch {
+      setError('Kunde inte korrigera verifikationen')
+    } finally {
+      setFixingId(null)
+    }
+  }
 
   /**
    * Apply an API JSON error result. When the error indicates the SKV session
@@ -550,6 +621,129 @@ function SkatteverketPanelInner({ periodType, year, period, hasData, rutor }: Sk
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Per-voucher RC basis gaps — concrete list of verifikationer that
+            triggered RC_BASIS_MISSING, with a one-click korrigera action. */}
+        {hasRcBasisWarning && (
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Verifikationer som saknar basbelopp
+            </p>
+            {gapsLoading ? (
+              <div className="text-sm text-muted-foreground flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Söker berörda verifikationer...
+              </div>
+            ) : gaps.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Inga verifikationer hittades. Bristen kan ligga utanför perioden
+                eller i bokföring som inte är posted.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {gaps.map((gap) => {
+                  const sel = gapSelections[gap.entryId] ?? {
+                    supplierType: 'eu_business' as const,
+                    supplyType: 'service' as const,
+                  }
+                  return (
+                    <div
+                      key={gap.entryId}
+                      className="rounded-lg border bg-card p-3 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">
+                            Verifikation {gap.voucherSeries}-{gap.voucherNumber}
+                            <span className="text-muted-foreground font-normal">
+                              {' · '}
+                              {formatDate(gap.entryDate)}
+                            </span>
+                          </p>
+                          <p className="text-sm text-muted-foreground truncate">
+                            {gap.description}
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-1 tabular-nums">
+                            {gap.rcOutputAccount} har{' '}
+                            {gap.rcOutputAmount.toLocaleString('sv-SE', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}{' '}
+                            kr fiktiv moms — saknar basbelopp{' '}
+                            {gap.expectedBasisAmount.toLocaleString('sv-SE', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}{' '}
+                            kr
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          className="text-xs border rounded px-2 py-1 bg-background"
+                          value={sel.supplierType}
+                          onChange={(e) => {
+                            const next = e.target.value as typeof sel.supplierType
+                            setGapSelections((prev) => ({
+                              ...prev,
+                              [gap.entryId]: {
+                                supplierType: next,
+                                // Non-EU + goods is import VAT, not RC — coerce back
+                                // to service so the user can't submit an invalid combo.
+                                supplyType: next === 'non_eu_business' ? 'service' : sel.supplyType,
+                              },
+                            }))
+                          }}
+                          disabled={fixingId === gap.entryId}
+                        >
+                          <option value="eu_business">EU-leverantör</option>
+                          <option value="non_eu_business">Utanför EU</option>
+                          <option value="swedish_business">Svensk RC</option>
+                        </select>
+                        <select
+                          className="text-xs border rounded px-2 py-1 bg-background"
+                          value={sel.supplyType}
+                          onChange={(e) =>
+                            setGapSelections((prev) => ({
+                              ...prev,
+                              [gap.entryId]: {
+                                ...sel,
+                                supplyType: e.target.value as typeof sel.supplyType,
+                              },
+                            }))
+                          }
+                          disabled={fixingId === gap.entryId}
+                        >
+                          <option value="service">Tjänst</option>
+                          {/* Non-EU goods is import VAT, not reverse charge — hide the
+                              option for that combination so the fix endpoint never
+                              has to reject it. */}
+                          {sel.supplierType !== 'non_eu_business' && (
+                            <option value="goods">Vara</option>
+                          )}
+                        </select>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleFixGap(gap)}
+                          disabled={fixingId !== null}
+                          className="gap-1.5 h-7"
+                        >
+                          {fixingId === gap.entryId ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="h-3 w-3" />
+                          )}
+                          Korrigera
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 
