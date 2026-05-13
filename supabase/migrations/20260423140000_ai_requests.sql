@@ -62,14 +62,18 @@ CREATE INDEX IF NOT EXISTS idx_ai_requests_subject
 -- RLS: company-scoped using user_company_ids()
 ALTER TABLE public.ai_requests ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "ai_requests_select" ON public.ai_requests;
 CREATE POLICY "ai_requests_select" ON public.ai_requests
   FOR SELECT USING (company_id IN (SELECT public.user_company_ids()));
+DROP POLICY IF EXISTS "ai_requests_insert" ON public.ai_requests;
 CREATE POLICY "ai_requests_insert" ON public.ai_requests
   FOR INSERT WITH CHECK (company_id IN (SELECT public.user_company_ids()));
+DROP POLICY IF EXISTS "ai_requests_update" ON public.ai_requests;
 CREATE POLICY "ai_requests_update" ON public.ai_requests
   FOR UPDATE USING (company_id IN (SELECT public.user_company_ids()));
 
 -- updated_at trigger
+DROP TRIGGER IF EXISTS ai_requests_updated_at ON public.ai_requests;
 CREATE TRIGGER ai_requests_updated_at
   BEFORE UPDATE ON public.ai_requests
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();

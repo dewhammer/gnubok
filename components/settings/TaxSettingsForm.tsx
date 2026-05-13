@@ -107,8 +107,69 @@ export function TaxSettingsForm({ settings }: TaxSettingsFormProps) {
                   Enligt beslut från Skatteverket.
                 </p>
               </div>
+
+              <div className="max-w-xs space-y-2">
+                <Label>Period för periodisk sammanställning</Label>
+                <Select
+                  name="periodisk_sammanstallning_period"
+                  defaultValue={settings.periodisk_sammanstallning_period || 'monthly'}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Välj period" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="monthly">Månad</SelectItem>
+                    <SelectItem value="quarterly">Kvartal</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Varuförsäljning till EU ska normalt rapporteras månadsvis (35 kap. 2 § SFL).
+                  Kvartal kräver tillstånd från Skatteverket och gäller endast tjänsteförsäljning.
+                </p>
+              </div>
             </div>
           )}
+        </div>
+      </section>
+
+      {/* Tax contact — required for SKV-filings */}
+      <section className="border-t border-border/8 pt-8 space-y-4">
+        <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+          Kontaktperson för skatteärenden
+        </h2>
+        <p className="text-xs text-muted-foreground -mt-2">
+          Används som avsändare på filer till Skatteverket (periodisk sammanställning m.m.).
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
+          <div className="space-y-2">
+            <Label htmlFor="tax_contact_name">Namn</Label>
+            <Input
+              id="tax_contact_name"
+              name="tax_contact_name"
+              defaultValue={settings.tax_contact_name || ''}
+              placeholder="Anna Andersson"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tax_contact_phone">Telefon</Label>
+            <Input
+              id="tax_contact_phone"
+              name="tax_contact_phone"
+              defaultValue={settings.tax_contact_phone || ''}
+              placeholder="08-123 45 67"
+            />
+          </div>
+          <div className="space-y-2 sm:col-span-2">
+            <Label htmlFor="tax_contact_email">E-post</Label>
+            <Input
+              id="tax_contact_email"
+              name="tax_contact_email"
+              type="email"
+              defaultValue={settings.tax_contact_email || ''}
+              placeholder="anna@foretaget.se"
+            />
+          </div>
         </div>
       </section>
 

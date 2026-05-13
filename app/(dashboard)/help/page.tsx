@@ -198,6 +198,14 @@ const glossaryTerms: GlossaryTerm[] = [
       'Ditt företags unika identitetsnummer. För enskild firma är det ditt personnummer + 100 på århundradesiffran (199001011234 blir 199101011234).',
     category: 'företag',
   },
+  {
+    term: 'Eget utlägg',
+    simpleTerm: 'Betalat privat för bolagets räkning',
+    definition:
+      'När du som ägare lägger ut pengar privat för en kostnad som bolaget ska stå för. Registrera under Leverantörsfakturor → Ny, kryssa i "Jag har betalat detta privat". Verifikatet bokförs då direkt mot skuld till ägare (2893 för AB, 2018 för EF) istället för via leverantörsskuld. När bolaget senare ersätter dig kategoriserar du den utgående banktransaktionen mot samma konto.',
+    category: 'bokföring',
+    relatedTerms: ['Aktiebolag', 'Enskild firma'],
+  },
 ]
 
 const categoryConfig = {

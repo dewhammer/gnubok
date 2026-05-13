@@ -151,9 +151,9 @@ export const cloudBackupExtension: Extension = {
               ctx.log.warn('token revoke failed (continuing)', err)
             }
           }
-          await ctx.settings.set(CONNECTION_KEY, null)
-          await ctx.settings.set(LAST_SYNC_KEY, null)
-          await ctx.settings.set(SCHEDULE_KEY, null)
+          await ctx.settings.clear(CONNECTION_KEY)
+          await ctx.settings.clear(LAST_SYNC_KEY)
+          await ctx.settings.clear(SCHEDULE_KEY)
           return NextResponse.json({ ok: true })
         } catch (err) {
           ctx.log.error('disconnect failed', err)

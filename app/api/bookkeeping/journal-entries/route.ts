@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
-import { createJournalEntry } from '@/lib/bookkeeping/engine'
+import { createDraftEntry, createJournalEntry } from '@/lib/bookkeeping/engine'
 import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
 import { ensureInitialized } from '@/lib/init'
 import { validateBody } from '@/lib/api/validate'
@@ -141,8 +141,13 @@ export async function POST(request: Request) {
   if (!validation.success) return validation.response
   const body = validation.data
 
+  const { searchParams } = new URL(request.url)
+  const asDraft = searchParams.get('as_draft') === 'true'
+
   try {
-    const entry = await createJournalEntry(supabase, companyId, user.id, body)
+    const entry = asDraft
+      ? await createDraftEntry(supabase, companyId, user.id, body)
+      : await createJournalEntry(supabase, companyId, user.id, body)
     return NextResponse.json({ data: entry })
   } catch (err) {
     const typed = bookkeepingErrorResponse(err)

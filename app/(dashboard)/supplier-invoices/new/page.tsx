@@ -42,6 +42,7 @@ interface FormData {
   reverse_charge: boolean
   payment_reference: string
   notes: string
+  paid_with_private_funds: boolean
   items: LineItem[]
 }
 
@@ -155,6 +156,7 @@ export default function NewSupplierInvoicePage() {
       reverse_charge: false,
       payment_reference: '',
       notes: '',
+      paid_with_private_funds: false,
       items: [{ description: '', amount: 0, account_number: '5010', vat_rate: 0.25 }],
     },
   })
@@ -165,6 +167,7 @@ export default function NewSupplierInvoicePage() {
   const watchedItems = watch('items')
   const watchedSupplierId = watch('supplier_id')
   const watchedCurrency = watch('currency')
+  const watchedPaidPrivately = watch('paid_with_private_funds')
 
   const isEF = entityType === 'enskild_firma'
 
@@ -468,11 +471,16 @@ export default function NewSupplierInvoicePage() {
 
   function buildPayload(data: FormData) {
     const vatTreatment = inferVatTreatment(data.items, data.reverse_charge)
+    // When paid privately, due_date is irrelevant — but the API still requires
+    // a YYYY-MM-DD value. Default to invoice_date so the field passes validation.
+    const dueDate = data.paid_with_private_funds && !data.due_date
+      ? data.invoice_date
+      : data.due_date
     return {
       supplier_id: data.supplier_id,
       supplier_invoice_number: data.supplier_invoice_number,
       invoice_date: data.invoice_date,
-      due_date: data.due_date,
+      due_date: dueDate,
       delivery_date: data.delivery_date || undefined,
       currency: data.currency,
       exchange_rate: data.exchange_rate ? parseFloat(data.exchange_rate) : undefined,
@@ -480,6 +488,7 @@ export default function NewSupplierInvoicePage() {
       reverse_charge: data.reverse_charge,
       payment_reference: data.payment_reference || undefined,
       notes: data.notes || undefined,
+      paid_with_private_funds: data.paid_with_private_funds,
       items: data.items.map((item) => ({
         description: item.description,
         amount: item.amount,
@@ -572,7 +581,10 @@ export default function NewSupplierInvoicePage() {
       return
     }
 
-    if (isEF) {
+    // Privately-paid skips the AB review dialog — the toggle itself is the
+    // explicit user intent, and the resulting verifikat is just expense + VAT
+    // against the owner account (2893/2018). Same path for EF.
+    if (isEF || data.paid_with_private_funds) {
       setPendingData(data)
       handleDirectSubmit(data)
     } else {
@@ -581,7 +593,8 @@ export default function NewSupplierInvoicePage() {
     }
   }
 
-  // EF: create + auto-approve, no review dialog
+  // EF: create + auto-approve, no review dialog. Privately-paid invoices land
+  // here too and skip auto-approve since they're already in status='paid'.
   async function handleDirectSubmit(data: FormData) {
     setIsSubmitting(true)
     await patchInboxFieldsIfChanged(data)
@@ -597,11 +610,22 @@ export default function NewSupplierInvoicePage() {
       return
     }
 
-    // Auto-approve for EF
-    const approveRes = await fetch(`/api/supplier-invoices/${result.data.id}/approve`, { method: 'POST' })
     // Clear dirty state so useUnsavedChanges doesn't fire the
     // beforeunload prompt while we navigate away on a successful submit.
     reset(data)
+
+    if (data.paid_with_private_funds) {
+      toast({
+        title: 'Utlägg registrerat',
+        description: `Ankomstnummer: ${result.data.arrival_number}`,
+      })
+      router.push('/supplier-invoices')
+      setIsSubmitting(false)
+      return
+    }
+
+    // Auto-approve for EF
+    const approveRes = await fetch(`/api/supplier-invoices/${result.data.id}/approve`, { method: 'POST' })
     if (!approveRes.ok) {
       toast({
         title: 'Varning',
@@ -856,6 +880,30 @@ export default function NewSupplierInvoicePage() {
             <CardTitle className="text-lg">Faktura</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {/* Eget utlägg-toggle. När den är på bokas verifikatet direkt mot
+                skuld till ägare (2893/2018) istället för leverantörsskuld (2440),
+                och fakturan får status "Betalad" direkt. */}
+            <div className="flex items-start gap-3 p-3 rounded-md border bg-muted/30">
+              <Controller
+                name="paid_with_private_funds"
+                control={control}
+                render={({ field }) => (
+                  <Checkbox
+                    id="paid_with_private_funds"
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                    className="mt-0.5"
+                  />
+                )}
+              />
+              <Label htmlFor="paid_with_private_funds" className="cursor-pointer flex-1">
+                <span className="text-sm font-medium">Jag har betalat detta privat</span>
+                <span className="block text-[11px] text-muted-foreground font-normal mt-0.5">
+                  Bokförs som skuld från bolaget till dig ({isEF ? '2018 Egen insättning' : '2893 Skuld till ägare'}). Återbetalas senare manuellt från företagskontot.
+                </span>
+              </Label>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Leverantör<RequiredMark /></Label>
@@ -905,19 +953,26 @@ export default function NewSupplierInvoicePage() {
                 })()}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className={cn(
+              'grid grid-cols-1 gap-4',
+              watchedPaidPrivately ? 'sm:grid-cols-1' : 'sm:grid-cols-3',
+            )}>
               <div className="space-y-2">
                 <Label>Fakturadatum<RequiredMark /></Label>
                 <Input type="date" {...register('invoice_date')} />
               </div>
-              <div className="space-y-2">
-                <Label>Förfallodatum<RequiredMark /></Label>
-                <Input type="date" {...register('due_date')} />
-              </div>
-              <div className="space-y-2">
-                <Label>OCR / Betalningsreferens</Label>
-                <Input placeholder="OCR-nummer" {...register('payment_reference')} />
-              </div>
+              {!watchedPaidPrivately && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Förfallodatum<RequiredMark /></Label>
+                    <Input type="date" {...register('due_date')} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>OCR / Betalningsreferens</Label>
+                    <Input placeholder="OCR-nummer" {...register('payment_reference')} />
+                  </div>
+                </>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -1237,17 +1292,19 @@ export default function NewSupplierInvoicePage() {
           <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => router.push('/supplier-invoices')}>
             Avbryt
           </Button>
-          <Button
-            type="submit"
-            variant="outline"
-            className="w-full sm:w-auto"
-            disabled={isSubmitting || !canWrite}
-            onClick={() => { submitModeRef.current = 'register_and_match' }}
-            title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
-          >
-            <Link2 className="mr-2 h-4 w-4" />
-            Registrera &amp; markera som betald
-          </Button>
+          {!watchedPaidPrivately && (
+            <Button
+              type="submit"
+              variant="outline"
+              className="w-full sm:w-auto"
+              disabled={isSubmitting || !canWrite}
+              onClick={() => { submitModeRef.current = 'register_and_match' }}
+              title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+            >
+              <Link2 className="mr-2 h-4 w-4" />
+              Registrera &amp; markera som betald
+            </Button>
+          )}
           <Button
             type="submit"
             disabled={isSubmitting || !canWrite}
@@ -1263,8 +1320,10 @@ export default function NewSupplierInvoicePage() {
             ) : !canWrite ? (
               <>
                 <Lock className="mr-2 h-4 w-4" />
-                {isEF ? 'Registrera faktura' : 'Granska & registrera'}
+                {watchedPaidPrivately ? 'Registrera utlägg' : isEF ? 'Registrera faktura' : 'Granska & registrera'}
               </>
+            ) : watchedPaidPrivately ? (
+              'Registrera utlägg'
             ) : isEF ? (
               'Registrera faktura'
             ) : (

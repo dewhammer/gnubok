@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -89,6 +89,8 @@ export default function JournalEntryForm({
   const [nextVoucherNumber, setNextVoucherNumber] = useState<number | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showReview, setShowReview] = useState(false)
+  const [isSavingDraft, setIsSavingDraft] = useState(false)
+  const saveAsDraftRef = useRef(false)
   const [showNoDocWarning, setShowNoDocWarning] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [accounts, setAccounts] = useState<BASAccount[]>([])
@@ -332,7 +334,8 @@ export default function JournalEntryForm({
         return base
       })
 
-    const url = submitUrl ?? '/api/bookkeeping/journal-entries'
+    const baseUrl = submitUrl ?? '/api/bookkeeping/journal-entries'
+    const url = saveAsDraftRef.current ? `${baseUrl}?as_draft=true` : baseUrl
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -355,6 +358,7 @@ export default function JournalEntryForm({
 
   const handleConfirm = async () => {
     setIsSubmitting(true)
+    saveAsDraftRef.current = false
     try {
       const result = await runSubmit()
 
@@ -411,6 +415,61 @@ export default function JournalEntryForm({
       }
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  const handleSaveDraft = async () => {
+    if (!selectedPeriod || !description || !isBalanced || periodMismatch) return
+    setIsSavingDraft(true)
+    saveAsDraftRef.current = true
+    try {
+      const result = await runSubmit()
+
+      const journalEntryId = result.data?.id ?? result.journal_entry_id
+      if (journalEntryId && uploadedFiles.length > 0) {
+        const filesToLink = uploadedFiles.filter((f) => f.status === 'uploaded' && f.id)
+        for (const file of filesToLink) {
+          try {
+            await fetch(`/api/documents/${file.id}/link`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ journal_entry_id: journalEntryId }),
+            })
+          } catch {
+            // Non-blocking: user can attach underlag from the draft view
+          }
+        }
+      }
+
+      toast({
+        title: 'Utkast sparat',
+        description: 'Utkastet kan bokföras från bokföringssidan.',
+      })
+      setDescription('')
+      setNotes('')
+      setUploadedFiles([])
+      setLines([{ ...BLANK_LINE }, { ...BLANK_LINE }])
+      setEntryCurrency('SEK')
+      setExchangeRate('')
+      setForeignAmount('')
+      onCreated?.()
+      if (journalEntryId) {
+        onEntryCreated?.(journalEntryId)
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'cancelled') {
+        // Activation dialog dismissed — silent
+      } else {
+        const anyErr = err as { body?: unknown; status?: number }
+        toast({
+          title: 'Kunde inte spara utkast',
+          description: getErrorMessage(anyErr.body ?? err, { context: 'journal_entry', statusCode: anyErr.status }),
+          variant: 'destructive',
+        })
+      }
+    } finally {
+      saveAsDraftRef.current = false
+      setIsSavingDraft(false)
     }
   }
 
@@ -789,14 +848,25 @@ export default function JournalEntryForm({
       )}
 
       <div className="flex flex-col items-end gap-1">
-        <Button
-          onClick={handleReview}
-          disabled={!isBalanced || !description || !selectedPeriod || !!periodMismatch || isSubmitting || isUploading || !canWrite}
-          title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
-        >
-          {!canWrite && <Lock className="mr-2 h-4 w-4" />}
-          Granska & skapa
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={handleSaveDraft}
+            disabled={!isBalanced || !description || !selectedPeriod || !!periodMismatch || isSubmitting || isSavingDraft || isUploading || !canWrite}
+            title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : 'Sparar som utkast utan att tilldela verifikationsnummer'}
+          >
+            {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isSavingDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Spara som utkast
+          </Button>
+          <Button
+            onClick={handleReview}
+            disabled={!isBalanced || !description || !selectedPeriod || !!periodMismatch || isSubmitting || isSavingDraft || isUploading || !canWrite}
+            title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+          >
+            {!canWrite && <Lock className="mr-2 h-4 w-4" />}
+            Granska & skapa
+          </Button>
+        </div>
         {(!description || !selectedPeriod || isUploading || periodMismatch || incompleteLineCount > 0 || (!isBalanced && submittableLines.length < 2)) && (
           <div className="text-xs text-muted-foreground space-y-0.5 text-right">
             {!description && <p>Ange en beskrivning</p>}

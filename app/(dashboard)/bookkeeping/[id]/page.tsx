@@ -31,6 +31,7 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
   const [showCorrection, setShowCorrection] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isCommitting, setIsCommitting] = useState(false)
   const [isLastInSeries, setIsLastInSeries] = useState(false)
   const [attachmentCount, setAttachmentCount] = useState(0)
   const [editingNotes, setEditingNotes] = useState(false)
@@ -78,6 +79,28 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
       setSavingNotes(false)
     }
   }, [id, toast])
+
+  const handleCommit = useCallback(async () => {
+    setIsCommitting(true)
+    try {
+      const res = await fetch(`/api/bookkeeping/journal-entries/${id}/commit`, { method: 'POST' })
+      const result = await res.json()
+      if (res.ok) {
+        const posted = result.data
+        toast({
+          title: 'Verifikat bokfört',
+          description: `Verifikat ${posted?.voucher_series ?? ''}${posted?.voucher_number ?? ''} har bokförts.`,
+        })
+        await fetchData()
+      } else {
+        toast({ title: 'Kunde inte bokföra', description: getErrorMessage(result, { context: 'journal_entry' }), variant: 'destructive' })
+      }
+    } catch {
+      toast({ title: 'Kunde inte bokföra verifikat', variant: 'destructive' })
+    } finally {
+      setIsCommitting(false)
+    }
+  }, [id, toast, fetchData])
 
   const handleDelete = useCallback(async () => {
     setIsDeleting(true)
@@ -184,6 +207,18 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
 
         {(entry.status === 'posted' || entry.status === 'draft') && (
           <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            {entry.status === 'draft' && (
+              <Button
+                size="sm"
+                className="w-full sm:w-auto"
+                onClick={handleCommit}
+                disabled={!canWrite || isCommitting}
+                title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+              >
+                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : isCommitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Bokför
+              </Button>
+            )}
             {(entry.status === 'draft' || isLastInSeries) && (
               <Button
                 variant="destructive"

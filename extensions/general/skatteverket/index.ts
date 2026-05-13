@@ -125,7 +125,7 @@ export const skatteverketExtension: Extension = {
         await ctx.settings.set('oauth_redirect_uri', redirectUri)
         await ctx.settings.set('oauth_code_verifier', pkce.verifier)
         if (returnTo) await ctx.settings.set('oauth_return_to', returnTo)
-        else await ctx.settings.set('oauth_return_to', null)
+        else await ctx.settings.clear('oauth_return_to')
 
         const authorizeUrl = buildAuthorizeUrl(redirectUri, state, {
           codeChallenge: pkce.challenge,
@@ -540,7 +540,7 @@ export const skatteverketExtension: Extension = {
             )
           }
 
-          await ctx.settings.set(`submission_${redovisningsperiod}`, null)
+          await ctx.settings.clear(`submission_${redovisningsperiod}`)
           return NextResponse.json({ success: true })
         } catch (err) {
           return handleSkvError(err)
@@ -974,7 +974,7 @@ export const skatteverketExtension: Extension = {
           // showing `underlag_submitted` for an inlamning that no longer
           // exists at SKV. Direct path: caller passed period.
           if (period) {
-            await ctx.settings.set(`agi_submission_${period}`, null)
+            await ctx.settings.clear(`agi_submission_${period}`)
           } else {
             // Fallback: find the period by matching inlamningId across
             // recent submission keys. Cheap because there's at most one
@@ -1037,7 +1037,7 @@ export const skatteverketExtension: Extension = {
               { status: result.status },
             )
           }
-          await ctx.settings.set(`agi_submission_${period}`, null)
+          await ctx.settings.clear(`agi_submission_${period}`)
           return NextResponse.json({ success: true })
         } catch (err) {
           return handleSkvError(err)

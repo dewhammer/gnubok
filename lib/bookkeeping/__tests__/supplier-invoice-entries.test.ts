@@ -83,6 +83,7 @@ const {
   createSupplierInvoicePaymentEntry,
   createSupplierInvoiceCashEntry,
   createSupplierCreditNoteEntry,
+  createSupplierInvoicePrivatelyPaidEntry,
 } = await import('../supplier-invoice-entries')
 
 function makeItem(overrides: Partial<SupplierInvoiceItem> = {}): SupplierInvoiceItem {
@@ -1138,5 +1139,166 @@ describe('createSupplierCreditNoteEntry', () => {
     expect(findByAccount(input.lines, '2624')[0].debit_amount).toBe(600)
 
     assertBalanced(input)
+  })
+})
+
+// ============================================================
+// createSupplierInvoicePrivatelyPaidEntry — eget utlägg
+// ============================================================
+
+describe('createSupplierInvoicePrivatelyPaidEntry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedFindFiscalPeriod.mockResolvedValue('period-1')
+  })
+
+  it('returns null when no fiscal period found', async () => {
+    mockedFindFiscalPeriod.mockResolvedValue(null)
+    const invoice = makeSupplierInvoice()
+    const items = [makeItem()]
+
+    const result = await createSupplierInvoicePrivatelyPaidEntry(
+      null as never, 'company-1', 'user-1', invoice, items, 'aktiebolag'
+    )
+
+    expect(result).toBeNull()
+    expect(mockedCreateEntry).not.toHaveBeenCalled()
+  })
+
+  it('AB: credits 2893 (D expense + D 2641 + C 2893)', async () => {
+    const invoice = makeSupplierInvoice({
+      subtotal: 400,
+      vat_amount: 100,
+      total: 500,
+    })
+    const items = [makeItem({ line_total: 400, account_number: '6110', vat_rate: 0.25 })]
+
+    await createSupplierInvoicePrivatelyPaidEntry(
+      null as never, 'company-1', 'user-1', invoice, items, 'aktiebolag', 'Pressbyrån'
+    )
+
+    expect(mockedCreateEntry).toHaveBeenCalledOnce()
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    expect(input.source_type).toBe('supplier_invoice_privately_paid')
+
+    const debit6110 = findByAccount(input.lines, '6110')
+    expect(debit6110).toHaveLength(1)
+    expect(debit6110[0].debit_amount).toBe(400)
+
+    const debit2641 = findByAccount(input.lines, '2641')
+    expect(debit2641).toHaveLength(1)
+    expect(debit2641[0].debit_amount).toBe(100)
+
+    const credit2893 = findByAccount(input.lines, '2893')
+    expect(credit2893).toHaveLength(1)
+    expect(credit2893[0].credit_amount).toBe(500)
+
+    // AP account 2440 must NOT appear — privately-paid bypasses AP entirely.
+    expect(findByAccount(input.lines, '2440')).toHaveLength(0)
+    // Bank account 1930 must NOT appear — the owner paid, not the company.
+    expect(findByAccount(input.lines, '1930')).toHaveLength(0)
+    // EF owner account 2018 must NOT appear for AB.
+    expect(findByAccount(input.lines, '2018')).toHaveLength(0)
+
+    assertBalanced(input)
+  })
+
+  it('EF: credits 2018 instead of 2893', async () => {
+    const invoice = makeSupplierInvoice({
+      subtotal: 400,
+      vat_amount: 100,
+      total: 500,
+    })
+    const items = [makeItem({ line_total: 400, account_number: '6110', vat_rate: 0.25 })]
+
+    await createSupplierInvoicePrivatelyPaidEntry(
+      null as never, 'company-1', 'user-1', invoice, items, 'enskild_firma', 'Pressbyrån'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    const credit2018 = findByAccount(input.lines, '2018')
+    expect(credit2018).toHaveLength(1)
+    expect(credit2018[0].credit_amount).toBe(500)
+
+    expect(findByAccount(input.lines, '2893')).toHaveLength(0)
+    expect(findByAccount(input.lines, '2440')).toHaveLength(0)
+
+    assertBalanced(input)
+  })
+
+  it('skips 2641 line when invoice has zero VAT', async () => {
+    const invoice = makeSupplierInvoice({
+      subtotal: 500,
+      vat_amount: 0,
+      total: 500,
+    })
+    const items = [makeItem({ line_total: 500, account_number: '5460', vat_rate: 0 })]
+
+    await createSupplierInvoicePrivatelyPaidEntry(
+      null as never, 'company-1', 'user-1', invoice, items, 'aktiebolag'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    expect(findByAccount(input.lines, '5460')[0].debit_amount).toBe(500)
+    expect(findByAccount(input.lines, '2641')).toHaveLength(0)
+    expect(findByAccount(input.lines, '2893')[0].credit_amount).toBe(500)
+
+    assertBalanced(input)
+  })
+
+  it('handles mixed-rate kvitto with separate 2641 lines per rate', async () => {
+    // Lunch (12%) + parking (25%) on the same kvitto
+    const invoice = makeSupplierInvoice({
+      subtotal: 200,
+      vat_amount: 36, // 100*0.12 + 100*0.25 = 12 + 25 = 37; off-by-one from rounding
+      total: 237,
+    })
+    const items = [
+      makeItem({ line_total: 100, account_number: '5810', vat_rate: 0.12 }),
+      makeItem({ line_total: 100, account_number: '5611', vat_rate: 0.25 }),
+    ]
+
+    await createSupplierInvoicePrivatelyPaidEntry(
+      null as never, 'company-1', 'user-1', invoice, items, 'aktiebolag'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    // One 2641 line per rate
+    const vat2641 = findByAccount(input.lines, '2641')
+    expect(vat2641).toHaveLength(2)
+
+    // Credit 2893 = sum of all debits
+    const totalDebits = input.lines.reduce((sum, l) => sum + l.debit_amount, 0)
+    const credit2893 = findByAccount(input.lines, '2893')[0]
+    expect(Math.round(credit2893.credit_amount * 100)).toBe(Math.round(totalDebits * 100))
+
+    assertBalanced(input)
+  })
+
+  it('aggregates expense lines per account number', async () => {
+    // Two items on the same expense account should collapse to one debit line
+    const invoice = makeSupplierInvoice({
+      subtotal: 600,
+      vat_amount: 150,
+      total: 750,
+    })
+    const items = [
+      makeItem({ line_total: 300, account_number: '6110', vat_rate: 0.25 }),
+      makeItem({ line_total: 300, account_number: '6110', vat_rate: 0.25 }),
+    ]
+
+    await createSupplierInvoicePrivatelyPaidEntry(
+      null as never, 'company-1', 'user-1', invoice, items, 'aktiebolag'
+    )
+
+    const input = mockedCreateEntry.mock.calls[0][3]
+
+    const debit6110 = findByAccount(input.lines, '6110')
+    expect(debit6110).toHaveLength(1)
+    expect(debit6110[0].debit_amount).toBe(600)
   })
 })

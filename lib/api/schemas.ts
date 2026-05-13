@@ -98,6 +98,7 @@ export const JournalEntrySourceTypeSchema = z.enum([
   'supplier_invoice_registered',
   'supplier_invoice_paid',
   'supplier_invoice_cash_payment',
+  'supplier_invoice_privately_paid',
   'supplier_credit_note',
   'currency_revaluation',
 ])
@@ -136,6 +137,8 @@ export const TaxDeadlineTypeSchema = z.enum([
 export const DeadlineSourceSchema = z.enum(['system', 'user'])
 
 export const MomsPeriodSchema = z.enum(['monthly', 'quarterly', 'yearly'])
+
+export const PsPeriodTypeSchema = z.enum(['monthly', 'quarterly'])
 
 export const DocumentUploadSourceSchema = z.enum([
   'camera', 'file_upload', 'email', 'e_invoice', 'scan', 'api', 'system',
@@ -263,6 +266,10 @@ export const CreateSupplierInvoiceSchema = z.object({
   reverse_charge: z.boolean().optional(),
   payment_reference: z.string().optional(),
   notes: z.string().optional(),
+  paid_with_private_funds: z.boolean().optional(),
+  // For paid_with_private_funds: the date the owner paid out-of-pocket.
+  // Defaults to invoice_date (common for kvitto where the two coincide).
+  payment_date: isoDate.optional(),
   items: z.array(CreateSupplierInvoiceItemSchema).min(1, 'At least one item is required'),
 })
 
@@ -371,6 +378,10 @@ export const UpdateSettingsSchema = z.object({
   vat_registered: z.boolean().optional(),
   vat_number: z.string().regex(/^SE\d{12}$/, 'Momsregistreringsnummer måste vara SE följt av 12 siffror').nullable().optional(),
   moms_period: MomsPeriodSchema.nullable().optional(),
+  periodisk_sammanstallning_period: PsPeriodTypeSchema.optional(),
+  tax_contact_name: z.string().max(200).nullable().optional(),
+  tax_contact_phone: z.string().max(40).nullable().optional(),
+  tax_contact_email: z.string().email().nullable().optional().or(z.literal('')),
   fiscal_year_start_month: z.number().int().min(1).max(12).optional(),
   preliminary_tax_monthly: z.number().nullable().optional(),
   bank_name: z.string().max(100, 'Banknamn får vara max 100 tecken').optional(),

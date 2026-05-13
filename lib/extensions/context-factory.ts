@@ -50,7 +50,7 @@ function createSettings(
     },
 
     async set<T>(key: string, value: T): Promise<void> {
-      await supabase
+      const { error } = await supabase
         .from('extension_data')
         .upsert(
           {
@@ -62,6 +62,21 @@ function createSettings(
           },
           { onConflict: 'company_id,extension_id,key' }
         )
+      if (error) {
+        throw new Error(`extension_data set failed for ${extensionId}/${key}: ${error.message}`)
+      }
+    },
+
+    async clear(key: string): Promise<void> {
+      const { error } = await supabase
+        .from('extension_data')
+        .delete()
+        .eq('company_id', companyId)
+        .eq('extension_id', extensionId)
+        .eq('key', key)
+      if (error) {
+        throw new Error(`extension_data clear failed for ${extensionId}/${key}: ${error.message}`)
+      }
     },
   }
 }

@@ -1,4 +1,4 @@
-# CLAUDE.md — gnubok
+# CLAUDE.md — Gnubok
 
 ## Project Overview
 

@@ -31,9 +31,12 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
 }))
 
 const mockCreateSupplierInvoiceRegistrationEntry = vi.fn()
+const mockCreateSupplierInvoicePrivatelyPaidEntry = vi.fn()
 vi.mock('@/lib/bookkeeping/supplier-invoice-entries', () => ({
   createSupplierInvoiceRegistrationEntry: (...args: unknown[]) =>
     mockCreateSupplierInvoiceRegistrationEntry(...args),
+  createSupplierInvoicePrivatelyPaidEntry: (...args: unknown[]) =>
+    mockCreateSupplierInvoicePrivatelyPaidEntry(...args),
 }))
 
 import { eventBus } from '@/lib/events'
@@ -456,5 +459,127 @@ describe('POST /api/supplier-invoices', () => {
 
     expect(status).toBe(500)
     expect((body.error as unknown as { code: string }).code).toBe('SI_CREATE_FAILED')
+  })
+
+  it('books privately-paid invoice via 2893 path for aktiebolag', async () => {
+    const supplier = makeSupplier({ id: VALID_UUID })
+    const createdInvoice = makeSupplierInvoice({ id: 'si-priv-1', status: 'paid' })
+
+    // Fetch supplier
+    enqueue({ data: supplier, error: null })
+    // Fetch company.entity_type (paidPrivately branch)
+    enqueue({ data: { entity_type: 'aktiebolag' }, error: null })
+    // RPC get_next_arrival_number
+    enqueue({ data: 12 })
+    // Insert invoice
+    enqueue({ data: createdInvoice, error: null })
+    // Insert items
+    enqueue({ data: null, error: null })
+    // Fetch company settings
+    enqueue({ data: { accounting_method: 'accrual' }, error: null })
+
+    mockCreateSupplierInvoicePrivatelyPaidEntry.mockResolvedValue({ id: 'je-priv-1' })
+    // Update invoice with payment_journal_entry_id
+    enqueue({ data: null, error: null })
+    // Insert supplier_invoice_payments row
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'KVITTO-001',
+        invoice_date: '2024-06-01',
+        due_date: '2024-06-01',
+        paid_with_private_funds: true,
+        items: [
+          {
+            description: 'Kontorsmaterial',
+            quantity: 1,
+            unit_price: 400,
+            account_number: '6110',
+            vat_rate: 0.25,
+          },
+        ],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{
+      data: { payment_journal_entry_id: string; registration_journal_entry_id: null }
+    }>(response)
+
+    expect(status).toBe(200)
+    expect(body.data.payment_journal_entry_id).toBe('je-priv-1')
+    expect(body.data.registration_journal_entry_id).toBeNull()
+    expect(mockCreateSupplierInvoicePrivatelyPaidEntry).toHaveBeenCalled()
+    // The classic registration path must NOT be touched.
+    expect(mockCreateSupplierInvoiceRegistrationEntry).not.toHaveBeenCalled()
+    const call = mockCreateSupplierInvoicePrivatelyPaidEntry.mock.calls[0]
+    expect(call[5]).toBe('aktiebolag')
+  })
+
+  it('passes entity_type=enskild_firma so engine credits 2018', async () => {
+    const supplier = makeSupplier({ id: VALID_UUID })
+    const createdInvoice = makeSupplierInvoice({ id: 'si-priv-2', status: 'paid' })
+
+    enqueue({ data: supplier, error: null })
+    enqueue({ data: { entity_type: 'enskild_firma' }, error: null })
+    enqueue({ data: 13 })
+    enqueue({ data: createdInvoice, error: null })
+    enqueue({ data: null, error: null })
+    enqueue({ data: { accounting_method: 'cash' }, error: null })
+
+    mockCreateSupplierInvoicePrivatelyPaidEntry.mockResolvedValue({ id: 'je-priv-2' })
+    enqueue({ data: null, error: null })
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'KVITTO-002',
+        invoice_date: '2024-06-01',
+        due_date: '2024-06-01',
+        paid_with_private_funds: true,
+        items: [
+          {
+            description: 'Lunch klient',
+            quantity: 1,
+            unit_price: 200,
+            account_number: '5810',
+            vat_rate: 0.12,
+          },
+        ],
+      },
+    })
+    const response = await POST(request)
+    const { status } = await parseJsonResponse(response)
+
+    expect(status).toBe(200)
+    const call = mockCreateSupplierInvoicePrivatelyPaidEntry.mock.calls[0]
+    expect(call[5]).toBe('enskild_firma')
+  })
+
+  it('rejects paid_with_private_funds combined with reverse_charge', async () => {
+    const request = createMockRequest('/api/supplier-invoices', {
+      method: 'POST',
+      body: {
+        supplier_id: VALID_UUID,
+        supplier_invoice_number: 'LF-RC',
+        invoice_date: '2024-06-01',
+        due_date: '2024-07-01',
+        paid_with_private_funds: true,
+        reverse_charge: true,
+        items: [{ description: 'Service', quantity: 1, unit_price: 5000, account_number: '6540', vat_rate: 0.25 }],
+      },
+    })
+    const response = await POST(request)
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
+
+    expect(status).toBe(400)
+    expect(body.error.code).toBe('SI_CREATE_INVALID_INPUT')
+    // Make sure we never touched the engine paths.
+    expect(mockCreateSupplierInvoicePrivatelyPaidEntry).not.toHaveBeenCalled()
+    expect(mockCreateSupplierInvoiceRegistrationEntry).not.toHaveBeenCalled()
   })
 })

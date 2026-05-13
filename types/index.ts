@@ -197,6 +197,12 @@ export interface CompanySettings {
   vat_registered: boolean
   vat_number: string | null
   moms_period: MomsPeriod | null
+  periodisk_sammanstallning_period: 'monthly' | 'quarterly'
+
+  // Tax contact (SKV-filings, periodisk sammanställning, AGI, etc.)
+  tax_contact_name: string | null
+  tax_contact_phone: string | null
+  tax_contact_email: string | null
 
   // Fiscal year
   fiscal_year_start_month: number  // 1-12
@@ -514,6 +520,11 @@ export interface SupplierInvoice {
 
   transaction_id: string | null
   document_id: string | null
+
+  // Owner paid out-of-pocket; AP step is bypassed and the expense is booked
+  // directly against 2893 (AB) or 2018 (EF). Status is set to 'paid' at
+  // creation and mark-paid is rejected by the existing status guard.
+  paid_with_private_funds: boolean
 
   notes: string | null
 
@@ -910,6 +921,7 @@ export type JournalEntrySourceType =
   | 'supplier_invoice_registered'
   | 'supplier_invoice_paid'
   | 'supplier_invoice_cash_payment'
+  | 'supplier_invoice_privately_paid'
   | 'supplier_credit_note'
   | 'currency_revaluation'
 

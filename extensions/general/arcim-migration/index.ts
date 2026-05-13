@@ -1094,8 +1094,8 @@ export const arcimMigrationExtension: Extension = {
           await deleteConsent(consentId)
 
           if (ctx?.settings) {
-            await ctx.settings.set('consent_id', null)
-            await ctx.settings.set('provider', null)
+            await ctx.settings.clear('consent_id')
+            await ctx.settings.clear('provider')
           }
 
           return NextResponse.json({ success: true })

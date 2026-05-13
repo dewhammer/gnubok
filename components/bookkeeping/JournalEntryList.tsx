@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { ChevronDown, ChevronRight, Paperclip, AlertTriangle, Loader2, BookOpen, X, Copy } from 'lucide-react'
+import { ChevronDown, ChevronRight, Paperclip, AlertTriangle, Loader2, BookOpen, X, Copy, Lock } from 'lucide-react'
 import { formatDate } from '@/lib/utils'
 import { Input } from '@/components/ui/input'
 import { AccountNumber } from '@/components/ui/account-number'
@@ -17,6 +17,9 @@ import { getAccountDescription } from '@/lib/bookkeeping/account-descriptions'
 import JournalEntryAttachments from '@/components/bookkeeping/JournalEntryAttachments'
 import CorrectionEntryDialog from '@/components/bookkeeping/CorrectionEntryDialog'
 import JournalEntryStatusBadge from '@/components/bookkeeping/JournalEntryStatusBadge'
+import { useToast } from '@/components/ui/use-toast'
+import { useCanWrite } from '@/lib/hooks/use-can-write'
+import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { JournalEntry, JournalEntryLine } from '@/types'
 
 const NEEDS_ATTACHMENT = new Set([
@@ -34,7 +37,10 @@ interface Props {
 
 export default function JournalEntryList({ periodId }: Props) {
   const router = useRouter()
+  const { toast } = useToast()
+  const { canWrite } = useCanWrite()
   const [entries, setEntries] = useState<JournalEntry[]>([])
+  const [committingId, setCommittingId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [count, setCount] = useState(0)
@@ -140,6 +146,28 @@ export default function JournalEntryList({ periodId }: Props) {
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id)
+  }
+
+  const handleCommit = async (entryId: string) => {
+    setCommittingId(entryId)
+    try {
+      const res = await fetch(`/api/bookkeeping/journal-entries/${entryId}/commit`, { method: 'POST' })
+      const result = await res.json()
+      if (res.ok) {
+        const posted = result.data
+        toast({
+          title: 'Verifikat bokfört',
+          description: `Verifikat ${posted?.voucher_series ?? ''}${posted?.voucher_number ?? ''} har bokförts.`,
+        })
+        await fetchEntries()
+      } else {
+        toast({ title: 'Kunde inte bokföra', description: getErrorMessage(result, { context: 'journal_entry' }), variant: 'destructive' })
+      }
+    } catch {
+      toast({ title: 'Kunde inte bokföra verifikat', variant: 'destructive' })
+    } finally {
+      setCommittingId(null)
+    }
   }
 
   if (loading) {
@@ -443,6 +471,18 @@ export default function JournalEntryList({ periodId }: Props) {
                   />
 
                   <div className="mt-4 pt-3 border-t flex flex-col sm:flex-row gap-2">
+                    {entry.status === 'draft' && (
+                      <Button
+                        size="sm"
+                        className="w-full sm:w-auto"
+                        onClick={() => handleCommit(entry.id)}
+                        disabled={!canWrite || committingId === entry.id}
+                        title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+                      >
+                        {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : committingId === entry.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Bokför
+                      </Button>
+                    )}
                     <Button variant="outline" size="sm" className="w-full sm:w-auto" asChild>
                       <Link href={`/bookkeeping/${entry.id}`}>Visa detaljer</Link>
                     </Button>

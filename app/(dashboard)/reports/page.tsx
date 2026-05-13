@@ -14,6 +14,7 @@ import { useCompany } from '@/contexts/CompanyContext'
 import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import { ReportsNav } from '@/components/reports/ReportsNav'
 import { NEDeclarationView } from '@/components/reports/NEDeclarationView'
+import { PeriodiskSammanstallningView } from '@/components/reports/PeriodiskSammanstallningView'
 import { INK2DeclarationView } from '@/components/reports/INK2DeclarationView'
 import { BankReconciliationView } from '@/components/reports/BankReconciliationView'
 import { TrialBalanceChart } from '@/components/reports/TrialBalanceChart'
@@ -186,6 +187,7 @@ export default function ReportsPage() {
               <BalanceSheetView periodId={selectedPeriod} onNavigateToAccount={navigateToAccount} />
             )}
             {activeTab === 'vat-declaration' && <VatDeclarationView />}
+            {activeTab === 'periodisk-sammanstallning' && <PeriodiskSammanstallningView />}
             {isEnskildFirma && activeTab === 'ne-declaration' && (
               <NEDeclarationView periodId={selectedPeriod} />
             )}

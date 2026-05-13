@@ -43,6 +43,7 @@ const CATEGORIES: ReportCategory[] = [
     label: 'Skatt & moms',
     items: [
       { value: 'vat-declaration', label: 'Momsdeklaration' },
+      { value: 'periodisk-sammanstallning', label: 'Periodisk sammanställning' },
       { value: 'ne-declaration', label: 'NE-bilaga', entityType: 'enskild_firma' },
       { value: 'ink2-declaration', label: 'INK2', entityType: 'aktiebolag' },
     ],

@@ -120,6 +120,34 @@ describe('createExtensionContext', () => {
     expect(supabase.from).toHaveBeenCalledWith('extension_data')
   })
 
+  it('settings.set() throws when supabase returns an error', async () => {
+    const { supabase, mockResult } = createMockSupabase()
+    mockResult({ data: null, error: { message: 'null value in column "value" violates not-null constraint' } })
+
+    const ctx = createExtensionContext(supabase as never, 'user-1', 'company-1', 'test-ext')
+
+    await expect(ctx.settings.set('my-key', null)).rejects.toThrow(/extension_data set failed/)
+  })
+
+  it('settings.clear() deletes from extension_data table', async () => {
+    const { supabase, mockResult } = createMockSupabase()
+    mockResult({ data: null, error: null })
+
+    const ctx = createExtensionContext(supabase as never, 'user-1', 'company-1', 'test-ext')
+    await ctx.settings.clear('my-key')
+
+    expect(supabase.from).toHaveBeenCalledWith('extension_data')
+  })
+
+  it('settings.clear() throws when supabase returns an error', async () => {
+    const { supabase, mockResult } = createMockSupabase()
+    mockResult({ data: null, error: { message: 'permission denied' } })
+
+    const ctx = createExtensionContext(supabase as never, 'user-1', 'company-1', 'test-ext')
+
+    await expect(ctx.settings.clear('my-key')).rejects.toThrow(/extension_data clear failed/)
+  })
+
   it('storage.getPublicUrl() returns URL string', () => {
     const { supabase } = createMockSupabase()
     const ctx = createExtensionContext(supabase as never, 'user-1', 'company-1', 'test-ext')

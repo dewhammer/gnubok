@@ -56,6 +56,21 @@ export function SettingsFormWrapper({ children, onSave, className }: SettingsFor
       const result = await response.json()
 
       if (!response.ok) {
+        // Surface the specific Zod field message when the API sent a
+        // validation_error envelope — generic "Validation failed" is useless
+        // to the user.
+        if (
+          result?.type === 'validation_error'
+          && Array.isArray(result.errors)
+          && result.errors.length > 0
+        ) {
+          const messages = result.errors
+            .map((e: { message?: string }) => e.message)
+            .filter((m: unknown): m is string => typeof m === 'string' && m.length > 0)
+          if (messages.length > 0) {
+            throw new Error(messages.join(' • '))
+          }
+        }
         throw new Error(result.error || 'Kunde inte spara inställningar')
       }
 

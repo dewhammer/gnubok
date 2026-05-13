@@ -389,6 +389,92 @@ export async function createSupplierInvoiceCashEntry(
 }
 
 /**
+ * Create journal entry for an invoice paid with the owner's private funds
+ * (eget utlägg). The AP leg is bypassed entirely — instead of crediting 2440
+ * and later debiting it on mark-paid, the expense lines book straight against
+ * the owner's payable/equity account:
+ *
+ *   Debit  5xxx/6xxx (per item)      [line_total in SEK]
+ *   Debit  2641 Ingående moms        [VAT per rate]
+ *   Credit 2893 / 2018               [total incl VAT]
+ *
+ * Reverse charge is intentionally not supported here. RC invoices are
+ * never "I paid this cash at a kiosk" cases — they're EU/byggtjänster from
+ * registered businesses with formal invoices, which always go through AP.
+ * The API route guards against this combo before calling us.
+ */
+export async function createSupplierInvoicePrivatelyPaidEntry(
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+  invoice: SupplierInvoice,
+  items: SupplierInvoiceItem[],
+  entityType: 'aktiebolag' | 'enskild_firma',
+  supplierName?: string
+): Promise<JournalEntry | null> {
+  const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, invoice.invoice_date)
+  if (!fiscalPeriodId) {
+    log.warn('No open fiscal period found for invoice date:', invoice.invoice_date)
+    return null
+  }
+
+  const ownerAccount = entityType === 'aktiebolag' ? '2893' : '2018'
+  const desc = buildSupplierDescription('Eget utlägg', invoice.supplier_invoice_number, supplierName, `(ankomst ${invoice.arrival_number})`)
+  const lines: CreateJournalEntryLineInput[] = []
+
+  // Debit: Expense accounts (in SEK), aggregated per account
+  const expenseByAccount = new Map<string, number>()
+  for (const item of items) {
+    const current = expenseByAccount.get(item.account_number) || 0
+    const itemSek = resolveSekAmount(item.line_total, null, invoice.currency, invoice.exchange_rate)
+    expenseByAccount.set(item.account_number, current + itemSek)
+  }
+  for (const [accountNumber, amount] of expenseByAccount) {
+    lines.push({
+      account_number: accountNumber,
+      debit_amount: Math.round(amount * 100) / 100,
+      credit_amount: 0,
+      line_description: desc,
+    })
+  }
+
+  // Debit: Ingående moms per rate group (mixed-rate kvitto support)
+  if (invoice.vat_amount > 0) {
+    const vatByRate = groupVatByRate(items, invoice.currency, invoice.exchange_rate)
+    for (const [rate, amount] of vatByRate) {
+      if (amount > 0) {
+        lines.push({
+          account_number: '2641',
+          debit_amount: Math.round(amount * 100) / 100,
+          credit_amount: 0,
+          line_description: `Ingående moms ${Math.round(rate * 100)}% ${desc}`,
+        })
+      }
+    }
+  }
+
+  // Credit: Owner payable/equity — balance guarantee
+  const totalDebits = lines.reduce((sum, l) => sum + l.debit_amount, 0)
+  lines.push({
+    account_number: ownerAccount,
+    debit_amount: 0,
+    credit_amount: Math.round(totalDebits * 100) / 100,
+    line_description: desc,
+  })
+
+  const input: CreateJournalEntryInput = {
+    fiscal_period_id: fiscalPeriodId,
+    entry_date: invoice.invoice_date,
+    description: desc,
+    source_type: 'supplier_invoice_privately_paid',
+    source_id: invoice.id,
+    lines,
+  }
+
+  return createJournalEntry(supabase, companyId, userId, input)
+}
+
+/**
  * Create journal entry for a supplier credit note (reversal of registration)
  *
  *   Debit  2440 Leverantörsskulder                 [total]

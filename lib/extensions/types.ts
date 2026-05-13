@@ -149,6 +149,12 @@ export interface ExtensionLogger {
 export interface ExtensionSettings {
   get<T>(key?: string): Promise<T | null>
   set<T>(key: string, value: T): Promise<void>
+  /**
+   * Remove a stored key. Use this to clear state instead of `set(key, null)`,
+   * which fails against the `value jsonb NOT NULL` constraint on extension_data.
+   * No-op when the key does not exist.
+   */
+  clear(key: string): Promise<void>
 }
 
 /** Storage accessor wrapping Supabase storage */
