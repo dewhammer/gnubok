@@ -80,6 +80,15 @@ export interface EndpointDefinition {
     success: ZodTypeAny
     /** Stable error codes this endpoint can emit (cross-referenced with the docs). */
     errorCodes?: string[]
+    /**
+     * Override the default 'application/json' content type for non-JSON
+     * responses (e.g. binary downloads). When set to 'application/pdf', the
+     * OpenAPI generator emits a `{ type: 'string', format: 'binary' }` schema
+     * instead of deriving from `success`. The `success` schema is still
+     * required (use `z.unknown()` as a marker) so existing registry consumers
+     * don't need to handle a missing field.
+     */
+    contentType?: string
   }
 }
 
@@ -238,7 +247,12 @@ export function generateOpenApiSpec(serverUrl: string): OpenApiSpec {
     // OpenAPI path syntax: {param} instead of :param.
     const openApiPath = def.path.replace(/:([^/]+)/g, '{$1}')
 
-    const responseSchema = zodToJsonSchema(def.response.success)
+    // Binary responses (e.g. application/pdf) declare a `format: binary`
+    // schema rather than deriving from the Zod success type.
+    const successContent = def.response.contentType && def.response.contentType !== 'application/json'
+      ? { [def.response.contentType]: { schema: { type: 'string', format: 'binary' } } }
+      : { 'application/json': { schema: zodToJsonSchema(def.response.success) } }
+
     const operationDef: Record<string, unknown> = {
       operationId: def.operation,
       summary: def.summary,
@@ -257,7 +271,7 @@ export function generateOpenApiSpec(serverUrl: string): OpenApiSpec {
       responses: {
         '200': {
           description: 'Success',
-          content: { 'application/json': { schema: responseSchema } },
+          content: successContent,
         },
         '400': { description: 'Validation error', $ref: '#/components/responses/Error' },
         '401': { description: 'Unauthorized', $ref: '#/components/responses/Error' },

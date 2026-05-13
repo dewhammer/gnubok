@@ -461,6 +461,11 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
       'Fakturans PDF kunde inte skapas. Kontrollera fakturarader och kunduppgifter och försök igen.',
     message_en: 'Failed to render invoice PDF before send; no invoice number was consumed.',
   },
+  INVOICE_PDF_RENDER_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Fakturans PDF kunde inte skapas.',
+    message_en: 'Invoice PDF rendering failed.',
+  },
   INVOICE_SEND_PARTIAL: {
     httpStatus: 200,
     message_sv:
