@@ -473,7 +473,7 @@ export default function NewInvoicePage() {
       )}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 pb-28 md:pb-0">
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid gap-6 lg:grid-cols-3 lg:items-start">
           {/* Main content */}
           <div className="lg:col-span-2 space-y-6">
             {/* Customer selection */}
@@ -684,8 +684,8 @@ export default function NewInvoicePage() {
             </Card>
           </div>
 
-          {/* Sidebar */}
-          <div className="space-y-6">
+          {/* Sidebar — sticky so totals + action stay visible while scrolling items */}
+          <div className="space-y-6 lg:sticky lg:top-6 lg:self-start">
             {/* Invoice details */}
             <Card>
               <CardHeader>
