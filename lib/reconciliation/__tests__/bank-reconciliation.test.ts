@@ -10,6 +10,7 @@ import {
   runReconciliation,
   manualLink,
   unlinkReconciliation,
+  getReconciliationStatus,
 } from '../bank-reconciliation'
 import type { UnlinkedGLLine } from '../bank-reconciliation'
 import { makeTransaction } from '@/tests/helpers'
@@ -552,5 +553,136 @@ describe('unlinkReconciliation', () => {
     const result = await unlinkReconciliation(supabase as never, 'company-1', 'tx-1')
 
     expect(result.success).toBe(true)
+  })
+})
+
+// ============================================================
+// getReconciliationStatus — IB exclusion (PR 3 of #443)
+// ============================================================
+
+describe('getReconciliationStatus', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    eventBus.clear()
+  })
+
+  function createQueueMockSupabase() {
+    const resultQueue: { data: unknown; error: unknown }[] = []
+    const enqueue = (...results: { data?: unknown; error?: unknown }[]) => {
+      for (const r of results) resultQueue.push({ data: r.data ?? null, error: r.error ?? null })
+    }
+    const buildChain = (): unknown => {
+      const handler: ProxyHandler<object> = {
+        get(_target, prop) {
+          if (prop === 'then') {
+            const next = resultQueue.shift() ?? { data: null, error: null }
+            return (resolve: (v: unknown) => void) => resolve(next)
+          }
+          return (..._args: unknown[]) => buildChain()
+        },
+      }
+      return new Proxy({}, handler)
+    }
+    const supabase = {
+      from: vi.fn().mockImplementation(() => buildChain()),
+      rpc: vi.fn().mockImplementation(() => buildChain()),
+    }
+    return { supabase, enqueue }
+  }
+
+  it('reports is_reconciled=true when only the IB voucher is unmatched on 1930', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    // 1) transactions: 1000 SEK matched (journal_entry_id set)
+    enqueue({
+      data: [{ amount: 1000, journal_entry_id: 'je-tx', reconciliation_method: 'auto_exact' }],
+    })
+    // 2) journal_entry_lines: 50,000 IB debit + 1000 matched debit on 1930
+    enqueue({
+      data: [
+        { debit_amount: 50000, credit_amount: 0, journal_entries: { source_type: 'opening_balance' } },
+        { debit_amount: 1000, credit_amount: 0, journal_entries: { source_type: 'bank_import' } },
+      ],
+    })
+    // 3) RPC get_unlinked_1930_lines: returns empty (RPC excludes IB after migration)
+    enqueue({ data: [] })
+
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    expect(status.gl_1930_balance).toBe(51000)             // includes IB
+    expect(status.gl_1930_period_movement).toBe(1000)      // excludes IB
+    expect(status.gl_1930_opening_balance).toBe(50000)
+    expect(status.bank_transaction_total).toBe(1000)
+    expect(status.difference).toBe(0)
+    expect(status.is_reconciled).toBe(true)
+    expect(status.unmatched_gl_line_count).toBe(0)
+  })
+
+  it('reports is_reconciled=false and a non-zero difference when a real bank tx is unmatched', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    // 1) transactions: 1500 total, only 1000 matched
+    enqueue({
+      data: [
+        { amount: 1000, journal_entry_id: 'je-1', reconciliation_method: null },
+        { amount: 500, journal_entry_id: null, reconciliation_method: null },
+      ],
+    })
+    // 2) GL lines: 50,000 IB + 1000 booked
+    enqueue({
+      data: [
+        { debit_amount: 50000, credit_amount: 0, journal_entries: { source_type: 'opening_balance' } },
+        { debit_amount: 1000, credit_amount: 0, journal_entries: { source_type: 'bank_import' } },
+      ],
+    })
+    // 3) RPC: empty
+    enqueue({ data: [] })
+
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    expect(status.bank_transaction_total).toBe(1500)
+    expect(status.gl_1930_period_movement).toBe(1000)
+    expect(status.gl_1930_opening_balance).toBe(50000)
+    expect(status.difference).toBe(500)                  // bank > GL period movement
+    expect(status.is_reconciled).toBe(false)
+    expect(status.unmatched_transaction_count).toBe(1)
+  })
+
+  it('handles companies with no IB on 1930 (period_movement === gl_balance)', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    enqueue({ data: [{ amount: 100, journal_entry_id: 'je-1', reconciliation_method: 'auto_exact' }] })
+    enqueue({
+      data: [{ debit_amount: 100, credit_amount: 0, journal_entries: { source_type: 'bank_import' } }],
+    })
+    enqueue({ data: [] })
+
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    expect(status.gl_1930_opening_balance).toBe(0)
+    expect(status.gl_1930_period_movement).toBe(100)
+    expect(status.gl_1930_balance).toBe(100)
+    expect(status.difference).toBe(0)
+    expect(status.is_reconciled).toBe(true)
+  })
+
+  it('handles array-shaped journal_entries embed (Supabase wide typing)', async () => {
+    // Supabase typings sometimes widen embedded relations to arrays. The
+    // implementation handles both shapes — verify here.
+    const { supabase, enqueue } = createQueueMockSupabase()
+
+    enqueue({ data: [] })
+    enqueue({
+      data: [
+        { debit_amount: 1000, credit_amount: 0, journal_entries: [{ source_type: 'opening_balance' }] },
+        { debit_amount: 200, credit_amount: 0, journal_entries: [{ source_type: 'bank_import' }] },
+      ],
+    })
+    enqueue({ data: [] })
+
+    const status = await getReconciliationStatus(supabase as never, 'company-1')
+
+    expect(status.gl_1930_opening_balance).toBe(1000)
+    expect(status.gl_1930_period_movement).toBe(200)
   })
 })

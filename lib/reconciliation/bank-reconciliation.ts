@@ -36,7 +36,21 @@ export interface ReconciliationRunResult {
 
 export interface ReconciliationStatus {
   bank_transaction_total: number
+  /**
+   * @deprecated Use `gl_1930_period_movement` for the reconciliation diff. This
+   * field is preserved for back-compat with persisted status snapshots produced
+   * before the IB-exclusion change; new consumers reading this to compute the
+   * "real" difference will be off by the IB amount whenever a SIE-imported
+   * opening balance exists on 1930. The `difference` field on this interface
+   * is computed against `gl_1930_period_movement`, not this.
+   */
   gl_1930_balance: number
+  /** Ledger movement on 1930 excluding source_type='opening_balance' lines. */
+  gl_1930_period_movement: number
+  /** IB on 1930 within the date range — surfaced separately so reconciliation
+   *  doesn't treat it as an unmatched bank transaction. */
+  gl_1930_opening_balance: number
+  /** bankTotal − gl_1930_period_movement. Zero when every period transaction is matched. */
   difference: number
   is_reconciled: boolean
   matched_count: number
@@ -232,10 +246,13 @@ export async function getReconciliationStatus(
 
   const { data: transactions } = await txQuery
 
-  // Get GL bank account lines (all, not just unlinked)
+  // Get GL bank account lines (all, not just unlinked). Pull source_type
+  // from the join so we can split IB out of the period-movement comparison —
+  // an opening_balance line on 1930 is the prior year's closing balance, not
+  // a bank transaction we should expect to match.
   let glQuery = supabase
     .from('journal_entry_lines')
-    .select('debit_amount, credit_amount, journal_entries!inner(company_id, entry_date, status)')
+    .select('debit_amount, credit_amount, journal_entries!inner(company_id, entry_date, status, source_type)')
     .eq('account_number', bankAccount)
     .eq('journal_entries.company_id', companyId)
     .eq('journal_entries.status', 'posted')
@@ -245,16 +262,38 @@ export async function getReconciliationStatus(
 
   const { data: glLines } = await glQuery
 
+  type GlLineRow = {
+    debit_amount: number | string | null
+    credit_amount: number | string | null
+    journal_entries: { source_type?: string | null } | { source_type?: string | null }[] | null
+  }
+  function isOpeningBalance(line: GlLineRow): boolean {
+    const je = line.journal_entries
+    if (!je) return false
+    // Supabase typings sometimes widen embedded relations to arrays even when
+    // the join is one-to-one. Handle both shapes defensively.
+    const sourceType = Array.isArray(je) ? je[0]?.source_type : je.source_type
+    return sourceType === 'opening_balance'
+  }
+
   // Calculate totals
   const bankTotal = (transactions || []).reduce(
     (sum, tx) => sum + (Number(tx.amount) || 0),
     0
   )
 
-  const glBalance = (glLines || []).reduce(
+  const allLines = (glLines || []) as GlLineRow[]
+  const glBalance = allLines.reduce(
     (sum, line) => sum + (Number(line.debit_amount) || 0) - (Number(line.credit_amount) || 0),
     0
   )
+  const glOpeningBalance = allLines
+    .filter(isOpeningBalance)
+    .reduce(
+      (sum, line) => sum + (Number(line.debit_amount) || 0) - (Number(line.credit_amount) || 0),
+      0
+    )
+  const glPeriodMovement = glBalance - glOpeningBalance
 
   const matchedCount = (transactions || []).filter(
     (tx) => tx.journal_entry_id !== null
@@ -264,14 +303,17 @@ export async function getReconciliationStatus(
     (tx) => tx.journal_entry_id === null
   ).length
 
-  // Unlinked GL lines count
+  // Unlinked GL lines count (RPC excludes source_type='opening_balance' since
+  // 20260514132534_unlinked_1930_lines_exclude_opening_balance.sql)
   const unlinkedLines = await fetchUnlinkedGLLines(supabase, companyId, dateFrom, dateTo)
 
-  const difference = Math.round((bankTotal - glBalance) * 100) / 100
+  const difference = Math.round((bankTotal - glPeriodMovement) * 100) / 100
 
   return {
     bank_transaction_total: Math.round(bankTotal * 100) / 100,
     gl_1930_balance: Math.round(glBalance * 100) / 100,
+    gl_1930_period_movement: Math.round(glPeriodMovement * 100) / 100,
+    gl_1930_opening_balance: Math.round(glOpeningBalance * 100) / 100,
     difference,
     is_reconciled: Math.abs(difference) < 0.01,
     matched_count: matchedCount,

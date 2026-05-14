@@ -27,7 +27,13 @@ const METHOD_LABELS: Record<string, string> = {
 
 interface ReconciliationStatus {
   bank_transaction_total: number
+  /**
+   * @deprecated Kept on the server response for back-compat. The UI no longer
+   * reads it — `gl_1930_period_movement` is required.
+   */
   gl_1930_balance: number
+  gl_1930_period_movement: number
+  gl_1930_opening_balance: number
   difference: number
   is_reconciled: boolean
   matched_count: number
@@ -295,12 +301,14 @@ export function BankReconciliationView() {
           <CardContent>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <span>Banktransaktioner (summa)</span>
+                <span>Banktransaktioner i perioden</span>
                 <span className="font-mono">{formatCurrency(status.bank_transaction_total)}</span>
               </div>
               <div className="flex justify-between">
-                <span><AccountNumber number="1930" /> saldo (huvudbok)</span>
-                <span className="font-mono">{formatCurrency(status.gl_1930_balance)}</span>
+                <span>Bokfört på <AccountNumber number="1930" /> i perioden</span>
+                <span className="font-mono">
+                  {formatCurrency(status.gl_1930_period_movement)}
+                </span>
               </div>
               <div className="flex justify-between pt-2 border-t font-semibold">
                 <span>Differens</span>
@@ -308,6 +316,13 @@ export function BankReconciliationView() {
                   {formatCurrency(status.difference)}
                 </span>
               </div>
+              {status.gl_1930_opening_balance !== 0 && (
+                <p className="pt-2 text-xs text-muted-foreground">
+                  Ingående balans (IB) på <AccountNumber number="1930" />:{' '}
+                  <span className="font-mono">{formatCurrency(status.gl_1930_opening_balance)}</span>
+                  {' '}— räknas inte i avstämningen.
+                </p>
+              )}
               <div className="flex gap-4 pt-2 text-xs text-muted-foreground">
                 <span>Matchade: {status.matched_count}</span>
                 <span>Omatchade transaktioner: {status.unmatched_transaction_count}</span>
