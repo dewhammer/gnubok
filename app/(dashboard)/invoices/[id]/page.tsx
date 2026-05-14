@@ -468,178 +468,175 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Main content */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Customer info */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Kund</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                <p className="font-medium text-lg">{customer.name}</p>
-                {customer.org_number && (
-                  <p className="text-muted-foreground">Org.nr: {customer.org_number}</p>
+      <div className="grid gap-6 lg:grid-cols-3 lg:auto-rows-min lg:items-start">
+        {/* Customer info */}
+        <Card className="lg:col-span-2 lg:row-start-1">
+          <CardHeader>
+            <CardTitle>Kund</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              <p className="font-medium text-lg">{customer.name}</p>
+              {customer.org_number && (
+                <p className="text-muted-foreground">Org.nr: {customer.org_number}</p>
+              )}
+              {customer.vat_number && (
+                <p className="text-muted-foreground">VAT: {customer.vat_number}</p>
+              )}
+              <div className="flex flex-wrap gap-4 pt-2 text-sm text-muted-foreground">
+                {customer.email && (
+                  <span>{customer.email}</span>
                 )}
-                {customer.vat_number && (
-                  <p className="text-muted-foreground">VAT: {customer.vat_number}</p>
+                {customer.phone && (
+                  <span>{customer.phone}</span>
                 )}
-                <div className="flex flex-wrap gap-4 pt-2 text-sm text-muted-foreground">
-                  {customer.email && (
-                    <span>{customer.email}</span>
-                  )}
-                  {customer.phone && (
-                    <span>{customer.phone}</span>
-                  )}
+              </div>
+              {(customer.address_line1 || customer.city) && (
+                <div className="text-sm text-muted-foreground pt-1">
+                  {customer.address_line1 && <p>{customer.address_line1}</p>}
+                  {customer.address_line2 && <p>{customer.address_line2}</p>}
+                  <p>
+                    {customer.postal_code} {customer.city}
+                    {customer.country !== 'SE' && `, ${customer.country}`}
+                  </p>
                 </div>
-                {(customer.address_line1 || customer.city) && (
-                  <div className="text-sm text-muted-foreground pt-1">
-                    {customer.address_line1 && <p>{customer.address_line1}</p>}
-                    {customer.address_line2 && <p>{customer.address_line2}</p>}
-                    <p>
-                      {customer.postal_code} {customer.city}
-                      {customer.country !== 'SE' && `, ${customer.country}`}
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Invoice items */}
+        <Card className="lg:col-span-2 lg:row-start-2">
+          <CardHeader>
+            <CardTitle>Fakturarader</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {/* Header — desktop */}
+              <div className="hidden sm:grid grid-cols-12 gap-4 text-sm font-medium text-muted-foreground border-b pb-2">
+                <div className="col-span-5">Beskrivning</div>
+                <div className="col-span-2 text-right">Antal</div>
+                <div className="col-span-1 text-center">Enhet</div>
+                <div className="col-span-2 text-right">à-pris</div>
+                <div className="col-span-2 text-right">Summa</div>
+              </div>
+
+              {/* Items — desktop */}
+              <div className="hidden sm:block space-y-4">
+                {invoice.items.map((item) => (
+                  <div key={item.id} className="grid grid-cols-12 gap-4 text-sm">
+                    <div className="col-span-5">{item.description}</div>
+                    <div className="col-span-2 text-right">{item.quantity}</div>
+                    <div className="col-span-1 text-center">{item.unit}</div>
+                    <div className="col-span-2 text-right">
+                      {formatCurrency(item.unit_price, invoice.currency)}
+                    </div>
+                    <div className="col-span-2 text-right font-medium">
+                      {formatCurrency(item.line_total, invoice.currency)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Items — mobile cards */}
+              <div className="sm:hidden space-y-2">
+                {invoice.items.map((item) => (
+                  <div key={item.id} className="border rounded-lg p-3 text-sm space-y-1.5">
+                    <p className="font-medium">{item.description}</p>
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>{item.quantity} {item.unit} × {formatCurrency(item.unit_price, invoice.currency)}</span>
+                    </div>
+                    <p className="text-right font-medium">
+                      {formatCurrency(item.line_total, invoice.currency)}
                     </p>
                   </div>
-                )}
+                ))}
               </div>
-            </CardContent>
-          </Card>
 
-          {/* Invoice items */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Fakturarader</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {/* Header — desktop */}
-                <div className="hidden sm:grid grid-cols-12 gap-4 text-sm font-medium text-muted-foreground border-b pb-2">
-                  <div className="col-span-5">Beskrivning</div>
-                  <div className="col-span-2 text-right">Antal</div>
-                  <div className="col-span-1 text-center">Enhet</div>
-                  <div className="col-span-2 text-right">à-pris</div>
-                  <div className="col-span-2 text-right">Summa</div>
+              <Separator />
+
+              {/* Totals */}
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Delsumma</span>
+                  <span>{formatCurrency(invoice.subtotal, invoice.currency)}</span>
                 </div>
+                {(() => {
+                  const vatByRate = new Map<number, number>()
+                  for (const item of invoice.items) {
+                    const rate = item.vat_rate ?? 0
+                    const lineVat = Math.round(item.line_total * (rate / 100) * 100) / 100
+                    vatByRate.set(rate, (vatByRate.get(rate) || 0) + lineVat)
+                  }
+                  const entries = Array.from(vatByRate.entries())
+                    .filter(([, vat]) => vat > 0)
+                    .sort(([a], [b]) => b - a)
 
-                {/* Items — desktop */}
-                <div className="hidden sm:block space-y-4">
-                  {invoice.items.map((item) => (
-                    <div key={item.id} className="grid grid-cols-12 gap-4 text-sm">
-                      <div className="col-span-5">{item.description}</div>
-                      <div className="col-span-2 text-right">{item.quantity}</div>
-                      <div className="col-span-1 text-center">{item.unit}</div>
-                      <div className="col-span-2 text-right">
-                        {formatCurrency(item.unit_price, invoice.currency)}
-                      </div>
-                      <div className="col-span-2 text-right font-medium">
-                        {formatCurrency(item.line_total, invoice.currency)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Items — mobile cards */}
-                <div className="sm:hidden space-y-2">
-                  {invoice.items.map((item) => (
-                    <div key={item.id} className="border rounded-lg p-3 text-sm space-y-1.5">
-                      <p className="font-medium">{item.description}</p>
-                      <div className="flex items-center justify-between text-muted-foreground">
-                        <span>{item.quantity} {item.unit} × {formatCurrency(item.unit_price, invoice.currency)}</span>
-                      </div>
-                      <p className="text-right font-medium">
-                        {formatCurrency(item.line_total, invoice.currency)}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                <Separator />
-
-                {/* Totals */}
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Delsumma</span>
-                    <span>{formatCurrency(invoice.subtotal, invoice.currency)}</span>
-                  </div>
-                  {(() => {
-                    const vatByRate = new Map<number, number>()
-                    for (const item of invoice.items) {
-                      const rate = item.vat_rate ?? 0
-                      const lineVat = Math.round(item.line_total * (rate / 100) * 100) / 100
-                      vatByRate.set(rate, (vatByRate.get(rate) || 0) + lineVat)
-                    }
-                    const entries = Array.from(vatByRate.entries())
-                      .filter(([, vat]) => vat > 0)
-                      .sort(([a], [b]) => b - a)
-
-                    if (entries.length === 0) {
-                      return (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Moms</span>
-                          <span>{formatCurrency(0, invoice.currency)}</span>
-                        </div>
-                      )
-                    }
-
-                    return entries.map(([rate, vat]) => (
-                      <div key={rate} className="flex justify-between">
-                        <span className="text-muted-foreground">Moms {rate}%</span>
-                        <span>{formatCurrency(vat, invoice.currency)}</span>
-                      </div>
-                    ))
-                  })()}
-                  <Separator />
-                  {(() => {
-                    const rounding = getDisplayTotal(invoice, { ore_rounding: oreRounding })
+                  if (entries.length === 0) {
                     return (
-                      <>
-                        {rounding.applies && (
-                          <div className="flex justify-between text-sm text-muted-foreground">
-                            <span>Öresavrundning</span>
-                            <span>{formatCurrency(rounding.roundingDelta, 'SEK')}</span>
-                          </div>
-                        )}
-                        <div className="flex justify-between font-bold text-lg">
-                          <span>Totalt</span>
-                          <span>{formatCurrency(rounding.displayed, invoice.currency)}</span>
-                        </div>
-                      </>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Moms</span>
+                        <span>{formatCurrency(0, invoice.currency)}</span>
+                      </div>
                     )
-                  })()}
-                  {invoice.currency !== 'SEK' && invoice.total_sek && (
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>I SEK (kurs {invoice.exchange_rate})</span>
-                      <span>{formatCurrency(invoice.total_sek)}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+                  }
 
-          {/* Notes */}
-          {(invoice.notes || invoice.reverse_charge_text) && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Anteckningar</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {invoice.reverse_charge_text && (
-                  <div className="p-3 bg-muted rounded-lg">
-                    <p className="text-sm font-medium">Omvänd skattskyldighet</p>
-                    <p className="text-sm text-muted-foreground">{invoice.reverse_charge_text}</p>
+                  return entries.map(([rate, vat]) => (
+                    <div key={rate} className="flex justify-between">
+                      <span className="text-muted-foreground">Moms {rate}%</span>
+                      <span>{formatCurrency(vat, invoice.currency)}</span>
+                    </div>
+                  ))
+                })()}
+                <Separator />
+                {(() => {
+                  const rounding = getDisplayTotal(invoice, { ore_rounding: oreRounding })
+                  return (
+                    <>
+                      {rounding.applies && (
+                        <div className="flex justify-between text-sm text-muted-foreground">
+                          <span>Öresavrundning</span>
+                          <span>{formatCurrency(rounding.roundingDelta, 'SEK')}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between font-bold text-lg">
+                        <span>Totalt</span>
+                        <span>{formatCurrency(rounding.displayed, invoice.currency)}</span>
+                      </div>
+                    </>
+                  )
+                })()}
+                {invoice.currency !== 'SEK' && invoice.total_sek && (
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>I SEK (kurs {invoice.exchange_rate})</span>
+                    <span>{formatCurrency(invoice.total_sek)}</span>
                   </div>
                 )}
-                {invoice.notes && <p className="text-sm">{invoice.notes}</p>}
-              </CardContent>
-            </Card>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Notes */}
+        {(invoice.notes || invoice.reverse_charge_text) && (
+            <Card className="lg:col-span-2 lg:row-start-3">
+            <CardHeader>
+              <CardTitle>Anteckningar</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {invoice.reverse_charge_text && (
+                <div className="p-3 bg-muted rounded-lg">
+                  <p className="text-sm font-medium">Omvänd skattskyldighet</p>
+                  <p className="text-sm text-muted-foreground">{invoice.reverse_charge_text}</p>
+                </div>
+              )}
+              {invoice.notes && <p className="text-sm">{invoice.notes}</p>}
+            </CardContent>
+          </Card>
           )}
-        </div>
 
         {/* Sidebar */}
-        <div className="space-y-6">
+        <div className="lg:col-start-3 lg:row-start-1 lg:row-span-3 space-y-6">
           {/* Invoice details */}
           <Card>
             <CardHeader>

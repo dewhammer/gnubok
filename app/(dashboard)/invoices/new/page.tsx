@@ -473,157 +473,117 @@ export default function NewInvoicePage() {
       )}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 pb-28 md:pb-0">
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* Main content */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Customer selection */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Kund<RequiredMark /></CardTitle>
-                <CardDescription>Välj vilken kund fakturan ska skickas till</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Controller
-                  name="customer_id"
-                  control={control}
-                  render={({ field }) => (
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Välj kund" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {customers.map((customer) => (
-                          <SelectItem key={customer.id} value={customer.id}>
-                            {customer.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => setIsCreateCustomerOpen(true)}
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  Skapa kund
-                </Button>
-                {errors.customer_id && (
-                  <p className="text-sm text-destructive mt-2">{errors.customer_id.message}</p>
+        <div className="grid gap-6 lg:grid-cols-3 lg:auto-rows-min lg:items-start">
+          {/* Customer selection */}
+          <Card className="lg:col-span-2 lg:row-start-1">
+            <CardHeader>
+              <CardTitle>Kund<RequiredMark /></CardTitle>
+              <CardDescription>Välj vilken kund fakturan ska skickas till</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Controller
+                name="customer_id"
+                control={control}
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Välj kund" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {customers.map((customer) => (
+                        <SelectItem key={customer.id} value={customer.id}>
+                          {customer.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 )}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => setIsCreateCustomerOpen(true)}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Skapa kund
+              </Button>
+              {errors.customer_id && (
+                <p className="text-sm text-destructive mt-2">{errors.customer_id.message}</p>
+              )}
 
-              </CardContent>
-            </Card>
+            </CardContent>
+          </Card>
 
-            {/* Invoice items */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Fakturarader</CardTitle>
-                <CardDescription>Lägg till produkter eller tjänster</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {fields.map((field, index) => {
-                    const lineTotal = (watchItems[index]?.quantity || 0) * (watchItems[index]?.unit_price || 0)
-                    const lineVat = Math.round(lineTotal * (watchItems[index]?.vat_rate ?? 25) / 100 * 100) / 100
-                    return (
-                      <div
-                        key={field.id}
-                        className="rounded-lg border bg-card p-4 space-y-3 relative md:rounded-none md:border-0 md:bg-transparent md:p-0 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-start"
-                      >
-                        {/* Description + mobile delete button */}
-                        <div className="flex items-start gap-2 md:contents">
-                          <div className="flex-1 space-y-1 md:col-span-3 md:space-y-2">
-                            <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Beskrivning</Label>
-                            <Input
-                              placeholder="T.ex. Instagram-kampanj"
-                              {...register(`items.${index}.description`)}
-                            />
-                            {errors.items?.[index]?.description && (
-                              <p className="text-sm text-destructive">
-                                {errors.items[index].description?.message}
-                              </p>
-                            )}
-                          </div>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="shrink-0 min-h-[44px] min-w-[44px] -mr-2 -mt-1 md:hidden"
-                            onClick={() => remove(index)}
-                            disabled={fields.length === 1}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+          {/* Invoice items */}
+          <Card className="lg:col-span-3 lg:row-start-2">
+            <CardHeader>
+              <CardTitle>Fakturarader</CardTitle>
+              <CardDescription>Lägg till produkter eller tjänster</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {fields.map((field, index) => {
+                  const lineTotal = (watchItems[index]?.quantity || 0) * (watchItems[index]?.unit_price || 0)
+                  const lineVat = Math.round(lineTotal * (watchItems[index]?.vat_rate ?? 25) / 100 * 100) / 100
+                  return (
+                    <div
+                      key={field.id}
+                      className="rounded-lg border bg-card p-4 space-y-3 relative md:rounded-none md:border-0 md:bg-transparent md:p-0 md:space-y-0 md:grid md:grid-cols-12 md:gap-4 md:items-start"
+                    >
+                      {/* Description + mobile delete button */}
+                      <div className="flex items-start gap-2 md:contents">
+                        <div className="flex-1 space-y-1 md:col-span-3 md:space-y-2">
+                          <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Beskrivning</Label>
+                          <Input
+                            placeholder="T.ex. Instagram-kampanj"
+                            {...register(`items.${index}.description`)}
+                          />
+                          {errors.items?.[index]?.description && (
+                            <p className="text-sm text-destructive">
+                              {errors.items[index].description?.message}
+                            </p>
+                          )}
                         </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="shrink-0 min-h-[44px] min-w-[44px] -mr-2 -mt-1 md:hidden"
+                          onClick={() => remove(index)}
+                          disabled={fields.length === 1}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
 
-                        {/* Antal, Enhet, à-pris */}
-                        <div className="grid grid-cols-3 gap-2 md:contents">
-                          <div className="space-y-1 md:col-span-2 md:space-y-2">
-                            <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Antal</Label>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              inputMode="decimal"
-                              className="text-right tabular-nums"
-                              {...register(`items.${index}.quantity`, { valueAsNumber: true })}
-                            />
-                          </div>
-                          <div className="space-y-1 md:col-span-2 md:space-y-2">
-                            <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Enhet</Label>
-                            <Controller
-                              name={`items.${index}.unit`}
-                              control={control}
-                              render={({ field }) => (
-                                <Select value={field.value} onValueChange={field.onChange}>
-                                  <SelectTrigger>
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {units.map((unit) => (
-                                      <SelectItem key={unit} value={unit}>
-                                        {unit}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              )}
-                            />
-                          </div>
-                          <div className="space-y-1 md:col-span-2 md:space-y-2">
-                            <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">à-pris</Label>
-                            <Input
-                              type="number"
-                              step="any"
-                              inputMode="decimal"
-                              className="text-right tabular-nums"
-                              {...register(`items.${index}.unit_price`, { valueAsNumber: true })}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Moms */}
+                      {/* Antal, Enhet, à-pris */}
+                      <div className="grid grid-cols-3 gap-2 md:contents">
                         <div className="space-y-1 md:col-span-2 md:space-y-2">
-                          <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Moms</Label>
+                          <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Antal</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            inputMode="decimal"
+                            className="text-right tabular-nums"
+                            {...register(`items.${index}.quantity`, { valueAsNumber: true })}
+                          />
+                        </div>
+                        <div className="space-y-1 md:col-span-2 md:space-y-2">
+                          <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Enhet</Label>
                           <Controller
-                            name={`items.${index}.vat_rate`}
+                            name={`items.${index}.unit`}
                             control={control}
                             render={({ field }) => (
-                              <Select
-                                value={String(field.value ?? 25)}
-                                onValueChange={(v) => field.onChange(Number(v))}
-                                disabled={isRateLocked}
-                              >
+                              <Select value={field.value} onValueChange={field.onChange}>
                                 <SelectTrigger>
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                  {availableRates.map((opt) => (
-                                    <SelectItem key={opt.rate} value={String(opt.rate)}>
-                                      {opt.label}
+                                  {units.map((unit) => (
+                                    <SelectItem key={unit} value={unit}>
+                                      {unit}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>
@@ -631,214 +591,248 @@ export default function NewInvoicePage() {
                             )}
                           />
                         </div>
-
-                        {/* Desktop delete button */}
-                        <div className="hidden md:flex md:col-span-1 md:items-end">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => remove(index)}
-                            disabled={fields.length === 1}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-
-                        {/* Mobile summary row */}
-                        <div className="flex justify-between text-sm pt-1 border-t border-border/40 md:hidden">
-                          <span className="text-muted-foreground">Rad {index + 1}</span>
-                          <span className="font-medium tabular-nums">{formatCurrency(lineTotal + lineVat, watchCurrency)}</span>
+                        <div className="space-y-1 md:col-span-2 md:space-y-2">
+                          <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">à-pris</Label>
+                          <Input
+                            type="number"
+                            step="any"
+                            inputMode="decimal"
+                            className="text-right tabular-nums"
+                            {...register(`items.${index}.unit_price`, { valueAsNumber: true })}
+                          />
                         </div>
                       </div>
-                    )
-                  })}
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full md:w-auto"
-                    onClick={() =>
-                      append({ description: '', quantity: 1, unit: 'st', unit_price: 0, vat_rate: availableRates[0]?.rate ?? 25 })
-                    }
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    Lägg till rad
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+                      {/* Moms */}
+                      <div className="space-y-1 md:col-span-2 md:space-y-2">
+                        <Label className="text-xs text-muted-foreground md:text-sm md:text-foreground">Moms</Label>
+                        <Controller
+                          name={`items.${index}.vat_rate`}
+                          control={control}
+                          render={({ field }) => (
+                            <Select
+                              value={String(field.value ?? 25)}
+                              onValueChange={(v) => field.onChange(Number(v))}
+                              disabled={isRateLocked}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {availableRates.map((opt) => (
+                                  <SelectItem key={opt.rate} value={String(opt.rate)}>
+                                    {opt.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        />
+                      </div>
 
-            {/* Notes */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Anteckningar</CardTitle>
-                <CardDescription>Valfritt meddelande på fakturan</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Textarea
-                  placeholder="T.ex. betalningsvillkor eller tack för samarbetet..."
-                  {...register('notes')}
-                />
-              </CardContent>
-            </Card>
-          </div>
+                      {/* Desktop delete button */}
+                      <div className="hidden md:flex md:col-span-1 md:items-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => remove(index)}
+                          disabled={fields.length === 1}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
 
-          {/* Sidebar */}
-          <div className="space-y-6">
-            {/* Invoice details */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Fakturadetaljer</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Dokumenttyp</Label>
-                  <Controller
-                    name="document_type"
-                    control={control}
-                    render={({ field }) => (
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="invoice">Faktura</SelectItem>
-                          <SelectItem value="proforma">Proformafaktura</SelectItem>
-                          <SelectItem value="delivery_note">Följesedel</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Valuta</Label>
-                  <Controller
-                    name="currency"
-                    control={control}
-                    render={({ field }) => (
-                      <Select value={field.value} onValueChange={field.onChange}>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {currencies.map((currency) => (
-                            <SelectItem key={currency} value={currency}>
-                              {currency}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Fakturadatum<RequiredMark /></Label>
-                  <Input type="date" {...register('invoice_date')} aria-required="true" />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Förfallodatum<RequiredMark /></Label>
-                  <Input type="date" {...register('due_date')} aria-required="true" />
-                </div>
-
-                {watchDocumentType === 'invoice' && (
-                  <div className="space-y-2">
-                    <Label>Leveransdatum</Label>
-                    <Input type="date" {...register('delivery_date')} placeholder="Om det skiljer sig från fakturadatum" />
-                  </div>
-                )}
-
-                <Separator />
-
-                <div className="space-y-2">
-                  <Label>Er referens</Label>
-                  <Controller
-                    name="your_reference"
-                    control={control}
-                    render={({ field }) => (
-                      <TagInput
-                        value={field.value ?? ''}
-                        onChange={field.onChange}
-                        placeholder="Kontaktperson hos kund"
-                      />
-                    )}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Vår referens</Label>
-                  <Controller
-                    name="our_reference"
-                    control={control}
-                    render={({ field }) => (
-                      <TagInput
-                        value={field.value ?? ''}
-                        onChange={field.onChange}
-                        placeholder="Ditt namn"
-                      />
-                    )}
-                  />
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Summary */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Summering</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Delsumma</span>
-                  <span>{formatCurrency(subtotal, watchCurrency)}</span>
-                </div>
-                {Array.from(vatByRate.entries())
-                  .sort(([a], [b]) => b - a)
-                  .map(([rate, group]) => (
-                    <div key={rate}>
-                      {vatByRate.size > 1 && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Netto {rate}%</span>
-                          <span>{formatCurrency(group.base, watchCurrency)}</span>
-                        </div>
-                      )}
-                      {group.vat > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Moms {rate}%</span>
-                          <span>{formatCurrency(group.vat, watchCurrency)}</span>
-                        </div>
-                      )}
+                      {/* Mobile summary row */}
+                      <div className="flex justify-between text-sm pt-1 border-t border-border/40 md:hidden">
+                        <span className="text-muted-foreground">Rad {index + 1}</span>
+                        <span className="font-medium tabular-nums">{formatCurrency(lineTotal + lineVat, watchCurrency)}</span>
+                      </div>
                     </div>
-                  ))}
-                {vatByRate.size === 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Moms</span>
-                    <span>{formatCurrency(0, watchCurrency)}</span>
-                  </div>
-                )}
-                <Separator />
-                <div className="flex justify-between font-bold text-lg">
-                  <span>Totalt</span>
-                  <span>{formatCurrency(total, watchCurrency)}</span>
-                </div>
-              </CardContent>
-            </Card>
+                  )
+                })}
 
-            {/* Actions — desktop/tablet only */}
-            <Button
-              type="submit"
-              className="w-full hidden md:block"
-              size="lg"
-              disabled={isSubmitting || !canWrite}
-              title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
-            >
-              {!canWrite && <Lock className="mr-2 h-4 w-4 inline" />}
-              Granska & skapa
-            </Button>
-          </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full md:w-auto"
+                  onClick={() =>
+                    append({ description: '', quantity: 1, unit: 'st', unit_price: 0, vat_rate: availableRates[0]?.rate ?? 25 })
+                  }
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Lägg till rad
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Notes */}
+          <Card className="lg:col-span-2 lg:row-start-3">
+            <CardHeader>
+              <CardTitle>Anteckningar</CardTitle>
+              <CardDescription>Valfritt meddelande på fakturan</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Textarea
+                placeholder="T.ex. betalningsvillkor eller tack för samarbetet..."
+                {...register('notes')}
+              />
+            </CardContent>
+          </Card>
+
+          {/* Invoice details */}
+          <Card className="lg:col-start-3 lg:row-start-1">
+            <CardHeader>
+              <CardTitle>Fakturadetaljer</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label>Dokumenttyp</Label>
+                <Controller
+                  name="document_type"
+                  control={control}
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="invoice">Faktura</SelectItem>
+                        <SelectItem value="proforma">Proformafaktura</SelectItem>
+                        <SelectItem value="delivery_note">Följesedel</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Valuta</Label>
+                <Controller
+                  name="currency"
+                  control={control}
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {currencies.map((currency) => (
+                          <SelectItem key={currency} value={currency}>
+                            {currency}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Fakturadatum<RequiredMark /></Label>
+                <Input type="date" {...register('invoice_date')} aria-required="true" />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Förfallodatum<RequiredMark /></Label>
+                <Input type="date" {...register('due_date')} aria-required="true" />
+              </div>
+
+              {watchDocumentType === 'invoice' && (
+                <div className="space-y-2">
+                  <Label>Leveransdatum</Label>
+                  <Input type="date" {...register('delivery_date')} placeholder="Om det skiljer sig från fakturadatum" />
+                </div>
+              )}
+
+              <Separator />
+
+              <div className="space-y-2">
+                <Label>Er referens</Label>
+                <Controller
+                  name="your_reference"
+                  control={control}
+                  render={({ field }) => (
+                    <TagInput
+                      value={field.value ?? ''}
+                      onChange={field.onChange}
+                      placeholder="Kontaktperson hos kund"
+                    />
+                  )}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Vår referens</Label>
+                <Controller
+                  name="our_reference"
+                  control={control}
+                  render={({ field }) => (
+                    <TagInput
+                      value={field.value ?? ''}
+                      onChange={field.onChange}
+                      placeholder="Ditt namn"
+                    />
+                  )}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Summary */}
+          <Card className="lg:col-start-3 lg:row-start-3">
+            <CardHeader>
+              <CardTitle>Summering</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Delsumma</span>
+                <span>{formatCurrency(subtotal, watchCurrency)}</span>
+              </div>
+              {Array.from(vatByRate.entries())
+                .sort(([a], [b]) => b - a)
+                .map(([rate, group]) => (
+                  <div key={rate}>
+                    {vatByRate.size > 1 && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Netto {rate}%</span>
+                        <span>{formatCurrency(group.base, watchCurrency)}</span>
+                      </div>
+                    )}
+                    {group.vat > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Moms {rate}%</span>
+                        <span>{formatCurrency(group.vat, watchCurrency)}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              {vatByRate.size === 0 && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Moms</span>
+                  <span>{formatCurrency(0, watchCurrency)}</span>
+                </div>
+              )}
+              <Separator />
+              <div className="flex justify-between font-bold text-lg">
+                <span>Totalt</span>
+                <span>{formatCurrency(total, watchCurrency)}</span>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Actions — desktop/tablet only */}
+          <Button
+            type="submit"
+            className="w-full hidden md:block lg:col-start-3 lg:row-start-4"
+            size="lg"
+            disabled={isSubmitting || !canWrite}
+            title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}
+          >
+            {!canWrite && <Lock className="mr-2 h-4 w-4 inline" />}
+            Granska & skapa
+          </Button>
         </div>
 
         {/* Mobile sticky total bar */}
