@@ -293,6 +293,17 @@ export interface BankConnection {
   last_synced_at: string | null
   error_message: string | null
 
+  // Initial-sync metadata. initial_sync_completed_at gates the cron's
+  // first-sync 90-day backfill path independently of last_synced_at, so
+  // a manual "Sync now" doesn't permanently lose the deep backfill window.
+  // The returned-date columns power the "we requested X but got Y" UI when
+  // an ASPSP truncates history below the requested window.
+  initial_sync_completed_at: string | null
+  initial_sync_requested_from: string | null
+  initial_sync_returned_min_date: string | null
+  initial_sync_returned_max_date: string | null
+  initial_sync_lookback_days: number | null
+
   created_at: string
   updated_at: string
 }

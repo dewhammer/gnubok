@@ -131,7 +131,10 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
 
       const toDate = new Date().toISOString().split('T')[0]
       // First sync: 90-day lookback (PSD2 max). Subsequent: 7-day window.
-      const isFirstSync = !connection.last_synced_at
+      // Gate on initial_sync_completed_at, not last_synced_at — manual "Sync now"
+      // sets last_synced_at without doing the deep backfill, and we want the cron
+      // to still fall back to 90 days if the inline activation backfill failed.
+      const isFirstSync = !connection.initial_sync_completed_at
       const lookbackDays = isFirstSync ? 90 : 7
       if (isFirstSync) {
         ctx.log.info('first sync for connection — using 90-day lookback', {
@@ -218,11 +221,27 @@ export const GET = withCronContext('cron.bank_sync', async (_request, ctx) => {
 
       // Successful sync: update connection and clear any previous error state.
       // Write allAccounts (not accounts) so disabled accounts stay in the row.
+      const completedAt = new Date().toISOString()
+      let initialSyncFields: Record<string, unknown> = {}
+      if (isFirstSync) {
+        // Aggregate returned booking dates across enabled accounts so the UI
+        // can show "we requested X but the bank returned Y to Z".
+        const minDates = syncResults.map(r => r.returnedMinBookingDate).filter((d): d is string => !!d)
+        const maxDates = syncResults.map(r => r.returnedMaxBookingDate).filter((d): d is string => !!d)
+        initialSyncFields = {
+          initial_sync_completed_at: completedAt,
+          initial_sync_requested_from: fromDate,
+          initial_sync_returned_min_date: minDates.length > 0 ? minDates.reduce((a, b) => (a < b ? a : b)) : null,
+          initial_sync_returned_max_date: maxDates.length > 0 ? maxDates.reduce((a, b) => (a > b ? a : b)) : null,
+          initial_sync_lookback_days: lookbackDays,
+        }
+      }
       await supabase
         .from('bank_connections')
         .update({
           accounts_data: allAccounts,
-          last_synced_at: new Date().toISOString(),
+          last_synced_at: completedAt,
+          ...initialSyncFields,
           ...(connection.error_message ? { error_message: null } : {}),
         })
         .eq('id', connection.id)

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { formatDate } from '@/lib/utils'
 import { getDaysUntilExpiry, isConsentExpiringSoon } from '../lib/api-client'
 import Link from 'next/link'
@@ -240,6 +241,37 @@ export function BankConnectionStatus({
           </span>
         </div>
       )}
+
+      {/* Initial backfill summary — shows what the bank actually returned vs what we asked for. */}
+      {connection.initial_sync_completed_at && connection.initial_sync_requested_from && (() => {
+        const requested = connection.initial_sync_requested_from
+        const min = connection.initial_sync_returned_min_date
+        const max = connection.initial_sync_returned_max_date
+        // Truncation = bank returned less history than requested. 7-day grace
+        // for off-by-one + weekend posting differences.
+        let truncated = false
+        if (min && requested) {
+          const requestedTime = new Date(requested).getTime()
+          const minTime = new Date(min).getTime()
+          truncated = (minTime - requestedTime) > 7 * 24 * 60 * 60 * 1000
+        }
+        return (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              Initial historik:{' '}
+              <span className="tabular-nums">
+                {min ? formatDate(min) : '—'} → {max ? formatDate(max) : '—'}
+              </span>
+              {' '}(begärde <span className="tabular-nums">{formatDate(requested)}</span>)
+            </span>
+            {truncated && (
+              <Badge variant="outline">
+                Bankens API returnerade kortare period än begärt — använd SIE-import för äldre data
+              </Badge>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Accounts list */}
       {accounts.length > 0 && (

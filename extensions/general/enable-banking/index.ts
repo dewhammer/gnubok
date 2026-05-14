@@ -256,7 +256,9 @@ export const enableBankingExtension: Extension = {
         })
         if (!rl.ok) return rl.response!
 
-        const { connection_id, days_back: rawDaysBack = 30 } = await request.json()
+        // Default 90 days: most callers (Sync Now button, post-activation gap fill)
+        // want a deep refresh, not a 30-day blip. Cron uses 7-day incrementals separately.
+        const { connection_id, days_back: rawDaysBack = 90 } = await request.json()
         const days_back = Math.min(Math.max(1, rawDaysBack), 365)
 
         const { data: connection, error: connectionError } = await supabase
@@ -453,6 +455,7 @@ export const enableBankingExtension: Extension = {
         const body = await request.json().catch(() => null)
         const connection_id = body?.connection_id
         const enabled_uids = body?.enabled_uids
+        const rawLookback = body?.initial_lookback_days
 
         if (typeof connection_id !== 'string' || !connection_id) {
           return NextResponse.json({ error: 'connection_id krävs' }, { status: 400 })
@@ -472,6 +475,13 @@ export const enableBankingExtension: Extension = {
             { status: 400 }
           )
         }
+
+        // initial_lookback_days only applies on the pending_selection→active transition.
+        // Default 90 (PSD2 standard); clamp to [30, 365]. Ignored for selection edits.
+        const initialLookbackDays = (() => {
+          const n = typeof rawLookback === 'number' && Number.isFinite(rawLookback) ? rawLookback : 90
+          return Math.min(365, Math.max(30, Math.round(n)))
+        })()
 
         const { data: connection, error: connectionError } = await supabase
           .from('bank_connections')
@@ -568,10 +578,130 @@ export const enableBankingExtension: Extension = {
           })
         }
 
+        // Initial backfill on activation. Run inline so the user has data the
+        // moment they finish account selection — no 24h cron wait. Failures
+        // here don't fail the PATCH; the cron will retry on its next run
+        // (gated on initial_sync_completed_at IS NULL).
+        let initialSyncSummary: {
+          imported: number
+          duplicates: number
+          requested_from: string
+          returned_min_date: string | null
+          returned_max_date: string | null
+        } | null = null
+        let initialSyncError: string | null = null
+
+        if (connection.status === 'pending_selection') {
+          const accountsToSync = updatedAccounts.filter(a => a.enabled !== false)
+          const toDate = new Date().toISOString().split('T')[0]
+          const fromDate = new Date(Date.now() - initialLookbackDays * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .split('T')[0]
+
+          log.info('[enable-banking] Starting inline initial backfill', {
+            connectionId: connection.id,
+            accountCount: accountsToSync.length,
+            lookbackDays: initialLookbackDays,
+            fromDate,
+            toDate,
+          })
+
+          let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+          try {
+            const ingestFn = ctx?.services.ingestTransactions
+            const syncPromise = Promise.all(
+              accountsToSync.map(account => syncAccountTransactions(
+                supabase,
+                companyId,
+                user.id,
+                connection.id,
+                account,
+                fromDate,
+                toDate,
+                ingestFn,
+                { strategy: 'longest' }
+              ))
+            )
+
+            const TIMEOUT_MS = 60_000
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => reject(new Error('initial_sync_timeout')), TIMEOUT_MS)
+            })
+            const results = await Promise.race([syncPromise, timeoutPromise])
+
+            const totalImported = results.reduce((sum, r) => sum + r.imported, 0)
+            const totalDuplicates = results.reduce((sum, r) => sum + r.duplicates, 0)
+
+            // Min/max booking date across all synced accounts
+            const minDates = results.map(r => r.returnedMinBookingDate).filter((d): d is string => !!d)
+            const maxDates = results.map(r => r.returnedMaxBookingDate).filter((d): d is string => !!d)
+            const returnedMin = minDates.length > 0 ? minDates.reduce((a, b) => (a < b ? a : b)) : null
+            const returnedMax = maxDates.length > 0 ? maxDates.reduce((a, b) => (a > b ? a : b)) : null
+
+            const completedAt = new Date().toISOString()
+            // Don't re-write accounts_data here — the first update already wrote it.
+            // Including it again races with any concurrent writer (e.g. cron firing in
+            // the sub-60s window) and would silently overwrite their changes.
+            const { error: metaUpdateError } = await supabase
+              .from('bank_connections')
+              .update({
+                last_synced_at: completedAt,
+                initial_sync_completed_at: completedAt,
+                initial_sync_requested_from: fromDate,
+                initial_sync_returned_min_date: returnedMin,
+                initial_sync_returned_max_date: returnedMax,
+                initial_sync_lookback_days: initialLookbackDays,
+              })
+              .eq('id', connection.id)
+
+            if (metaUpdateError) {
+              // The sync itself succeeded (transactions are ingested) but we
+              // couldn't persist that. Falsely reporting success would tell the
+              // client "imported N transactions" while the DB still has
+              // initial_sync_completed_at = NULL, causing the cron to re-run a
+              // 90-day backfill next morning. Surface this as initial_sync_error
+              // so the UI shows a "background sync needs retry" warning, and the
+              // cron's gate (initial_sync_completed_at IS NULL) will self-heal.
+              initialSyncError = `metadata_update_failed: ${metaUpdateError.message}`
+              log.error('[enable-banking] Failed to persist initial_sync metadata after backfill', {
+                connectionId: connection.id,
+                error: metaUpdateError.message,
+                userId: user.id,
+                companyId,
+              })
+            } else {
+              initialSyncSummary = {
+                imported: totalImported,
+                duplicates: totalDuplicates,
+                requested_from: fromDate,
+                returned_min_date: returnedMin,
+                returned_max_date: returnedMax,
+              }
+
+              log.info('[enable-banking] Inline initial backfill complete', {
+                connectionId: connection.id,
+                ...initialSyncSummary,
+              })
+            }
+          } catch (syncError) {
+            initialSyncError = syncError instanceof Error ? syncError.message : String(syncError)
+            log.error('[enable-banking] Inline initial backfill failed — cron will retry', {
+              connectionId: connection.id,
+              error: initialSyncError,
+              userId: user.id,
+              companyId,
+            })
+          } finally {
+            if (timeoutHandle) clearTimeout(timeoutHandle)
+          }
+        }
+
         return NextResponse.json({
           success: true,
           enabled_count: enabled_uids.length,
           total_count: existing.length,
+          ...(initialSyncSummary ? { initial_sync: initialSyncSummary } : {}),
+          ...(initialSyncError ? { initial_sync_error: initialSyncError } : {}),
         })
       },
     },

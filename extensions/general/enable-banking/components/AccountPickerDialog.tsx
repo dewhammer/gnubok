@@ -11,8 +11,17 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2 } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
+import { useCompany } from '@/contexts/CompanyContext'
 import type { StoredAccount } from '../types'
 
 interface AccountPickerDialogProps {
@@ -28,6 +37,12 @@ interface AccountPickerDialogProps {
   onSaved: () => void
 }
 
+const LOOKBACK_OPTIONS = [
+  { days: 90, label: 'Senaste 90 dagar (PSD2 standard, rekommenderas)' },
+  { days: 180, label: 'Senaste 180 dagar' },
+  { days: 365, label: 'Senaste 365 dagar' },
+] as const
+
 export function AccountPickerDialog({
   open,
   onOpenChange,
@@ -38,8 +53,17 @@ export function AccountPickerDialog({
   onSaved,
 }: AccountPickerDialogProps) {
   const { toast } = useToast()
+  // Memoise so the client has a stable reference across re-renders. Without this,
+  // listing `supabase` in the SIE-fetch effect's deps would re-fire that query on
+  // every checkbox tick or parent re-render.
+  const supabase = useMemo(() => createClient(), [])
+  const { company } = useCompany()
+
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [isSaving, setIsSaving] = useState(false)
+  const [lookbackDays, setLookbackDays] = useState<number>(90)
+  const [sieLastDate, setSieLastDate] = useState<string | null>(null)
+  const [showCustomLookback, setShowCustomLookback] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -49,8 +73,43 @@ export function AccountPickerDialog({
         accounts.filter(a => a.enabled !== false).map(a => a.uid)
       )
       setSelected(initial)
+      setShowCustomLookback(false)
     }
   }, [open, accounts])
+
+  // Fetch the latest SIE import end date so we can anchor the backfill to
+  // "day after last SIE entry" (SpeedLedger pattern). Only matters on the
+  // initial activation flow — selection edits don't re-run sync.
+  useEffect(() => {
+    if (!open || !isInitialSelection || !company?.id) {
+      setSieLastDate(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const { data } = await supabase
+        .from('sie_imports')
+        .select('fiscal_year_end')
+        .eq('company_id', company.id)
+        .eq('status', 'completed')
+        .order('fiscal_year_end', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (cancelled) return
+      const fye = (data as { fiscal_year_end?: string } | null)?.fiscal_year_end || null
+      setSieLastDate(fye)
+      if (fye) {
+        // Anchor lookback to (today - (fye + 1 day)), clamped to [30, 365].
+        const dayAfter = new Date(fye)
+        dayAfter.setDate(dayAfter.getDate() + 1)
+        const days = Math.ceil((Date.now() - dayAfter.getTime()) / (24 * 60 * 60 * 1000))
+        setLookbackDays(Math.min(365, Math.max(30, days)))
+      } else {
+        setLookbackDays(90)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [open, isInitialSelection, company?.id, supabase])
 
   const allSelected = accounts.length > 0 && selected.size === accounts.length
   const noneSelected = selected.size === 0
@@ -95,6 +154,7 @@ export function AccountPickerDialog({
         body: JSON.stringify({
           connection_id: connectionId,
           enabled_uids: Array.from(selected),
+          ...(isInitialSelection ? { initial_lookback_days: lookbackDays } : {}),
         }),
       })
 
@@ -104,10 +164,33 @@ export function AccountPickerDialog({
         throw new Error(data.error || 'Kunde inte spara kontoval')
       }
 
-      toast({
-        title: 'Kontoval sparat',
-        description: `${data.enabled_count} av ${data.total_count} konton kommer synkas.`,
-      })
+      // Surface the actual backfill result so the user sees what the bank returned.
+      if (isInitialSelection && data.initial_sync) {
+        const { imported, returned_min_date, returned_max_date } = data.initial_sync as {
+          imported: number
+          returned_min_date: string | null
+          returned_max_date: string | null
+        }
+        const range = returned_min_date && returned_max_date
+          ? ` från ${returned_min_date} till ${returned_max_date}`
+          : ''
+        toast({
+          title: 'Konton sparade',
+          description: `Importerade ${imported} transaktioner${range}.`,
+        })
+      } else if (isInitialSelection && data.initial_sync_error) {
+        toast({
+          title: 'Konton sparade — bakgrundssync misslyckades',
+          description: 'Vi försöker igen vid nästa körning. Bankanslutningen är aktiv.',
+          variant: 'destructive',
+        })
+      } else {
+        toast({
+          title: 'Kontoval sparat',
+          description: `${data.enabled_count} av ${data.total_count} konton kommer synkas.`,
+        })
+      }
+
       onOpenChange(false)
       onSaved()
     } catch (error) {
@@ -121,6 +204,14 @@ export function AccountPickerDialog({
     }
   }
 
+  // Day-after-SIE date for the callout
+  const dayAfterSie = useMemo(() => {
+    if (!sieLastDate) return null
+    const d = new Date(sieLastDate)
+    d.setDate(d.getDate() + 1)
+    return d.toISOString().split('T')[0]
+  }, [sieLastDate])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
@@ -132,6 +223,75 @@ export function AccountPickerDialog({
               : 'Justera vilka konton som ska synkas. Konton du avmarkerar slutar synkas från nästa körning; redan importerade transaktioner ligger kvar.'}
           </DialogDescription>
         </DialogHeader>
+
+        {isInitialSelection && (
+          <div className="rounded-lg border border-border bg-muted/30 p-4 text-sm">
+            {sieLastDate && dayAfterSie ? (
+              <div className="space-y-2">
+                <p>
+                  Vi hittade en SIE-import som täcker fram till{' '}
+                  <span className="font-medium tabular-nums">{sieLastDate}</span>.
+                  Vi hämtar bankhistorik från{' '}
+                  <span className="font-medium tabular-nums">{dayAfterSie}</span>{' '}
+                  så att inget överlappar din tidigare bokföring.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowCustomLookback(v => !v)}
+                  className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                  disabled={isSaving}
+                >
+                  {showCustomLookback ? 'Använd föreslagen period' : 'Anpassa period'}
+                </button>
+                {showCustomLookback && (
+                  <Select
+                    value={String(lookbackDays)}
+                    onValueChange={(v) => setLookbackDays(Number(v))}
+                    disabled={isSaving}
+                  >
+                    <SelectTrigger className="mt-2 w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LOOKBACK_OPTIONS.map(opt => (
+                        <SelectItem key={opt.days} value={String(opt.days)}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="block text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Hämta historik från
+                </label>
+                <Select
+                  value={String(lookbackDays)}
+                  onValueChange={(v) => setLookbackDays(Number(v))}
+                  disabled={isSaving}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LOOKBACK_OPTIONS.map(opt => (
+                      <SelectItem key={opt.days} value={String(opt.days)}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  PSD2-bankregler begränsar oftast historiken till 90 dagar bakåt.
+                  Vi visar exakt vad banken returnerade efter sparat val.
+                  För äldre data, använd SIE- eller CSV-import.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>
@@ -207,7 +367,7 @@ export function AccountPickerDialog({
             {isSaving ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Sparar…
+                {isInitialSelection ? 'Sparar och hämtar transaktioner…' : 'Sparar…'}
               </>
             ) : (
               'Spara val'

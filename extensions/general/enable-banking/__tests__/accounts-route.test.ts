@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+// Mock the sync module before importing the extension so the route handler picks up the spy.
+vi.mock('../lib/sync', () => ({
+  syncAccountTransactions: vi.fn(),
+}))
+
 import { enableBankingExtension } from '../index'
+import { syncAccountTransactions } from '../lib/sync'
 import type { ExtensionContext } from '@/lib/extensions/types'
 import type { StoredAccount } from '../types'
+
+const mockedSync = vi.mocked(syncAccountTransactions)
 
 // Locate the PATCH /accounts handler once — schema doesn't change at runtime.
 const accountsRoute = enableBankingExtension.apiRoutes?.find(
@@ -20,11 +29,22 @@ interface SupabaseStub {
     accounts_data: StoredAccount[]
   } | null
   connectionError?: { message: string } | null
+  /** Error returned for every update. Use updateErrorByCall for per-call control. */
   updateError?: { message: string } | null
+  /**
+   * Per-call update errors. Indexed by 0-based call number. Lets a test
+   * succeed the first update (status flip) and fail the second (metadata).
+   * Falls back to updateError when the index isn't present.
+   */
+  updateErrorByCall?: Array<{ message: string } | null>
+  /** Last update payload (may be overwritten by a follow-up metadata update). */
   capturedUpdate?: Record<string, unknown>
+  /** All update payloads in order — first is the status flip, second the initial-sync metadata. */
+  capturedUpdates?: Record<string, unknown>[]
 }
 
 function buildSupabase(stub: SupabaseStub) {
+  let updateCallCount = 0
   return {
     auth: {
       getUser: vi.fn().mockResolvedValue({ data: { user: stub.authUser }, error: null }),
@@ -37,9 +57,15 @@ function buildSupabase(stub: SupabaseStub) {
         error: stub.connectionError ?? null,
       }),
       update: vi.fn((payload: Record<string, unknown>) => {
+        const callIndex = updateCallCount++
         stub.capturedUpdate = payload
+        ;(stub.capturedUpdates ??= []).push(payload)
+        const error =
+          stub.updateErrorByCall && callIndex < stub.updateErrorByCall.length
+            ? stub.updateErrorByCall[callIndex]
+            : stub.updateError ?? null
         return {
-          eq: vi.fn().mockResolvedValue({ error: stub.updateError ?? null }),
+          eq: vi.fn().mockResolvedValue({ error }),
         }
       }),
     })),
@@ -196,9 +222,13 @@ describe('PATCH /accounts (enable-banking)', () => {
     const body = await res.json()
     expect(body).toMatchObject({ success: true, enabled_count: 2, total_count: 3 })
 
-    expect(stub.capturedUpdate).toBeDefined()
-    expect(stub.capturedUpdate?.status).toBe('active')
-    const written = stub.capturedUpdate?.accounts_data as StoredAccount[]
+    // The first update (before inline backfill) is the status flip + accounts_data.
+    // A second metadata update only follows if backfill succeeds; assert against
+    // the first explicitly so this test is robust to both paths.
+    const firstUpdate = stub.capturedUpdates?.[0]
+    expect(firstUpdate).toBeDefined()
+    expect(firstUpdate?.status).toBe('active')
+    const written = firstUpdate?.accounts_data as StoredAccount[]
     expect(written).toHaveLength(3)
     expect(written.find(a => a.uid === 'acc-1')?.enabled).toBe(true)
     expect(written.find(a => a.uid === 'acc-2')?.enabled).toBe(false)
@@ -331,5 +361,227 @@ describe('PATCH /accounts (enable-banking)', () => {
         }),
       })
     )
+  })
+
+  describe('inline initial backfill', () => {
+    it('runs inline sync on pending_selection→active and writes initial-sync metadata', async () => {
+      mockedSync.mockResolvedValue({
+        imported: 47,
+        duplicates: 3,
+        errors: 0,
+        returnedMinBookingDate: '2026-02-15',
+        returnedMaxBookingDate: '2026-05-13',
+      })
+
+      const stub: SupabaseStub = {
+        authUser: { id: 'user-1' },
+        connectionRow: {
+          id: 'conn-1',
+          status: 'pending_selection',
+          accounts_data: [
+            { uid: 'acc-1', currency: 'SEK', enabled: true },
+            { uid: 'acc-2', currency: 'EUR', enabled: true },
+          ],
+        },
+      }
+      const supabase = buildSupabase(stub)
+      const ctx = makeContext(supabase)
+
+      const res = await accountsRoute.handler(
+        makeRequest({
+          connection_id: 'conn-1',
+          enabled_uids: ['acc-1', 'acc-2'],
+          initial_lookback_days: 90,
+        }),
+        ctx
+      )
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      // Backfill summary surfaced to the UI so the user can see what the bank returned.
+      expect(body.initial_sync).toMatchObject({
+        imported: 94, // 2 accounts × 47
+        duplicates: 6,
+        returned_min_date: '2026-02-15',
+        returned_max_date: '2026-05-13',
+      })
+      expect(body.initial_sync.requested_from).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(body.initial_sync_error).toBeUndefined()
+
+      // syncAccountTransactions called once per enabled account with strategy=longest.
+      expect(mockedSync).toHaveBeenCalledTimes(2)
+      expect(mockedSync).toHaveBeenCalledWith(
+        expect.anything(),
+        'company-1',
+        'user-1',
+        'conn-1',
+        expect.objectContaining({ uid: 'acc-1' }),
+        expect.any(String),
+        expect.any(String),
+        undefined,
+        { strategy: 'longest' }
+      )
+
+      // Two updates: status flip first, then initial_sync metadata.
+      expect(stub.capturedUpdates).toHaveLength(2)
+      expect(stub.capturedUpdates?.[0]?.status).toBe('active')
+      const meta = stub.capturedUpdates?.[1]
+      expect(meta?.initial_sync_completed_at).toBeDefined()
+      expect(meta?.initial_sync_returned_min_date).toBe('2026-02-15')
+      expect(meta?.initial_sync_returned_max_date).toBe('2026-05-13')
+      expect(meta?.initial_sync_lookback_days).toBe(90)
+      expect(meta?.last_synced_at).toBeDefined()
+    })
+
+    it('does NOT run inline sync when connection is already active (selection edit)', async () => {
+      mockedSync.mockResolvedValue({
+        imported: 99,
+        duplicates: 0,
+        errors: 0,
+        returnedMinBookingDate: '2026-01-01',
+        returnedMaxBookingDate: '2026-05-13',
+      })
+
+      const stub: SupabaseStub = {
+        authUser: { id: 'user-1' },
+        connectionRow: {
+          id: 'conn-1',
+          status: 'active',
+          accounts_data: [
+            { uid: 'acc-1', currency: 'SEK', enabled: true },
+            { uid: 'acc-2', currency: 'SEK', enabled: false },
+          ],
+        },
+      }
+      const supabase = buildSupabase(stub)
+      const ctx = makeContext(supabase)
+
+      const res = await accountsRoute.handler(
+        makeRequest({ connection_id: 'conn-1', enabled_uids: ['acc-2'] }),
+        ctx
+      )
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.initial_sync).toBeUndefined()
+      expect(body.initial_sync_error).toBeUndefined()
+
+      expect(mockedSync).not.toHaveBeenCalled()
+      // Only one update — the original selection edit, no metadata follow-up.
+      expect(stub.capturedUpdates).toHaveLength(1)
+    })
+
+    it('still flips status to active when inline sync fails, surfacing initial_sync_error', async () => {
+      mockedSync.mockRejectedValue(new Error('ASPSP_DOWN'))
+
+      const stub: SupabaseStub = {
+        authUser: { id: 'user-1' },
+        connectionRow: {
+          id: 'conn-1',
+          status: 'pending_selection',
+          accounts_data: [{ uid: 'acc-1', currency: 'SEK', enabled: true }],
+        },
+      }
+      const supabase = buildSupabase(stub)
+      const ctx = makeContext(supabase)
+
+      const res = await accountsRoute.handler(
+        makeRequest({
+          connection_id: 'conn-1',
+          enabled_uids: ['acc-1'],
+          initial_lookback_days: 180,
+        }),
+        ctx
+      )
+
+      // PATCH still succeeds — the cron will retry the backfill on its next run.
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.success).toBe(true)
+      expect(body.initial_sync).toBeUndefined()
+      expect(body.initial_sync_error).toBe('ASPSP_DOWN')
+
+      // Status flip happened; no metadata follow-up because sync threw.
+      expect(stub.capturedUpdates).toHaveLength(1)
+      expect(stub.capturedUpdates?.[0]?.status).toBe('active')
+    })
+
+    it('clamps initial_lookback_days to [30, 365]', async () => {
+      mockedSync.mockResolvedValue({
+        imported: 0,
+        duplicates: 0,
+        errors: 0,
+      })
+
+      const stub: SupabaseStub = {
+        authUser: { id: 'user-1' },
+        connectionRow: {
+          id: 'conn-1',
+          status: 'pending_selection',
+          accounts_data: [{ uid: 'acc-1', currency: 'SEK', enabled: true }],
+        },
+      }
+      const supabase = buildSupabase(stub)
+      const ctx = makeContext(supabase)
+
+      // 9999 days → clamped to 365
+      await accountsRoute.handler(
+        makeRequest({
+          connection_id: 'conn-1',
+          enabled_uids: ['acc-1'],
+          initial_lookback_days: 9999,
+        }),
+        ctx
+      )
+
+      expect(stub.capturedUpdates?.[1]?.initial_sync_lookback_days).toBe(365)
+    })
+
+    it('surfaces metadata_update_failed when the second update errors after a successful sync', async () => {
+      // Sync runs and ingests transactions, but persisting initial_sync_completed_at
+      // fails. The client must see the failure (not a fake success) so the UI can
+      // show a retry warning; the cron will gate on initial_sync_completed_at IS NULL
+      // and self-heal on its next run.
+      mockedSync.mockResolvedValue({
+        imported: 12,
+        duplicates: 0,
+        errors: 0,
+        returnedMinBookingDate: '2026-03-01',
+        returnedMaxBookingDate: '2026-05-13',
+      })
+
+      const stub: SupabaseStub = {
+        authUser: { id: 'user-1' },
+        connectionRow: {
+          id: 'conn-1',
+          status: 'pending_selection',
+          accounts_data: [{ uid: 'acc-1', currency: 'SEK', enabled: true }],
+        },
+        // First update (status flip) succeeds; second (metadata) fails.
+        updateErrorByCall: [null, { message: 'connection lost' }],
+      }
+      const supabase = buildSupabase(stub)
+      const ctx = makeContext(supabase)
+
+      const res = await accountsRoute.handler(
+        makeRequest({
+          connection_id: 'conn-1',
+          enabled_uids: ['acc-1'],
+          initial_lookback_days: 90,
+        }),
+        ctx
+      )
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      // No fake success: initial_sync must NOT be populated.
+      expect(body.initial_sync).toBeUndefined()
+      // The error code surfaces the metadata-update failure mode so the UI
+      // and audit log can distinguish it from an ingest-side failure.
+      expect(body.initial_sync_error).toMatch(/^metadata_update_failed:/)
+      // Status flip still happened — connection is active, cron will retry backfill.
+      expect(stub.capturedUpdates?.[0]?.status).toBe('active')
+      expect(stub.capturedUpdates).toHaveLength(2)
+    })
   })
 })

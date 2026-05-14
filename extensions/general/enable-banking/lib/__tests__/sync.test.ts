@@ -219,4 +219,65 @@ describe('syncAccountTransactions', () => {
     expect(rawTxns[0].external_id).toBe('eb_acc-uid-1_tx-500')
     expect(rawTxns[0].import_source).toBe('enable_banking')
   })
+
+  it('returns the min/max booking date the ASPSP returned for the activation UI', async () => {
+    // The min/max loop reads booking_date from the *raw* transactions (sync.ts:75-82),
+    // before convertTransaction runs — so the dates need to be set here.
+    mockGetAllTransactionsWithRaw.mockResolvedValue({
+      transactions: [
+        { transaction_amount: { amount: '100', currency: 'SEK' }, booking_date: '2026-04-15' },
+        { transaction_amount: { amount: '200', currency: 'SEK' }, booking_date: '2026-02-20' },
+        { transaction_amount: { amount: '300', currency: 'SEK' }, booking_date: '2026-05-10' },
+      ],
+      rawPages: ['{}'],
+    })
+
+    mockConvertTransaction.mockImplementation((tx: { transaction_amount: { amount: string }, booking_date: string }) => ({
+      id: `tx-${tx.transaction_amount.amount}`,
+      date: tx.booking_date,
+      booking_date: tx.booking_date,
+      amount: parseFloat(tx.transaction_amount.amount),
+      currency: 'SEK',
+      description: 'Test',
+    }))
+
+    mockUploadDocument.mockResolvedValue({ id: 'doc-1' })
+
+    const account = makeAccount()
+    const result = await syncAccountTransactions(
+      {} as never,
+      COMPANY_ID,
+      USER_ID,
+      CONNECTION_ID,
+      account,
+      '2026-02-13',
+      '2026-05-13',
+      mockIngest
+    )
+
+    expect(result.returnedMinBookingDate).toBe('2026-02-20')
+    expect(result.returnedMaxBookingDate).toBe('2026-05-10')
+  })
+
+  it('returns undefined min/max when no transactions came back', async () => {
+    mockGetAllTransactionsWithRaw.mockResolvedValue({
+      transactions: [],
+      rawPages: [],
+    })
+
+    const account = makeAccount()
+    const result = await syncAccountTransactions(
+      {} as never,
+      COMPANY_ID,
+      USER_ID,
+      CONNECTION_ID,
+      account,
+      '2026-02-13',
+      '2026-05-13',
+      mockIngest
+    )
+
+    expect(result.returnedMinBookingDate).toBeUndefined()
+    expect(result.returnedMaxBookingDate).toBeUndefined()
+  })
 })

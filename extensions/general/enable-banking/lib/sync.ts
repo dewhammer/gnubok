@@ -30,6 +30,10 @@ export interface SyncResult {
   imported: number
   duplicates: number
   errors: number
+  /** Earliest booking date the ASPSP returned. Undefined when no transactions came back. */
+  returnedMinBookingDate?: string
+  /** Latest booking date the ASPSP returned. Undefined when no transactions came back. */
+  returnedMaxBookingDate?: string
 }
 
 /**
@@ -150,5 +154,7 @@ export async function syncAccountTransactions(
     imported: ingestResult.imported,
     duplicates: ingestResult.duplicates,
     errors: ingestResult.errors,
+    returnedMinBookingDate: minBookingDate,
+    returnedMaxBookingDate: maxBookingDate,
   }
 }
