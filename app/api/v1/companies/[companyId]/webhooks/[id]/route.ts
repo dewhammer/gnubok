@@ -214,6 +214,16 @@ export const PATCH = withApiV1<{ params: Promise<{ companyId: string; id: string
       )
     }
 
+    // Capture prior state for the audit_log old_state field. One extra
+    // SELECT — cost is negligible for a manual webhook PATCH and the
+    // before/after pair is what makes the audit row reconstructible.
+    const { data: prior } = await ctx.supabase
+      .from('webhooks')
+      .select('name, description, webhook_url, active, disabled_at, disabled_reason')
+      .eq('company_id', ctx.companyId!)
+      .eq('id', id)
+      .maybeSingle()
+
     const { data, error } = await ctx.supabase
       .from('webhooks')
       .update(update)
@@ -224,6 +234,40 @@ export const PATCH = withApiV1<{ params: Promise<{ companyId: string; id: string
 
     if (error) return v1ErrorResponse(error, ctx.log, { requestId: ctx.requestId })
     if (!data) return v1ErrorResponseFromCode('NOT_FOUND', ctx.log, { requestId: ctx.requestId })
+
+    // V16 audit log — webhook lifecycle event. Record the diff.
+    //
+    // new_state is populated from the DB-confirmed returned row (`data`)
+    // through an explicit field allowlist — NOT from the spread
+    // `update` object. Two reasons: (a) the post-UPDATE state is the
+    // ground truth, and a future column-level CHECK/trigger that
+    // rejects a field would leave the request-body-derived shape
+    // misleadingly out of sync (A.8.11 / V16.1.1); (b) the allowlist
+    // foreclosures any future widening of PatchWebhookSchema that
+    // accidentally pulls a sensitive field into the audit trail.
+    const changedFields = Object.keys(body)
+    const d = data as Record<string, unknown>
+    const { error: auditErr } = await ctx.supabase.from('audit_log').insert({
+      user_id: ctx.userId,
+      company_id: ctx.companyId,
+      action: 'UPDATE',
+      table_name: 'webhooks',
+      record_id: id,
+      actor_id: ctx.apiKeyId ?? null,
+      description: `Webhook updated: ${changedFields.join(', ')}`,
+      old_state: prior ?? null,
+      new_state: {
+        name: d.name,
+        description: d.description,
+        webhook_url: d.webhook_url,
+        active: d.active,
+        disabled_at: d.disabled_at,
+        disabled_reason: d.disabled_reason,
+      },
+    })
+    if (auditErr) {
+      ctx.log.warn('audit_log insert failed for webhook update', { webhookId: id, code: auditErr.code })
+    }
 
     return ok(data, { requestId: ctx.requestId })
   },
@@ -262,13 +306,46 @@ export const DELETE = withApiV1<{ params: Promise<{ companyId: string; id: strin
   'webhooks.delete',
   async (_request, ctx, params) => {
     const { id } = await params.params
-    const { error } = await ctx.supabase
+
+    // Atomic delete + returning. One round trip captures both the
+    // deletion-confirmation row count and the deleted row's prior state
+    // for the audit_log entry — eliminates the pre-read TOCTOU window
+    // a separate SELECT introduced (V8.2.1). Idempotent DELETE: a 0-row
+    // delete (already-deleted webhook) still returns 204 because the
+    // resource is gone, which is the desired end state.
+    const { data: deleted, error } = await ctx.supabase
       .from('webhooks')
       .delete()
       .eq('company_id', ctx.companyId!)
       .eq('id', id)
+      .select('name, event_type, webhook_url, active')
+      .maybeSingle()
 
     if (error) return v1ErrorResponse(error, ctx.log, { requestId: ctx.requestId })
+
+    // V16 audit log — webhook lifecycle event. Records the deletion
+    // UNCONDITIONALLY. When `deleted` is null (no row matched —
+    // idempotent re-delete or cross-tenant id), the audit row still
+    // captures the attempt: record_id + actor_id + action + timestamp
+    // is the minimum CC6.3 attribution contract; old_state degrades
+    // to null.
+    const p = deleted as { name: string; event_type: string; webhook_url: string; active: boolean } | null
+    const { error: auditErr } = await ctx.supabase.from('audit_log').insert({
+      user_id: ctx.userId,
+      company_id: ctx.companyId,
+      action: 'DELETE',
+      table_name: 'webhooks',
+      record_id: id,
+      actor_id: ctx.apiKeyId ?? null,
+      description: p
+        ? `Webhook deleted: "${p.name}" (${p.event_type})`
+        : `Webhook delete attempted on missing id=${id} (idempotent or cross-tenant)`,
+      old_state: p,
+    })
+    if (auditErr) {
+      ctx.log.warn('audit_log insert failed for webhook delete', { webhookId: id, code: auditErr.code })
+    }
+
     return noContent({ requestId: ctx.requestId })
   },
 )

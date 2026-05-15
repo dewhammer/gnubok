@@ -72,6 +72,7 @@ import {
 } from '../[id]/route'
 import { POST as testWebhook } from '../[id]/test/route'
 import { GET as listDeliveries } from '../[id]/deliveries/route'
+import { POST as rotateSecret } from '../[id]/rotate-secret/route'
 
 const mockValidate = validateApiKey as ReturnType<typeof vi.fn>
 const mockServiceClient = createServiceClientNoCookies as ReturnType<typeof vi.fn>
@@ -637,6 +638,88 @@ describe('GET /api/v1/companies/:companyId/webhooks/:id/deliveries', () => {
     )
 
     expect(res.status).toBe(404)
+  })
+})
+
+// ──────────────────────────────────────────────────────────────────────
+// POST /webhooks/:id/rotate-secret
+// ──────────────────────────────────────────────────────────────────────
+
+describe('POST /api/v1/companies/:companyId/webhooks/:id/rotate-secret', () => {
+  it('returns a freshly-minted secret EXACTLY ONCE on rotation', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        webhooks: { data: { id: WEBHOOK_ID, name: 'CRM sync' }, error: null },
+      }),
+    )
+
+    const res = await rotateSecret(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/webhooks/${WEBHOOK_ID}/rotate-secret`, {
+        method: 'POST',
+      }),
+      detailParams(COMPANY_ID, WEBHOOK_ID),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.id).toBe(WEBHOOK_ID)
+    expect(typeof body.data.secret).toBe('string')
+    expect(body.data.secret).toMatch(/^whsec_/)
+    expect(body.data.rotated_at).toBeTruthy()
+  })
+
+  it('returns 404 NOT_FOUND when the webhook does not exist for this company', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        webhooks: { data: null, error: null },
+      }),
+    )
+
+    const res = await rotateSecret(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/webhooks/${WEBHOOK_ID}/rotate-secret`, {
+        method: 'POST',
+      }),
+      detailParams(COMPANY_ID, WEBHOOK_ID),
+    )
+
+    expect(res.status).toBe(404)
+    const body = await res.json()
+    expect(body.error.code).toBe('NOT_FOUND')
+  })
+
+  it('returns 401 UNAUTHORIZED when no Bearer token is supplied', async () => {
+    const req = new Request(
+      `https://x.test/api/v1/companies/${COMPANY_ID}/webhooks/${WEBHOOK_ID}/rotate-secret`,
+      { method: 'POST' },
+    )
+
+    const res = await rotateSecret(req, detailParams(COMPANY_ID, WEBHOOK_ID))
+    expect(res.status).toBe(401)
+  })
+
+  it('requires an Idempotency-Key header (write endpoint)', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+      }),
+    )
+
+    // Build request WITHOUT the Idempotency-Key header (default makeRequest adds it).
+    const req = new Request(
+      `https://x.test/api/v1/companies/${COMPANY_ID}/webhooks/${WEBHOOK_ID}/rotate-secret`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer test-fixture-not-a-real-key' },
+      },
+    )
+
+    const res = await rotateSecret(req, detailParams(COMPANY_ID, WEBHOOK_ID))
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe('VALIDATION_ERROR')
   })
 })
 

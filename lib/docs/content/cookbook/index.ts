@@ -1,17 +1,23 @@
 /**
- * Cookbook recipe registry. Two recipes ship in PR-2 (Phase 6 docs):
+ * Cookbook recipe registry. All six recipes ship live as of Phase 6 PR-3:
  *   - quickstart: send your first invoice (high-leverage onboarding path)
  *   - webhooks: end-to-end webhook setup with sig verification + retry handling
- *
- * The remaining 4 recipes from the docs nav (ingest-bank-transactions,
- * file-vat-declaration, run-payroll-and-agi, year-end-closing) ship as
- * placeholder pages pointing at the relevant API reference. They're
- * scheduled for the docs polish follow-up after PR-3 hardening lands —
- * Stripe-grade narrative quality benefits from its own focused pass.
+ *   - ingest-bank-transactions: bank file → categorised + invoice-matched
+ *   - file-vat-declaration: compute rutor 05–62, reconcile against GL,
+ *     manual submission to Skatteverket (includes 2026-04-01 livsmedel
+ *     12% → 6% rate-change transition)
+ *   - run-payroll-and-agi: draft → calculate → approve → mark-paid →
+ *     book → generate-agi state machine
+ *   - year-end-closing: IB/UB continuity per BFL 5 kap, year-end procedures,
+ *     irreversible close per BFL 5 kap 8 §
  */
 
 import { QUICKSTART_MD } from './quickstart'
 import { COOKBOOK_WEBHOOKS_MD } from './webhooks'
+import { COOKBOOK_INGEST_BANK_MD } from './ingest-bank-transactions'
+import { COOKBOOK_VAT_DECLARATION_MD } from './file-vat-declaration'
+import { COOKBOOK_PAYROLL_AGI_MD } from './run-payroll-and-agi'
+import { COOKBOOK_YEAR_END_MD } from './year-end-closing'
 
 interface CookbookEntry {
   slug: string
@@ -51,30 +57,26 @@ export const COOKBOOK: CookbookEntry[] = [
   {
     slug: 'ingest-bank-transactions',
     title: 'Ingest and categorise bank transactions',
-    markdown: null,
-    referenceLink: { href: '/docs/api/reference/transactions', label: 'Transactions reference' },
-    description: 'Push CSV/CAMT into the engine, get AI suggestions, commit.',
+    markdown: COOKBOOK_INGEST_BANK_MD,
+    description: 'Push CSV/CAMT into the engine, get AI suggestions, commit, match payments.',
   },
   {
     slug: 'file-vat-declaration',
     title: 'Compute and review a VAT declaration',
-    markdown: null,
-    referenceLink: { href: '/docs/api/reference/reports#get-reports-vat-declaration', label: 'VAT declaration report' },
-    description: 'Compute momsdeklaration rutor 05–62 and reconcile against the GL before manual submission to Skatteverket.',
+    markdown: COOKBOOK_VAT_DECLARATION_MD,
+    description: 'Compute momsdeklaration rutor 05–62 and reconcile against the GL before manual submission to Skatteverket. Includes the 2026-04-01 livsmedel 12% → 6% rate-change transition.',
   },
   {
     slug: 'run-payroll-and-agi',
     title: 'Run payroll and generate the AGI XML',
-    markdown: null,
-    referenceLink: { href: '/docs/api/reference/salary-runs', label: 'Salary runs reference' },
+    markdown: COOKBOOK_PAYROLL_AGI_MD,
     description: 'Calculate, approve, mark paid, book, generate the AGI XML for manual submission to Skatteverket Mina Sidor.',
   },
   {
     slug: 'year-end-closing',
     title: 'Year-end closing',
-    markdown: null,
-    referenceLink: { href: '/docs/api/reference/fiscal-periods', label: 'Fiscal periods reference' },
-    description: 'Lock periods, run year-end, set opening balances.',
+    markdown: COOKBOOK_YEAR_END_MD,
+    description: 'Lock periods, run year-end procedures, set opening balances. IB/UB continuity per BFL 5 kap.',
   },
 ]
 

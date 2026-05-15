@@ -323,9 +323,51 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
       return v1ErrorResponse(error, ctx.log, { requestId: ctx.requestId })
     }
 
+    // V16 audit log — webhook lifecycle event. Records creation + actor
+    // attribution. new_state captures the row WITHOUT the secret (signing
+    // material must not land in the audit trail). A failed audit write
+    // is logged structurally so SIEM tooling can alert on the gap
+    // (CC7.2) — we don't roll back the create on audit failure because
+    // the webhook itself is already persisted.
+    const created_row = data as Record<string, unknown> & { id: string }
+    const { error: auditErr } = await ctx.supabase.from('audit_log').insert({
+      user_id: ctx.userId,
+      company_id: ctx.companyId,
+      action: 'INSERT',
+      table_name: 'webhooks',
+      record_id: created_row.id,
+      actor_id: ctx.apiKeyId ?? null,
+      description: `Webhook created: "${body.name}" → ${body.webhook_url} (${body.event_type})`,
+      new_state: {
+        name: body.name,
+        event_type: body.event_type,
+        webhook_url: body.webhook_url,
+        api_version_pinned: API_V1_VERSION,
+        active: true,
+      },
+    })
+    if (auditErr) {
+      ctx.log.warn('audit_log insert failed for webhook create', {
+        webhookId: created_row.id,
+        code: auditErr.code,
+      })
+    }
+
     // Secret returned exactly once. Caller must persist it on the receiver
     // side — gnubok will not surface it on any subsequent endpoint.
-    return created({ ...(data as Record<string, unknown>), secret }, { requestId: ctx.requestId })
+    // Cache-Control: no-store mirrors the rotate-secret response (A.8.12 /
+    // Art.25) so no intermediary (CDN / proxy / gateway log / browser
+    // cache) persists the secret beyond the direct response chain.
+    return created(
+      { ...created_row, secret },
+      {
+        requestId: ctx.requestId,
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+          Pragma: 'no-cache',
+        },
+      },
+    )
   },
   { requireIdempotencyKey: true },
 )

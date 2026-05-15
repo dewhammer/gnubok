@@ -126,4 +126,7 @@ import '@/app/api/v1/companies/[companyId]/webhooks/[id]/test/route'
 import '@/app/api/v1/companies/[companyId]/webhooks/[id]/deliveries/route'
 import '@/app/api/v1/webhook-deliveries/[id]/retry/route'
 
+// Phase 6 PR-3 — webhook secret rotation.
+import '@/app/api/v1/companies/[companyId]/webhooks/[id]/rotate-secret/route'
+
 export {}
