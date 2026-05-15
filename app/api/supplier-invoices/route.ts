@@ -132,7 +132,11 @@ export const POST = withRouteContext(
 
     const subtotal = items.reduce((sum, i) => sum + i.line_total, 0)
     const vatAmount = items.reduce((sum, i) => sum + i.vat_amount, 0)
-    const total = Math.round((subtotal + vatAmount) * 100) / 100
+    // Reverse charge: supplier never invoices VAT, so the payable total equals
+    // the net. VAT is still tracked separately (vat_amount) for declarations
+    // and books fiktiv 2614/2645 in the engine, but neither side moves cash.
+    const payableVat = body.reverse_charge ? 0 : vatAmount
+    const total = Math.round((subtotal + payableVat) * 100) / 100
 
     // Representation (BAS 6070–6079): ingående moms is only deductible up to
     // 300 SEK base/person per ML 8 kap. 1 §, and the income-tax deduction was

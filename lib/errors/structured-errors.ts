@@ -285,6 +285,13 @@ const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
     message_sv: 'Transaktionen har ingen kopplad verifikation att stornera.',
     message_en: 'Transaction has no linked journal entry to reverse.',
   },
+  TX_EXCHANGE_RATE_UNAVAILABLE: {
+    httpStatus: 502,
+    message_sv:
+      'Kunde inte hämta växelkursen från Riksbanken. Försök igen om en stund — verifikationen måste bokföras i SEK.',
+    message_en:
+      'Could not fetch the exchange rate from Riksbanken. The verifikation must be posted in SEK.',
+  },
 }
 
 const MATCH_INVOICE: Record<string, StructuredErrorEntry> = {

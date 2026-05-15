@@ -168,6 +168,7 @@ export default function NewSupplierInvoicePage() {
   const watchedSupplierId = watch('supplier_id')
   const watchedCurrency = watch('currency')
   const watchedPaidPrivately = watch('paid_with_private_funds')
+  const watchedReverseCharge = watch('reverse_charge')
 
   const isEF = entityType === 'enskild_firma'
 
@@ -401,7 +402,11 @@ export default function NewSupplierInvoicePage() {
   })
   const subtotal = itemTotals.reduce((sum, t) => sum + t.lineTotal, 0)
   const totalVat = itemTotals.reduce((sum, t) => sum + t.vatAmount, 0)
-  const total = Math.round((subtotal + totalVat) * 100) / 100
+  // Reverse charge: supplier never invoices VAT, so it doesn't roll into the
+  // payable total. The VAT is still accounted for via 2614 / 2645 in
+  // bookkeeping — the line stays in the breakdown for transparency.
+  const payableVat = watchedReverseCharge ? 0 : totalVat
+  const total = Math.round((subtotal + payableVat) * 100) / 100
 
   // Show the AI-suggested supplier card when we have an inbox item, the AI
   // surfaced a supplier name, and we couldn't match it to an existing record.
@@ -1251,7 +1256,9 @@ export default function NewSupplierInvoicePage() {
                 <span className="font-mono sm:w-32 text-right">{formatCurrency(subtotal, watchedCurrency)}</span>
               </div>
               <div className="flex justify-between sm:justify-end sm:gap-8">
-                <span className="text-muted-foreground">Moms</span>
+                <span className="text-muted-foreground">
+                  {watchedReverseCharge ? 'Moms (omvänd, redovisas av köparen)' : 'Moms'}
+                </span>
                 <span className="font-mono sm:w-32 text-right">{formatCurrency(totalVat, watchedCurrency)}</span>
               </div>
               <div className="flex justify-between sm:justify-end sm:gap-8 font-bold text-lg">

@@ -61,33 +61,55 @@ function timeAgo(isoDate: string): string {
   return `${days} dag${days > 1 ? 'ar' : ''} sedan`
 }
 
+// Mirrors the live layout (two cards: company info + financials) so the
+// transition from the route-level loading.tsx to data-loaded content has no
+// visible reflow. Keep in sync with app/(dashboard)/e/[sector]/[slug]/loading.tsx.
 function ProfileSkeleton() {
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        <Skeleton className="h-6 w-16" />
-        <Skeleton className="h-6 w-16" />
-        <Skeleton className="h-6 w-16" />
-      </div>
       <div className="grid gap-6 md:grid-cols-2">
         <Card>
-          <CardHeader>
-            <Skeleton className="h-5 w-40" />
+          <CardHeader className="space-y-2">
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-3.5 w-40" />
           </CardHeader>
           <CardContent className="space-y-3">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
+            <div className="flex items-start gap-2">
+              <Skeleton className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <Skeleton className="h-3.5 flex-1 max-w-[260px]" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-3.5 w-3.5 shrink-0" />
+              <Skeleton className="h-3.5 w-48" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-3.5 w-3.5 shrink-0" />
+              <Skeleton className="h-3.5 w-36" />
+            </div>
+            <div className="pt-2 border-t space-y-1.5">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-3 w-44" />
+            </div>
+            <div className="pt-2 border-t space-y-1.5">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-3/4" />
+            </div>
+            <Skeleton className="h-3 w-32 mt-2" />
           </CardContent>
         </Card>
         <Card>
-          <CardHeader>
+          <CardHeader className="space-y-2">
             <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-3.5 w-44" />
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4">
               {Array.from({ length: 6 }).map((_, i) => (
-                <Skeleton key={i} className="h-12 w-full" />
+                <div key={i} className="space-y-1.5">
+                  <Skeleton className="h-3 w-20" />
+                  <Skeleton className="h-4 w-24" />
+                </div>
               ))}
             </div>
           </CardContent>

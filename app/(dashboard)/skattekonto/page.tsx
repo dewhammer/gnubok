@@ -40,6 +40,7 @@ interface SaldoEnvelope {
 interface TransaktionerEnvelope {
   data: {
     booked: SkattekontoTransactionWithSuggestion[]
+    overdue: StoredSkattekontoTransaction[]
     upcoming: StoredSkattekontoTransaction[]
   }
 }
@@ -267,6 +268,9 @@ export default function SkattekontoPage() {
               <TabsTrigger value="booked">
                 Genomförda {tx?.booked ? `(${tx.booked.length})` : ''}
               </TabsTrigger>
+              <TabsTrigger value="overdue">
+                Förfallna {tx?.overdue ? `(${tx.overdue.length})` : ''}
+              </TabsTrigger>
               <TabsTrigger value="upcoming">
                 Kommande {tx?.upcoming ? `(${tx.upcoming.length})` : ''}
               </TabsTrigger>
@@ -278,6 +282,16 @@ export default function SkattekontoPage() {
                 onMatch={openMatch}
                 bookingId={bookingId}
                 emptyText="Inga genomförda transaktioner än."
+              />
+            </TabsContent>
+            <TabsContent value="overdue" className="mt-4">
+              <TransactionTable
+                rows={tx?.overdue ?? []}
+                onBokfor={bokfor}
+                onMatch={openMatch}
+                bookingId={bookingId}
+                emptyText="Inga förfallna transaktioner."
+                showForfallodatum
               />
             </TabsContent>
             <TabsContent value="upcoming" className="mt-4">
@@ -420,13 +434,24 @@ function BalanceHero({
           </div>
           <div>
             <p className="text-xs uppercase tracking-wide text-muted-foreground">
-              Senast uppdaterad
+              Saldo per
             </p>
             <p className="font-medium tabular-nums">
               {new Date(data.senastUppdaterad).toLocaleString('sv-SE')}
             </p>
           </div>
         </div>
+
+        {saldo.lastSyncedAt && (
+          <p className="text-xs text-muted-foreground">
+            Senast synkad{' '}
+            <span className="tabular-nums">
+              {new Date(saldo.lastSyncedAt).toLocaleString('sv-SE')}
+            </span>
+            . Skatteverket uppdaterar saldot periodvis — datumet ovan ändras
+            inte varje gång du synkroniserar.
+          </p>
+        )}
 
         {data.informationstext.length > 0 && (
           <div className="rounded-md border bg-muted/30 p-3">

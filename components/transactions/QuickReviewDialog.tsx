@@ -67,6 +67,12 @@ export default function QuickReviewDialog({
   const [showUploadZone, setShowUploadZone] = useState(false)
   const [showVatDropdown, setShowVatDropdown] = useState(false)
   const [isOpeningDoc, setIsOpeningDoc] = useState(false)
+  // Mirror of `transaction` so we can patch in a freshly-fetched SEK conversion
+  // before the user confirms — the verifikation must always be in SEK and the
+  // engine reads these fields straight off the transaction row.
+  const [enrichedTx, setEnrichedTx] = useState<TransactionWithInvoice | null>(transaction)
+  const [rateLoading, setRateLoading] = useState(false)
+  const [rateError, setRateError] = useState<string | null>(null)
 
   const preAttachedDocumentId = transaction?.document_id ?? null
 
@@ -112,21 +118,74 @@ export default function QuickReviewDialog({
     fetchAccounts()
   }, [])
 
+  // Reset local mirror whenever the underlying transaction changes (the parent
+  // reuses the dialog instance across rows).
+  useEffect(() => {
+    setEnrichedTx(transaction)
+    setRateError(null)
+  }, [transaction])
+
+  // Backfill the SEK conversion on demand. resolveSekAmount silently falls
+  // back to the raw foreign amount when amount_sek/exchange_rate are null,
+  // which means the user would see misleading "kr" values in the verifikation
+  // and the engine would post the wrong number to the books.
+  useEffect(() => {
+    if (!open || !transaction) return
+    const needsRate =
+      !!transaction.currency &&
+      transaction.currency !== 'SEK' &&
+      (transaction.amount_sek == null || transaction.exchange_rate == null)
+    if (!needsRate) return
+
+    let cancelled = false
+    setRateLoading(true)
+    setRateError(null)
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/transactions/${transaction.id}/refresh-exchange-rate`, {
+          method: 'POST',
+        })
+        const json = await res.json()
+        if (cancelled) return
+        if (!res.ok) {
+          setRateError(json?.error?.message || 'Kunde inte hämta växelkursen.')
+          return
+        }
+        if (json?.data) {
+          setEnrichedTx({ ...json.data, ...{
+            potential_invoice: transaction.potential_invoice,
+            potential_supplier_invoice: transaction.potential_supplier_invoice,
+          } })
+        }
+      } catch {
+        if (!cancelled) setRateError('Kunde inte hämta växelkursen.')
+      } finally {
+        if (!cancelled) setRateLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, transaction])
+
   if (!transaction || !category) return null
 
-  const isIncome = transaction.amount > 0
+  const tx = enrichedTx ?? transaction
+  const isIncome = tx.amount > 0
   const isCounterpartyTemplate = !!(counterpartyLinePattern && counterpartyLinePattern.length > 0)
   const isTemplateBooking = !!templateId || isCounterpartyTemplate
   const isLiabilityAccount = accountOverride.startsWith('2')
   // For non-SEK transactions, the verifikation and the headline must show
   // the SEK-converted total — the mall/category booking always posts in SEK.
   const sekAmount = resolveSekAmount(
-    transaction.amount,
-    transaction.amount_sek,
-    transaction.currency,
-    transaction.exchange_rate
+    tx.amount,
+    tx.amount_sek,
+    tx.currency,
+    tx.exchange_rate
   )
-  const isForeign = !!(transaction.currency && transaction.currency !== 'SEK')
+  const isForeign = !!(tx.currency && tx.currency !== 'SEK')
+  const sekConversionMissing = isForeign && (tx.amount_sek == null || tx.exchange_rate == null)
 
   async function handleConfirm() {
     if (!category || !transaction) return
@@ -202,22 +261,42 @@ export default function QuickReviewDialog({
             )}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-medium text-sm break-all">{transaction.description}</p>
-            <p className="text-xs text-muted-foreground">{formatDate(transaction.date)}</p>
+            <p className="font-medium text-sm break-all">{tx.description}</p>
+            <p className="text-xs text-muted-foreground">{formatDate(tx.date)}</p>
           </div>
           <div className="text-right flex-shrink-0">
-            <p className={`font-medium text-sm tabular-nums ${isIncome ? 'text-success' : ''}`}>
-              {isIncome ? '+' : ''}
-              {formatCurrency(sekAmount, 'SEK')}
-            </p>
-            {isForeign && (
-              <p className="text-xs text-muted-foreground tabular-nums">
+            {isForeign ? (
+              <>
+                <p className={`font-medium text-sm tabular-nums ${isIncome ? 'text-success' : ''}`}>
+                  {isIncome ? '+' : ''}
+                  {formatCurrency(tx.amount, tx.currency)}
+                </p>
+                <p className="text-xs text-muted-foreground tabular-nums">
+                  {rateLoading || sekConversionMissing
+                    ? 'Hämtar växelkurs…'
+                    : `≈ ${isIncome ? '+' : ''}${formatCurrency(sekAmount, 'SEK')}`}
+                </p>
+              </>
+            ) : (
+              <p className={`font-medium text-sm tabular-nums ${isIncome ? 'text-success' : ''}`}>
                 {isIncome ? '+' : ''}
-                {formatCurrency(transaction.amount, transaction.currency)}
+                {formatCurrency(sekAmount, 'SEK')}
               </p>
             )}
           </div>
         </div>
+
+        {isForeign && tx.exchange_rate != null && tx.exchange_rate_date && !sekConversionMissing && (
+          <p className="text-xs text-muted-foreground -mt-1">
+            Bokförs i SEK med Riksbankens kurs {formatCurrency(tx.exchange_rate, 'SEK')} per {tx.currency} ({formatDate(tx.exchange_rate_date)}).
+          </p>
+        )}
+
+        {rateError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/[0.05] px-3 py-2">
+            <p className="text-xs text-destructive leading-snug">{rateError}</p>
+          </div>
+        )}
 
         {/* Template or Category */}
         <div>
@@ -275,23 +354,26 @@ export default function QuickReviewDialog({
           </div>
         )}
 
-        {/* Journal entry preview */}
-        <JournalEntryPreview
-          amount={transaction.amount}
-          amountSek={sekAmount}
-          {...(isCounterpartyTemplate
-            ? { linePattern: counterpartyLinePattern ?? undefined }
-            : templateId && template
-              ? {
-                  templateDebitAccount: template.debit_account,
-                  templateCreditAccount: template.credit_account,
-                  templateVatRate: template.vat_rate,
-                  templateVatTreatment: template.vat_treatment,
-                  templateSupplierType: template.reverse_charge_supplier_type,
-                }
-              : { category, vatTreatment: isLiabilityAccount ? 'none' : vatTreatment, accountOverride, entityType }
-          )}
-        />
+        {/* Journal entry preview — hidden until we have a SEK conversion;
+            otherwise we'd render a verifikation in the wrong currency. */}
+        {!sekConversionMissing && !rateLoading && (
+          <JournalEntryPreview
+            amount={tx.amount}
+            amountSek={sekAmount}
+            {...(isCounterpartyTemplate
+              ? { linePattern: counterpartyLinePattern ?? undefined }
+              : templateId && template
+                ? {
+                    templateDebitAccount: template.debit_account,
+                    templateCreditAccount: template.credit_account,
+                    templateVatRate: template.vat_rate,
+                    templateVatTreatment: template.vat_treatment,
+                    templateSupplierType: template.reverse_charge_supplier_type,
+                  }
+                : { category, vatTreatment: isLiabilityAccount ? 'none' : vatTreatment, accountOverride, entityType }
+            )}
+          />
+        )}
 
         {/* Account & VAT — hidden for template bookings (accounts defined by the template) */}
         {!isTemplateBooking && (
@@ -410,10 +492,15 @@ export default function QuickReviewDialog({
           <Button
             className="flex-1"
             onClick={handleConfirm}
-            disabled={isProcessing || (!isTemplateBooking && !accountOverride)}
+            disabled={
+              isProcessing ||
+              (!isTemplateBooking && !accountOverride) ||
+              rateLoading ||
+              sekConversionMissing
+            }
           >
             <Check className="mr-2 h-4 w-4" />
-            {isProcessing ? 'Bokför...' : 'Bokför'}
+            {isProcessing ? 'Bokför...' : rateLoading ? 'Hämtar växelkurs…' : 'Bokför'}
           </Button>
         </div>
       </DialogContent>

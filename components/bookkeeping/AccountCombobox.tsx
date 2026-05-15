@@ -178,7 +178,7 @@ export default function AccountCombobox({ value, accounts, onChange }: AccountCo
         onFocus={handleFocus}
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
-        placeholder="1930"
+        placeholder="Sök konto…"
         className="font-mono h-8"
         autoComplete="off"
       />

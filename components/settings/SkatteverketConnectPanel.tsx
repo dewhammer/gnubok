@@ -24,6 +24,7 @@ type Status =
 const SCOPE_LABELS: Record<string, string> = {
   momsdeklaration: 'Momsdeklaration',
   inkforetag: 'Företagsinformation',
+  skahmst: 'Skattekonto – saldo & transaktioner',
   skattekonto: 'Skattekonto',
   agd: 'Arbetsgivardeklaration',
 }
@@ -175,7 +176,7 @@ export function SkatteverketConnectPanel() {
               </Badge>
             ))}
           </div>
-          {!scopes.includes('skattekonto') && (
+          {!scopes.includes('skahmst') && !scopes.includes('skattekonto') && (
             <p className="mt-3 text-sm text-foreground">
               Behörigheten för Skattekonto saknas — koppla från och anslut igen
               för att aktivera saldo- och transaktionsvyn.

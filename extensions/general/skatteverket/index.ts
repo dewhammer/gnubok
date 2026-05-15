@@ -26,6 +26,7 @@ import {
   matchSkattekontoToEntry,
   SkattekontoMatchError,
 } from './lib/skattekonto-match'
+import { splitTransactions } from './lib/skattekonto-buckets'
 import type { SkattekontoBalanceSnapshot } from './types'
 import type { VatPeriodType } from '@/types'
 
@@ -1387,7 +1388,8 @@ export const skatteverketExtension: Extension = {
         }
 
         const rows = data ?? []
-        const booked = rows.filter(r => r.status === 'booked')
+        const today = new Date().toISOString().slice(0, 10)
+        const { booked, overdue, upcoming } = splitTransactions(rows, today)
 
         // Enrich obokförda rader with a single-best-candidate suggestion.
         // Only attached when there's exactly one match — avoids the UI
@@ -1411,7 +1413,8 @@ export const skatteverketExtension: Extension = {
         return NextResponse.json({
           data: {
             booked: bookedEnriched,
-            upcoming: rows.filter(r => r.status === 'upcoming'),
+            overdue,
+            upcoming,
           },
         })
       },
