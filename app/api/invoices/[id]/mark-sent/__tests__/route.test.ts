@@ -40,6 +40,7 @@ vi.mock('@react-pdf/renderer', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue('mock-pdf-element'),
 }))
+import { InvoicePDF } from '@/lib/invoices/pdf-template'
 
 const mockCreateInvoiceJournalEntry = vi.fn()
 vi.mock('@/lib/bookkeeping/invoice-entries', () => ({
@@ -221,5 +222,27 @@ describe('POST /api/invoices/[id]/mark-sent — PDF archival', () => {
       expect.objectContaining({ name: 'kreditfaktura-F-2026011.pdf' }),
       expect.anything()
     )
+  })
+
+  it('renders the archived PDF as if already sent (no UTKAST banner)', async () => {
+    enqueue({ data: invoice, error: null }) // fetch invoice (status: 'draft')
+    enqueue({ data: null, error: null }) // status update
+    enqueue({ data: company, error: null }) // settings
+    mockCreateInvoiceJournalEntry.mockResolvedValue({ id: 'je-99' })
+    enqueue({ data: null, error: null }) // update invoice with journal_entry_id
+
+    const request = createMockRequest('/api/invoices/inv-1/mark-sent', { method: 'POST' })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+    const { status } = await parseJsonResponse(response)
+
+    expect(status).toBe(200)
+    // The in-memory invoice still reads 'draft' after the DB status flip
+    // (it's never re-fetched). We must override it before render or
+    // pdf-template.tsx prints the "UTKAST – inte en giltig faktura" banner
+    // on the archived underlag.
+    expect(vi.mocked(InvoicePDF)).toHaveBeenCalledTimes(1)
+    const renderArgs = vi.mocked(InvoicePDF).mock.calls[0][0]
+    expect(renderArgs.invoice.status).toBe('sent')
+    expect(renderArgs.invoice.invoice_number).toBe('F-2026010')
   })
 })

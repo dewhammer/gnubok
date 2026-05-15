@@ -589,9 +589,12 @@ async function commitSendInvoice(
     if (orig) originalInvoiceNumber = orig.invoice_number
   }
 
+  // Override `status` to 'sent' on the in-memory copy. The DB flip happens
+  // after email delivery (line ~625); rendering with the stale 'draft' status
+  // would stamp the customer's PDF with "UTKAST – inte en giltig faktura".
   const pdfBuffer = await renderToBuffer(
     InvoicePDF({
-      invoice: invoice as Invoice,
+      invoice: { ...(invoice as Invoice), status: 'sent' as const },
       customer,
       items,
       company: company as CompanySettings,

@@ -117,10 +117,13 @@ export const POST = withRouteContext(
     }
 
     // Final render with the assigned number — this is the buffer attached to
-    // the email and later archived as underlag.
+    // the email and later archived as underlag. Override status to 'sent' on
+    // the in-memory copy: the DB flip happens after email delivery (line
+    // ~185), but if we render with the stale 'draft' status the customer
+    // receives a PDF stamped "UTKAST – inte en giltig faktura".
     const pdfBuffer = await renderToBuffer(
       InvoicePDF({
-        invoice: invoice as Invoice,
+        invoice: { ...(invoice as Invoice), status: 'sent' as const },
         customer,
         items,
         company: company as CompanySettings,

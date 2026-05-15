@@ -72,6 +72,7 @@ vi.mock('@/lib/email/invoice-templates', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue({}),
 }))
+import { InvoicePDF } from '@/lib/invoices/pdf-template'
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { POST as sendInvoice } from '../route'
@@ -368,6 +369,36 @@ describe('POST /api/v1/companies/:companyId/invoices/:id/send', () => {
     expect(body.data.warnings).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'STATUS_UPDATE_FAILED' })]),
     )
+  })
+
+  it('renders the final PDF as if already sent (no UTKAST banner)', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: [
+          { data: DRAFT_INVOICE, error: null }, // pre-flight fetch
+          { data: { invoice_number: '2026-0043' }, error: null }, // re-read after allocation
+        ],
+        company_settings: { data: COMPANY_SETTINGS, error: null },
+      }),
+    )
+
+    const res = await sendInvoice(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/send`),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+    expect(res.status).toBe(200)
+
+    // DRAFT_INVOICE has invoice_number: null, so isFreshAllocation is true and
+    // a preflight render runs first with the F-PREVIEW placeholder. The final
+    // render is the second call — its invoice must carry status: 'sent' and
+    // the freshly-assigned invoice_number, otherwise the customer's PDF is
+    // stamped "UTKAST – inte en giltig faktura".
+    const calls = vi.mocked(InvoicePDF).mock.calls
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    const finalRenderArgs = calls[calls.length - 1][0]
+    expect(finalRenderArgs.invoice.status).toBe('sent')
+    expect(finalRenderArgs.invoice.invoice_number).toBe('2026-0043')
   })
 
   it('rejects keys without invoices:write scope', async () => {

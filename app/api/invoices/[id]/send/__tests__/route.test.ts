@@ -41,6 +41,7 @@ vi.mock('@react-pdf/renderer', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue('mock-pdf-element'),
 }))
+import { InvoicePDF } from '@/lib/invoices/pdf-template'
 
 const mockSendEmail = vi.fn()
 const mockIsConfigured = vi.fn()
@@ -363,5 +364,30 @@ describe('POST /api/invoices/[id]/send', () => {
     expect(
       (body.error as unknown as { details?: { providerError?: string } }).details?.providerError,
     ).toContain('SMTP error')
+  })
+
+  it('renders the final PDF as if already sent (no UTKAST banner)', async () => {
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: company, error: null })
+
+    mockSendEmail.mockResolvedValue({ success: true, messageId: 'msg-banner' })
+    mockCreateInvoiceJournalEntry.mockResolvedValue({ id: 'je-1' })
+
+    enqueue({ data: null, error: null })
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/invoices/inv-1/send', { method: 'POST' })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+    const { status } = await parseJsonResponse(response)
+
+    expect(status).toBe(200)
+    // Final render: invoice already has an invoice_number on the fixture, so
+    // preflight is skipped and InvoicePDF is called exactly once. The status
+    // passed in must be 'sent' — otherwise pdf-template.tsx renders the
+    // "UTKAST – inte en giltig faktura" banner on the customer's PDF.
+    expect(vi.mocked(InvoicePDF)).toHaveBeenCalledTimes(1)
+    const renderArgs = vi.mocked(InvoicePDF).mock.calls[0][0]
+    expect(renderArgs.invoice.status).toBe('sent')
+    expect(renderArgs.invoice.invoice_number).toBe('F-2024001')
   })
 })

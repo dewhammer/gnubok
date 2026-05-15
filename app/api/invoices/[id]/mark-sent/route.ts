@@ -131,9 +131,12 @@ export async function POST(
         originalInvoiceNumber = originalInvoice?.invoice_number ?? undefined
       }
 
+      // The DB status flip already happened above, but the in-memory `invoice`
+      // is stale and still reads 'draft' — override here so the archived
+      // underlag isn't stamped "UTKAST – inte en giltig faktura".
       const pdfBuffer = await renderToBuffer(
         InvoicePDF({
-          invoice: invoice as Invoice,
+          invoice: { ...(invoice as Invoice), status: 'sent' as const },
           customer: invoice.customer as Customer,
           items,
           company: settings as CompanySettings,

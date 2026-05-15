@@ -340,9 +340,14 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
     }
     const finalInvoiceNumber =
       (numbered as { invoice_number?: string } | null)?.invoice_number ?? typed.invoice_number
+    // Also override `status` to 'sent' on the in-memory copy. The actual DB
+    // flip happens at step 9a (after email delivery), but if we render with
+    // the stale 'draft' status the customer receives a PDF stamped
+    // "UTKAST – inte en giltig faktura".
     const renderableInvoice: Invoice = {
       ...(typed as Invoice),
       invoice_number: finalInvoiceNumber,
+      status: 'sent',
     }
 
     let pdfBuffer: Buffer
