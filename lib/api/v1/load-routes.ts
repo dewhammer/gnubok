@@ -119,4 +119,11 @@ import '@/app/api/v1/companies/[companyId]/reports/sie-export/route'
 import '@/app/api/v1/companies/[companyId]/imports/sie/route'
 import '@/app/api/v1/companies/[companyId]/imports/bank/route'
 
+// Phase 6 PR-1 — webhooks substrate.
+import '@/app/api/v1/companies/[companyId]/webhooks/route'
+import '@/app/api/v1/companies/[companyId]/webhooks/[id]/route'
+import '@/app/api/v1/companies/[companyId]/webhooks/[id]/test/route'
+import '@/app/api/v1/companies/[companyId]/webhooks/[id]/deliveries/route'
+import '@/app/api/v1/webhook-deliveries/[id]/retry/route'
+
 export {}
