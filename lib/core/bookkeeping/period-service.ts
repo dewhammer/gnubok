@@ -363,6 +363,80 @@ export async function createPreviousPeriod(
   return newPeriod as FiscalPeriod
 }
 
+export type PeriodStatusValue = 'open' | 'locked' | 'closed'
+
+export interface PeriodStatusForDate {
+  period_id: string | null
+  status: PeriodStatusValue
+  /**
+   * For `locked` status: either the period's `locked_at` timestamp (ISO) or the
+   * company-wide `bookkeeping_locked_through` date (ISO) — whichever applies.
+   * `null` for open/closed.
+   */
+  lock_date: string | null
+}
+
+/**
+ * Resolve the period status for a given affärshändelse date — answers
+ * "can a verifikation with this entry_date be posted right now?" using the
+ * same two-layer logic the DB triggers enforce:
+ *
+ *   1. company-wide bookkeeping_locked_through (covers everything on/before)
+ *   2. the fiscal_period covering the date (is_closed or locked_at)
+ *
+ * Returned shape is the canonical `period_status` envelope threaded into MCP
+ * tool responses so agents and widgets can disable writes without round-trips.
+ *
+ * Mirrors lib/api/v1/check-period-lock.ts (used by the v1 REST surface). The
+ * two helpers share the same query pattern; if either changes, update both.
+ */
+export async function resolvePeriodStatusForDate(
+  supabase: SupabaseClient,
+  companyId: string,
+  date: string,
+): Promise<PeriodStatusForDate> {
+  // Layer 1: company-wide lock date.
+  const { data: settings } = await supabase
+    .from('company_settings')
+    .select('bookkeeping_locked_through')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  const lockThrough = settings?.bookkeeping_locked_through ?? null
+  if (lockThrough && date <= lockThrough) {
+    // Find the covering period if any — useful for widget greying.
+    const { data: period } = await supabase
+      .from('fiscal_periods')
+      .select('id')
+      .eq('company_id', companyId)
+      .lte('period_start', date)
+      .gte('period_end', date)
+      .maybeSingle()
+    return { period_id: period?.id ?? null, status: 'locked', lock_date: lockThrough }
+  }
+
+  // Layer 2: fiscal period status.
+  const { data: period } = await supabase
+    .from('fiscal_periods')
+    .select('id, is_closed, locked_at')
+    .eq('company_id', companyId)
+    .lte('period_start', date)
+    .gte('period_end', date)
+    .maybeSingle()
+
+  if (!period) {
+    // No covering period — treated as open at this layer; the engine's own
+    // ensure-period helper will create one. Agents should still warn the user.
+    return { period_id: null, status: 'open', lock_date: null }
+  }
+  if (period.is_closed) {
+    return { period_id: period.id, status: 'closed', lock_date: null }
+  }
+  if (period.locked_at) {
+    return { period_id: period.id, status: 'locked', lock_date: period.locked_at }
+  }
+  return { period_id: period.id, status: 'open', lock_date: null }
+}
+
 /**
  * Get status summary for a fiscal period.
  */

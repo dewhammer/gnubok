@@ -64,6 +64,7 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // The arbitrary-line capability is what makes these compliance-critical.
   create_voucher: 'high',
   correct_entry: 'high',
+  reverse_entry: 'high',
 }
 
 export function getRiskLevel(operationType: string): RiskLevel {

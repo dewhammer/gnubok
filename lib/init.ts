@@ -18,11 +18,16 @@ const REQUIRED_CORE_VARS = [
   'CRON_SECRET',
 ] as const
 
-const REQUIRED_EXTENSION_VARS = [
-  'ENABLE_BANKING_APP_ID',
-  'ENABLE_BANKING_PRIVATE_KEY',
-  'ANTHROPIC_API_KEY',
-  'OPENAI_API_KEY',
+// Each entry is one logical requirement; if multiple names are listed, the
+// requirement is satisfied when ANY of them is set. Mirrors the runtime
+// fallback in extensions/general/enable-banking/lib/jwt.ts (_PRODUCTION ||
+// base) so Vercel prod (which only sets the _PRODUCTION variants) doesn't
+// warn on every cold start.
+const REQUIRED_EXTENSION_VARS: ReadonlyArray<readonly string[]> = [
+  ['ENABLE_BANKING_APP_ID_PRODUCTION', 'ENABLE_BANKING_APP_ID'],
+  ['ENABLE_BANKING_PRIVATE_KEY_PRODUCTION', 'ENABLE_BANKING_PRIVATE_KEY'],
+  ['ANTHROPIC_API_KEY'],
+  ['OPENAI_API_KEY'],
 ] as const
 
 function validateEnvironment(): void {
@@ -43,8 +48,10 @@ function validateEnvironment(): void {
   }
 
   const missingExt: string[] = []
-  for (const v of REQUIRED_EXTENSION_VARS) {
-    if (!process.env[v]) missingExt.push(v)
+  for (const aliases of REQUIRED_EXTENSION_VARS) {
+    if (!aliases.some((v) => !!process.env[v])) {
+      missingExt.push(aliases.join(' or '))
+    }
   }
 
   if (missingExt.length > 0) {

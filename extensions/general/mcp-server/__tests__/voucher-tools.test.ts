@@ -25,6 +25,7 @@ import { findFiscalPeriod } from '@/lib/bookkeeping/engine'
 
 const createVoucher = tools.find((t) => t.name === 'gnubok_create_voucher')!
 const correctEntry = tools.find((t) => t.name === 'gnubok_correct_entry')!
+const reverseEntry = tools.find((t) => t.name === 'gnubok_reverse_journal_entry')!
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -225,6 +226,9 @@ describe('gnubok_create_voucher — staging gates', () => {
       ],
       error: null,
     })
+    // resolvePeriodStatusForDate: layer 1 (company_settings) + layer 2 (fiscal_periods).
+    enqueue({ data: null, error: null })
+    enqueue({ data: null, error: null })
     enqueue({ data: { id: 'op-staged' }, error: null }) // pending_operations insert
 
     const result = (await createVoucher.execute(
@@ -275,5 +279,63 @@ describe('gnubok_correct_entry — registration', () => {
         supabase as never,
       ),
     ).rejects.toThrow(/not balanced/i)
+  })
+})
+
+describe('gnubok_reverse_journal_entry — staging gates', () => {
+  it('is registered with bookkeeping:write scope and is not read-only', async () => {
+    const { TOOL_SCOPE_MAP } = await import('@/lib/auth/api-keys')
+    expect(reverseEntry).toBeDefined()
+    expect(reverseEntry.annotations.readOnlyHint).toBe(false)
+    expect(TOOL_SCOPE_MAP.gnubok_reverse_journal_entry).toBe('bookkeeping:write')
+  })
+
+  it('rejects when entry_id is missing', async () => {
+    const { supabase } = createQueuedMockSupabase()
+    await expect(
+      reverseEntry.execute({}, 'company-1', 'user-1', supabase as never),
+    ).rejects.toThrow(/entry_id is required/i)
+  })
+
+  it('rejects when the original entry is not posted', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'je-1',
+        status: 'draft',
+        entry_date: '2026-05-12',
+        description: 'Test',
+        voucher_number: 1,
+        voucher_series: 'A',
+        fiscal_period_id: 'fp-1',
+        fiscal_periods: { name: '2026', is_closed: false },
+        lines: [],
+      },
+      error: null,
+    })
+    await expect(
+      reverseEntry.execute({ entry_id: 'je-1' }, 'company-1', 'user-1', supabase as never),
+    ).rejects.toThrow(/posted entries can be reversed/i)
+  })
+
+  it('rejects when the original entry is in a closed period', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({
+      data: {
+        id: 'je-1',
+        status: 'posted',
+        entry_date: '2025-12-31',
+        description: 'Test',
+        voucher_number: 42,
+        voucher_series: 'A',
+        fiscal_period_id: 'fp-closed',
+        fiscal_periods: { name: '2025', is_closed: true },
+        lines: [],
+      },
+      error: null,
+    })
+    await expect(
+      reverseEntry.execute({ entry_id: 'je-1' }, 'company-1', 'user-1', supabase as never),
+    ).rejects.toThrow(/closed/i)
   })
 })

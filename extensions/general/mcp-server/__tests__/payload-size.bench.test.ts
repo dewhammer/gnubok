@@ -13,9 +13,11 @@ describe('tools/list payload size guard', () => {
     }))
     const payload = JSON.stringify({ tools: projection })
     const approxTokens = Math.round(payload.length / 4)
-    // Ceiling chosen with headroom over the current ~11K-token payload.
-    // If this fires, either tools were added or descriptions drifted back to verbose;
-    // re-trim or rely on gnubok_search_tools for progressive disclosure.
-    expect(approxTokens).toBeLessThan(20_000)
+    // Ceiling raised from 20K → 25K when item 8 of the agent-native API plan landed
+    // (additionalProperties: false on all 67 inputSchemas + period_status in the staged
+    // operation envelope). Long-term answer to growth is item 15 (Tool Search +
+    // defer_loading) — not relaxing this guard further. If this fires, prefer trimming
+    // descriptions or leaning on gnubok_search_tools before bumping again.
+    expect(approxTokens).toBeLessThan(25_000)
   })
 })

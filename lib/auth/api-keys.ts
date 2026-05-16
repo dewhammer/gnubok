@@ -132,6 +132,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // Phase 4: arbitrary-line bookkeeping primitives (high-risk, always staged)
   gnubok_create_voucher:                  'bookkeeping:write',
   gnubok_correct_entry:                   'bookkeeping:write',
+  gnubok_reverse_journal_entry:           'bookkeeping:write',
 }
 
 export function validateScopes(scopes: unknown): ApiKeyScope[] | null {

@@ -29,7 +29,7 @@ import {
 } from '@/lib/bookkeeping/invoice-entries'
 import { createJournalEntry, findFiscalPeriod, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
 import { correctEntry } from '@/lib/core/bookkeeping/storno-service'
-import { closePeriod, lockPeriod, unlockPeriod } from '@/lib/core/bookkeeping/period-service'
+import { closePeriod, lockPeriod, unlockPeriod, resolvePeriodStatusForDate } from '@/lib/core/bookkeeping/period-service'
 import {
   executeYearEndClosing,
   generateOpeningBalances,
@@ -1715,9 +1715,14 @@ async function commitCorrectEntry(
   // Falling into correctEntry without this returns a less helpful DB error and
   // half-creates the storno before rolling back; surfacing the Swedish message
   // here matches the period_locked UX everywhere else in the app.
+  //
+  // Period lock check is two-layer (matches the DB triggers): per-period
+  // (is_closed / locked_at) AND company-wide (bookkeeping_locked_through).
+  // The staging tool uses resolvePeriodStatusForDate; we reuse it here so the
+  // commit-time gate matches the staging-time signal.
   const { data: original, error: origErr } = await supabase
     .from('journal_entries')
-    .select('id, status, fiscal_period_id, fiscal_periods!inner(is_closed)')
+    .select('id, status, entry_date, fiscal_period_id, fiscal_periods!inner(is_closed, locked_at)')
     .eq('id', entryId)
     .eq('company_id', companyId)
     .maybeSingle()
@@ -1731,12 +1736,30 @@ async function commitCorrectEntry(
       status: 409,
     }
   }
-  const period = original.fiscal_periods as { is_closed?: boolean } | { is_closed?: boolean }[] | null
-  const periodClosed = Array.isArray(period) ? period[0]?.is_closed : period?.is_closed
-  if (periodClosed) {
+  const period = original.fiscal_periods as { is_closed?: boolean; locked_at?: string | null } | { is_closed?: boolean; locked_at?: string | null }[] | null
+  const periodRow = Array.isArray(period) ? period[0] : period
+  if (periodRow?.is_closed || periodRow?.locked_at) {
     return {
       error: 'Räkenskapsperioden är låst. Öppna perioden eller använd omprövning för redan inlämnade momsdeklarationer.',
       status: 409,
+    }
+  }
+  // resolvePeriodStatusForDate also covers the company-wide bookkeeping_locked_through
+  // gate. A DB blip here would otherwise propagate as a 500 with a raw Postgres
+  // message; wrap so the caller sees a clean Swedish 500 instead, consistent with
+  // the staging-side log-and-degrade behaviour in stagePendingOperation.
+  try {
+    const periodStatus = await resolvePeriodStatusForDate(supabase, companyId, original.entry_date)
+    if (periodStatus.status === 'locked' || periodStatus.status === 'closed') {
+      return {
+        error: 'Räkenskapsperioden är låst. Öppna perioden eller använd omprövning för redan inlämnade momsdeklarationer.',
+        status: 409,
+      }
+    }
+  } catch (err) {
+    return {
+      error: `Kunde inte verifiera periodstatus: ${err instanceof Error ? err.message : 'okänt fel'}`,
+      status: 500,
     }
   }
 
@@ -1760,6 +1783,89 @@ async function commitCorrectEntry(
   } catch (err) {
     if (isBookkeepingError(err)) throw err
     return { error: err instanceof Error ? err.message : 'Failed to correct entry', status: 500 }
+  }
+}
+
+async function commitReverseEntry(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  const entryId = params.entry_id as string
+  const reversalDate = typeof params.reversal_date === 'string' ? params.reversal_date : undefined
+
+  if (!entryId) {
+    return { error: 'entry_id is required', status: 400 }
+  }
+
+  // Pre-flight matches commitCorrectEntry: posted + period not closed. Surfaces
+  // Swedish messages before reverseEntry() throws less helpful errors. Period
+  // lock check is two-layer (per-period + company-wide bookkeeping_locked_through)
+  // via resolvePeriodStatusForDate, matching the staging-time signal.
+  const { data: original, error: origErr } = await supabase
+    .from('journal_entries')
+    .select('id, status, entry_date, fiscal_period_id, fiscal_periods!inner(is_closed, locked_at)')
+    .eq('id', entryId)
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  if (origErr || !original) {
+    return { error: 'Verifikationen hittades inte.', status: 404 }
+  }
+  if (original.status !== 'posted') {
+    return {
+      error: `Endast bokförda verifikationer kan makuleras. Aktuell status: ${original.status}.`,
+      status: 409,
+    }
+  }
+  const period = original.fiscal_periods as { is_closed?: boolean; locked_at?: string | null } | { is_closed?: boolean; locked_at?: string | null }[] | null
+  const periodRow = Array.isArray(period) ? period[0] : period
+  if (periodRow?.is_closed || periodRow?.locked_at) {
+    return {
+      error: 'Räkenskapsperioden är låst. Öppna perioden eller använd omprövning för redan inlämnade momsdeklarationer.',
+      status: 409,
+    }
+  }
+  try {
+    const periodStatus = await resolvePeriodStatusForDate(supabase, companyId, original.entry_date)
+    if (periodStatus.status === 'locked' || periodStatus.status === 'closed') {
+      return {
+        error: 'Räkenskapsperioden är låst. Öppna perioden eller använd omprövning för redan inlämnade momsdeklarationer.',
+        status: 409,
+      }
+    }
+  } catch (err) {
+    return {
+      error: `Kunde inte verifiera periodstatus: ${err instanceof Error ? err.message : 'okänt fel'}`,
+      status: 500,
+    }
+  }
+
+  try {
+    const reversal = await reverseEntry(supabase, companyId, userId, entryId, reversalDate)
+    // Invariant per BFL 5 kap 5§: the storno must land in the same fiscal period
+    // as the original entry. reverseEntry() at lib/bookkeeping/engine.ts:492 uses
+    // original.fiscal_period_id, but assert it here so a future engine change that
+    // breaks this invariant fails fast instead of silently shifting period attribution.
+    if (reversal.fiscal_period_id !== original.fiscal_period_id) {
+      return {
+        error: `BFL invariant broken: storno period ${reversal.fiscal_period_id} differs from original ${original.fiscal_period_id}.`,
+        status: 500,
+      }
+    }
+    return {
+      data: {
+        original_entry_id: entryId,
+        reversal_entry_id: reversal.id,
+        reversal_voucher_number: reversal.voucher_number,
+        reversal_voucher_series: reversal.voucher_series,
+        fiscal_period_id: reversal.fiscal_period_id,
+      },
+    }
+  } catch (err) {
+    if (isBookkeepingError(err)) throw err
+    return { error: err instanceof Error ? err.message : 'Failed to reverse entry', status: 500 }
   }
 }
 
@@ -1879,6 +1985,9 @@ export async function commitPendingOperation(
         break
       case 'correct_entry':
         result = await commitCorrectEntry(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'reverse_entry':
+        result = await commitReverseEntry(supabase, userId, companyId, pendingOp.params)
         break
       default:
         return {

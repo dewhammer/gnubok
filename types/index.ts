@@ -1361,6 +1361,8 @@ export type PendingOperationType =
   // Phase 4: arbitrary-line bookkeeping primitives
   | 'create_voucher'
   | 'correct_entry'
+  // Pure makulering (storno) of a posted entry — agent-native API plan item 38
+  | 'reverse_entry'
 export type PendingOperationStatus = 'pending' | 'committing' | 'committed' | 'rejected'
 
 export type PendingOperationActorType = 'user' | 'api_key' | 'mcp_oauth' | 'cron'
