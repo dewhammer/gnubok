@@ -28,7 +28,7 @@ MFA (two-factor authentication via TOTP) is **not enforced** for self-hosted dep
 
 ## 3. Apply Database Migrations
 
-The `supabase/migrations/` directory contains 63 ordered SQL files that set up the full schema, including tables, RLS policies, triggers, and functions.
+The `supabase/migrations/` directory contains the ordered SQL files that set up the full schema, including tables, RLS policies, triggers, and functions.
 
 **Option A — Supabase CLI (recommended):**
 
