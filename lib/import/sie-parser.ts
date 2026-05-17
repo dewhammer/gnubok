@@ -322,7 +322,10 @@ function splitSIELine(line: string): string[] {
       continue
     }
 
-    if (char === ' ' && !inQuotes && braceDepth === 0) {
+    // SIE 4 spec allows either space or tab as field separator (programs like
+    // Bollbok export tab-separated lines). Quoted strings and brace-bounded
+    // dimension lists preserve any interior whitespace via the guards above.
+    if ((char === ' ' || char === '\t') && !inQuotes && braceDepth === 0) {
       if (current) {
         fields.push(current)
         current = ''
@@ -519,8 +522,10 @@ export function parseSIEFile(content: string): ParsedSIEFile {
 
         case 'KTYP': {
           // #KTYP accountNumber type
+          // Bollbok 2025 writes the type unquoted (T), Bollbok 2026 writes it
+          // quoted ("T"). parseStringField strips the quotes in both cases.
           const accountNum = fields[1]
-          const accountType = fields[2]
+          const accountType = parseStringField(fields[2])
           const account = accounts.find((a) => a.number === accountNum)
           if (account) {
             account.accountType = accountType
@@ -716,6 +721,38 @@ export function parseSIEFile(content: string): ParsedSIEFile {
   for (const accountNumber of referencedAccounts) {
     accounts.push({ number: accountNumber, name: '' })
     addIssue(issues, 'info', 0, `Account ${accountNumber} added from transaction data (not in #KONTO)`)
+  }
+
+  // Silent-failure diagnostic: if the raw input declares #IB / #VER records
+  // but parsing produced none, surface a warning instead of letting the file
+  // look empty. Historically a tab-separator or encoding mismatch could swallow
+  // all balance/voucher records without any visible signal.
+  //
+  // Suppressed when per-record 'error' issues already exist for the same tag —
+  // in that case the parser already pinpointed the root cause (e.g. malformed
+  // verification definition), so the generic "check separator/encoding" hint
+  // would be misleading.
+  const rawIBCount = lines.filter((l) => /^\s*#IB\b/.test(l)).length
+  const rawVERCount = lines.filter((l) => /^\s*#VER\b/.test(l)).length
+  const hasIBError = issues.some((i) => i.severity === 'error' && i.tag === 'IB')
+  const hasVERError = issues.some((i) => i.severity === 'error' && i.tag === 'VER')
+  if (rawIBCount > 0 && openingBalances.length === 0 && !hasIBError) {
+    addIssue(
+      issues,
+      'warning',
+      0,
+      `${rawIBCount} #IB-rader hittades men inga ingående saldon kunde tolkas — kontrollera fältavskiljare och teckenkodning`,
+      'IB'
+    )
+  }
+  if (rawVERCount > 0 && vouchers.length === 0 && !hasVERError) {
+    addIssue(
+      issues,
+      'warning',
+      0,
+      `${rawVERCount} #VER-rader hittades men inga verifikationer kunde tolkas — kontrollera fältavskiljare och teckenkodning`,
+      'VER'
+    )
   }
 
   // Calculate statistics

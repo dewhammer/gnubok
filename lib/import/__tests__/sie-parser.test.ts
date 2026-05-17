@@ -856,3 +856,237 @@ describe('parseSIEFile — account collection from transaction data', () => {
     expect(result.accounts.map((a) => a.number)).toContain('3001')
   })
 })
+
+describe('parseSIEFile — tab-separated fields (Bollbok export shape)', () => {
+  // Bollbok exports tab-separated SIE files, valid per the SIE 4 spec
+  // (separator may be space OR tab). Every record except #RAR uses tabs;
+  // #RAR uses spaces. Both 2025 (UTF-8, unquoted #KTYP value) and 2026
+  // (CP437, quoted #KTYP value) shapes are exercised here.
+
+  const BOLLBOK_TAB_2025_SHAPE = [
+    '#FLAGGA\t0',
+    '#PROGRAM\t"Bollbok"\t2078',
+    '#GEN\t20260512\t""',
+    '#SIETYP\t4',
+    '#ORGNR\t"950406-3679"',
+    '#FNAMN\t"Erik Hellqvist "',
+    '#RAR 0 20250101 20251231',
+    '#KPTYP\tEUBAS97',
+    '#KONTO\t1510\t"Kundfordringar"',
+    '#KTYP\t1510\tT',
+    '#KONTO\t1930\t"Företagskonto"',
+    '#KTYP\t1930\tT',
+    '#KONTO\t3001\t"Försäljning"',
+    '#KTYP\t3001\tI',
+    '#IB\t0\t1510\t50000.00',
+    '#IB\t0\t1930\t100000.00',
+    '#VER\t""\t"1"\t20250116\t"Kundbetalning"\t20260508',
+    '{',
+    '#TRANS\t1930\t{}\t12500.00',
+    '#TRANS\t1510\t{}\t-12500.00',
+    '}',
+  ].join('\n')
+
+  const BOLLBOK_TAB_2026_SHAPE = [
+    '#FLAGGA\t0',
+    '#PROGRAM\t"Bollbok"\t2078',
+    '#FORMAT\tPC8',
+    '#GEN\t20260514\t""',
+    '#SIETYP\t4',
+    '#ORGNR\t"950406-3679"',
+    '#FNAMN\t"Erik Hellqvist "',
+    '#RAR 0 20260101 20261231',
+    '#KPTYP\tEUBAS97',
+    '#KONTO\t1510\t"Kundfordringar"',
+    '#KTYP\t1510\t"T"',
+    '#KONTO\t1930\t"Företagskonto"',
+    '#KTYP\t1930\t"T"',
+    '#IB\t0\t1510\t75000.00',
+    '#IB\t0\t1930\t125000.00',
+    '#UB\t0\t1510\t75000.00',
+    '#UB\t0\t1930\t125000.00',
+  ].join('\n')
+
+  it('parses tab-separated #IB into openingBalances (2025 shape)', () => {
+    const result = parseSIEFile(BOLLBOK_TAB_2025_SHAPE)
+    expect(result.openingBalances).toHaveLength(2)
+    expect(result.openingBalances).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ account: '1510', amount: 50000 }),
+        expect.objectContaining({ account: '1930', amount: 100000 }),
+      ])
+    )
+  })
+
+  it('parses tab-separated #KONTO into accounts (2025 shape)', () => {
+    const result = parseSIEFile(BOLLBOK_TAB_2025_SHAPE)
+    expect(result.accounts.map((a) => a.number)).toEqual(
+      expect.arrayContaining(['1510', '1930', '3001'])
+    )
+    const kund = result.accounts.find((a) => a.number === '1510')
+    expect(kund?.name).toBe('Kundfordringar')
+  })
+
+  it('parses tab-separated #VER + #TRANS block (2025 shape)', () => {
+    const result = parseSIEFile(BOLLBOK_TAB_2025_SHAPE)
+    expect(result.vouchers).toHaveLength(1)
+    const v = result.vouchers[0]
+    expect(v.lines).toHaveLength(2)
+    expect(v.lines[0]).toMatchObject({ account: '1930', amount: 12500 })
+    expect(v.lines[1]).toMatchObject({ account: '1510', amount: -12500 })
+    // Verification balances to zero
+    expect(v.lines.reduce((sum, l) => sum + l.amount, 0)).toBe(0)
+  })
+
+  it('parses space-separated #RAR even when other records use tabs', () => {
+    const result = parseSIEFile(BOLLBOK_TAB_2025_SHAPE)
+    expect(result.stats.fiscalYearStart).toBe('2025-01-01')
+    expect(result.stats.fiscalYearEnd).toBe('2025-12-31')
+  })
+
+  it('accepts both unquoted (2025) and quoted (2026) #KTYP values and stores them without surrounding quotes', () => {
+    const result2025 = parseSIEFile(BOLLBOK_TAB_2025_SHAPE)
+    const result2026 = parseSIEFile(BOLLBOK_TAB_2026_SHAPE)
+    // Both shapes parse the chart of accounts without complaint
+    expect(result2025.accounts.length).toBeGreaterThan(0)
+    expect(result2026.accounts.length).toBeGreaterThan(0)
+    // accountType should be the bare letter, never the quoted form
+    const acc2025 = result2025.accounts.find((a) => a.number === '1510')
+    const acc2026 = result2026.accounts.find((a) => a.number === '1510')
+    expect(acc2025?.accountType).toBe('T')
+    expect(acc2026?.accountType).toBe('T')
+  })
+
+  it('parses tab-separated opening-only file (2026 shape) — IB + UB but no vouchers', () => {
+    const result = parseSIEFile(BOLLBOK_TAB_2026_SHAPE)
+    expect(result.openingBalances).toHaveLength(2)
+    expect(result.closingBalances).toHaveLength(2)
+    expect(result.vouchers).toHaveLength(0)
+    expect(result.stats.fiscalYearStart).toBe('2026-01-01')
+  })
+
+  it('preserves interior tabs inside quoted field values', () => {
+    const content = [
+      '#FLAGGA\t0',
+      '#SIETYP\t4',
+      '#FNAMN\t"Has\ttab inside"',
+      '#RAR 0 20240101 20241231',
+    ].join('\n')
+    const result = parseSIEFile(content)
+    // The header name should preserve the embedded tab character
+    expect(result.header.companyName).toContain('\t')
+    expect(result.header.companyName).toBe('Has\ttab inside')
+  })
+
+  it('treats consecutive separator runs (mixed space+tab) as a single separator', () => {
+    const content = [
+      '#FLAGGA 0',
+      '#SIETYP 4',
+      '#FNAMN "T"',
+      '#RAR 0 20240101 20241231',
+      '#KONTO\t \t1510\t"Kund"',
+      '#IB \t 0\t \t1510 \t50000.00',
+    ].join('\n')
+    const result = parseSIEFile(content)
+    expect(result.accounts.map((a) => a.number)).toContain('1510')
+    expect(result.openingBalances[0]).toMatchObject({ account: '1510', amount: 50000 })
+  })
+})
+
+describe('parseSIEFile — silent-failure diagnostic warnings', () => {
+  it('emits a warning when raw #IB lines exist but none could be parsed', () => {
+    // Construct a malformed file where #IB lines are present but unparseable.
+    // We do this by referencing #IB records with an explicitly empty account
+    // field so parsing succeeds tokenization but rejects the record.
+    // Simpler approach: rely on a malformed encoding-like situation by
+    // providing #IB lines whose account field is whitespace-only.
+    //
+    // Instead, prove the diagnostic fires by parsing real-world malformed
+    // input: lines that look like #IB but are followed by no useful fields.
+    const content = [
+      '#FLAGGA 0',
+      '#SIETYP 4',
+      '#FNAMN "T"',
+      '#RAR 0 20240101 20241231',
+      '#IB',  // Bare #IB with no fields — won't parse
+      '#IB',
+    ].join('\n')
+    const result = parseSIEFile(content)
+    expect(result.openingBalances).toHaveLength(0)
+    // Per-line warnings ("Belopp saknas i #IB") share severity+tag with the
+    // aggregate diagnostic, so match on the diagnostic message specifically.
+    const aggregateWarning = result.issues.find(
+      (i) => i.severity === 'warning' && i.tag === 'IB' && i.message.includes('#IB-rader hittades')
+    )
+    expect(aggregateWarning).toBeTruthy()
+    expect(aggregateWarning?.message).toContain('2 #IB-rader')
+    expect(aggregateWarning?.message).toContain('fältavskiljare och teckenkodning')
+  })
+
+  it('emits a warning when raw #VER lines exist but no voucher was committed', () => {
+    // #VER lines parse the header fine (no per-record error) but the surrounding
+    // { } block is missing, so currentVoucher is never pushed onto vouchers.
+    // This is the "silent loss" case the aggregate diagnostic is designed for.
+    const content = [
+      '#FLAGGA 0',
+      '#SIETYP 4',
+      '#FNAMN "T"',
+      '#RAR 0 20240101 20241231',
+      '#VER A 1 20240115 "Test1"',
+      '#VER A 2 20240116 "Test2"',
+    ].join('\n')
+    const result = parseSIEFile(content)
+    expect(result.vouchers).toHaveLength(0)
+    expect(result.issues.some((i) => i.severity === 'error' && i.tag === 'VER')).toBe(false)
+    const verWarning = result.issues.find(
+      (i) => i.severity === 'warning' && i.tag === 'VER' && i.message.includes('#VER-rader hittades')
+    )
+    expect(verWarning).toBeTruthy()
+    expect(verWarning?.message).toContain('2 #VER-rader')
+  })
+
+  it('suppresses the aggregate VER warning when a per-record VER error already exists', () => {
+    // Bare #VER lines (no fields) emit per-record 'error'-severity issues with
+    // tag='VER'. In that case the aggregate "check separator/encoding" hint is
+    // misleading — the parser already pinpointed the real problem — so we
+    // suppress it.
+    const content = [
+      '#FLAGGA 0',
+      '#SIETYP 4',
+      '#FNAMN "T"',
+      '#RAR 0 20240101 20241231',
+      '#VER',
+      '#VER',
+    ].join('\n')
+    const result = parseSIEFile(content)
+    expect(result.vouchers).toHaveLength(0)
+    expect(result.issues.some((i) => i.severity === 'error' && i.tag === 'VER')).toBe(true)
+    const aggregateVerWarning = result.issues.find(
+      (i) => i.severity === 'warning' && i.tag === 'VER' && i.message.includes('#VER-rader hittades')
+    )
+    expect(aggregateVerWarning).toBeUndefined()
+  })
+
+  it('does NOT emit IB/VER warnings on a normal file with parsed records', () => {
+    const result = parseSIEFile(SIE_WITH_BALANCES)
+    const spurious = result.issues.filter(
+      (i) => i.severity === 'warning' && (i.tag === 'IB' || i.tag === 'VER')
+    )
+    expect(spurious).toHaveLength(0)
+  })
+
+  it('does NOT emit warnings on a legitimately empty current-year file (no #IB lines)', () => {
+    const content = [
+      '#FLAGGA 0',
+      '#SIETYP 4',
+      '#FNAMN "Just opened"',
+      '#RAR 0 20260101 20261231',
+      '#KONTO 1930 "Bank"',
+    ].join('\n')
+    const result = parseSIEFile(content)
+    const spurious = result.issues.filter(
+      (i) => i.severity === 'warning' && (i.tag === 'IB' || i.tag === 'VER')
+    )
+    expect(spurious).toHaveLength(0)
+  })
+})
