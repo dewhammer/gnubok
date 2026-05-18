@@ -104,7 +104,10 @@ describe('commitPendingOperation: create_voucher', () => {
         description: 'Capitalize Cursor subscription to 1010',
         source_type: 'manual',
       }),
-      'mcp_create_voucher'
+      // Default commit_method when opts.commitMethod is not passed.
+      // Must be one of the values allowed by the DB CHECK constraint
+      // (migration 20260420120001_journal_entry_commit_metadata.sql).
+      'user_accept'
     )
     // findFiscalPeriod must NOT be called when fiscal_period_id is supplied —
     // it's the caller's explicit choice.
@@ -218,7 +221,7 @@ describe('commitPendingOperation: create_voucher', () => {
       'company-1',
       'user-1',
       expect.objectContaining({ source_type: 'manual' }),
-      'mcp_create_voucher'
+      'user_accept'
     )
     expect(createJournalEntry).not.toHaveBeenCalledWith(
       expect.anything(),
@@ -226,6 +229,46 @@ describe('commitPendingOperation: create_voucher', () => {
       expect.anything(),
       expect.objectContaining({ source_type: 'bank_transaction' }),
       expect.anything()
+    )
+  })
+
+  it('passes bulk_accept commit_method when invoked from the bulk-commit path', async () => {
+    // The bulk-commit route passes opts.commitMethod = 'bulk_accept' so the
+    // resulting journal_entry rows are tagged correctly per BFNAR 2013:2
+    // behandlingshistorik. Without this assertion, a regression that drops
+    // opts on the way to the engine would silently book everything as
+    // 'user_accept'.
+    vi.mocked(createJournalEntry).mockResolvedValueOnce(
+      makeJournalEntry({ id: 'je-bulk', voucher_number: 9 })
+    )
+
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({ data: null, error: null }) // dispatcher's commit update
+
+    const op = makePendingOp({
+      params: {
+        entry_date: '2026-05-12',
+        description: 'bulk-approved voucher',
+        fiscal_period_id: 'fp-1',
+        lines: [
+          { account_number: '1010', debit_amount: 100, credit_amount: 0 },
+          { account_number: '1930', debit_amount: 0, credit_amount: 100 },
+        ],
+      },
+    })
+
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op, {
+      commitMethod: 'bulk_accept',
+    })
+
+    expect(result.status).toBe('committed')
+    expect(createJournalEntry).toHaveBeenCalledWith(
+      expect.anything(),
+      'company-1',
+      'user-1',
+      expect.anything(),
+      'bulk_accept'
     )
   })
 

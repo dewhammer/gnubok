@@ -82,6 +82,16 @@ export interface CommitResult {
 export interface CommitOptions {
   /** Email address used as cc on send_invoice (typically the human user's email). */
   userEmail?: string
+  /**
+   * commit_method recorded on any journal_entries created by this operation.
+   * Must match the CHECK constraint on journal_entries.commit_method:
+   * 'user_accept' | 'bulk_accept' | 'timing_ceiling' | 'migration' | 'legacy'.
+   * Single-approval route passes 'user_accept' (default); bulk-approval passes
+   * 'bulk_accept'. Defaults to 'user_accept' since the dispatcher is only
+   * invoked from human-approval paths after agent auto-commit was removed
+   * (migration 20260505190027_drop_agent_auto_commit).
+   */
+  commitMethod?: 'user_accept' | 'bulk_accept'
 }
 
 // ── Helper: ensure fiscal period covers the date ──────────────────
@@ -1628,7 +1638,8 @@ async function commitCreateVoucher(
   supabase: SupabaseClient,
   userId: string,
   companyId: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  opts: CommitOptions = {}
 ): Promise<ExecutorResult> {
   const entryDate = params.entry_date as string
   const description = params.description as string
@@ -1681,7 +1692,11 @@ async function commitCreateVoucher(
         notes: (params.notes as string) || undefined,
         lines,
       },
-      'mcp_create_voucher'
+      // commit_method records HOW it was committed, not who staged it. MCP-
+      // staged ops still go through human approval, so 'user_accept' (or
+      // 'bulk_accept' from the bulk route) is the correct value. The DB CHECK
+      // constraint rejects anything else (migration 20260420120001).
+      opts.commitMethod ?? 'user_accept'
     )
 
     return {
@@ -1981,7 +1996,7 @@ export async function commitPendingOperation(
         result = await commitImportSie(supabase, userId, companyId, pendingOp.params)
         break
       case 'create_voucher':
-        result = await commitCreateVoucher(supabase, userId, companyId, pendingOp.params)
+        result = await commitCreateVoucher(supabase, userId, companyId, pendingOp.params, opts)
         break
       case 'correct_entry':
         result = await commitCorrectEntry(supabase, userId, companyId, pendingOp.params)

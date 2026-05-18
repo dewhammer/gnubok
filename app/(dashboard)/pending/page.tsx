@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   XCircle,
   Bot,
+  BookOpen,
 } from 'lucide-react'
 import type { PendingOperation, PendingOperationStatus } from '@/types'
 
@@ -28,6 +29,9 @@ const operationLabels: Record<string, { label: string; icon: typeof ArrowLeftRig
   create_customer: { label: 'Ny kund', icon: Users, variant: 'secondary' },
   create_invoice: { label: 'Ny faktura', icon: Receipt, variant: 'outline' },
   create_transaction: { label: 'Ny transaktion', icon: ArrowLeftRight, variant: 'secondary' },
+  create_voucher: { label: 'Ny verifikation', icon: BookOpen, variant: 'outline' },
+  correct_entry: { label: 'Rättelse', icon: BookOpen, variant: 'outline' },
+  reverse_entry: { label: 'Makulering', icon: BookOpen, variant: 'outline' },
   mark_invoice_paid: { label: 'Betald faktura', icon: Receipt, variant: 'default' },
   send_invoice: { label: 'Skicka faktura', icon: Receipt, variant: 'outline' },
   mark_invoice_sent: { label: 'Markera skickad', icon: Receipt, variant: 'outline' },
@@ -72,6 +76,9 @@ const singleActionWarnings: Record<string, string> = {
   send_invoice: 'Genom att klicka godkänn så skickas fakturan till kunden.',
   mark_invoice_paid: 'Genom att klicka godkänn så bokförs en betalning på fakturan.',
   mark_invoice_sent: 'Genom att klicka godkänn så märks fakturan som skickad och en verifikation skapas.',
+  create_voucher: 'Genom att klicka godkänn så bokförs verifikationen med ett nytt verifikationsnummer.',
+  correct_entry: 'Genom att klicka godkänn så bokförs en storno och en ny korrigerad verifikation i samma period (BFL 5 kap 5§).',
+  reverse_entry: 'Genom att klicka godkänn så makuleras verifikationen via en storno i samma period.',
 }
 
 function singleActionWarning(operationType: string): string {
@@ -208,6 +215,136 @@ function CreateTransactionPreview({ data }: { data: Record<string, unknown> }) {
   )
 }
 
+type VoucherLine = {
+  account_number: string
+  account_name?: string | null
+  debit_amount: number
+  credit_amount: number
+  line_description?: string | null
+}
+
+function VoucherLinesTable({ lines, currency }: { lines: VoucherLine[]; currency?: string }) {
+  return (
+    <div className="border-t pt-2 space-y-1">
+      {lines.map((line, i) => (
+        <div key={i} className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 text-xs items-baseline">
+          <span className="font-mono text-muted-foreground">{line.account_number}</span>
+          <span className="truncate">
+            {line.account_name || line.line_description || '—'}
+          </span>
+          <span className="font-mono tabular-nums text-right w-24">
+            {line.debit_amount > 0 ? formatCurrency(line.debit_amount, currency || 'SEK') : ''}
+          </span>
+          <span className="font-mono tabular-nums text-right w-24">
+            {line.credit_amount > 0 ? formatCurrency(line.credit_amount, currency || 'SEK') : ''}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function VoucherPreview({ data }: { data: Record<string, unknown> }) {
+  const lines = (data.lines as VoucherLine[]) || []
+  const totalDebit = data.total_debit as number | undefined
+  const totalCredit = data.total_credit as number | undefined
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+        <span className="text-muted-foreground">Datum</span>
+        <span className="font-mono">{String(data.entry_date ?? '')}</span>
+        <span className="text-muted-foreground">Beskrivning</span>
+        <span className="truncate">{String(data.description ?? '')}</span>
+        <span className="text-muted-foreground">Serie</span>
+        <span className="font-mono">{String(data.voucher_series ?? 'A')}</span>
+      </div>
+      {lines.length > 0 && (
+        <div>
+          <div className="grid grid-cols-[auto_1fr_auto_auto] gap-x-3 text-[11px] uppercase tracking-wider text-muted-foreground pb-1">
+            <span>Konto</span>
+            <span>Text</span>
+            <span className="text-right w-24">Debet</span>
+            <span className="text-right w-24">Kredit</span>
+          </div>
+          <VoucherLinesTable lines={lines} />
+        </div>
+      )}
+      {totalDebit != null && totalCredit != null && (
+        <div className="border-t pt-2 grid grid-cols-[auto_1fr_auto_auto] gap-x-3 text-xs">
+          <span></span>
+          <span className="text-muted-foreground">Summa</span>
+          <span className="font-mono tabular-nums text-right w-24 font-medium">
+            {formatCurrency(totalDebit)}
+          </span>
+          <span className="font-mono tabular-nums text-right w-24 font-medium">
+            {formatCurrency(totalCredit)}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CorrectEntryPreview({ data }: { data: Record<string, unknown> }) {
+  const original = (data.original as {
+    voucher?: string
+    entry_date?: string
+    description?: string
+    lines?: VoucherLine[]
+  }) || {}
+  const correction = (data.correction as {
+    total_debit?: number
+    total_credit?: number
+    line_count?: number
+    lines?: VoucherLine[]
+  }) || {}
+
+  return (
+    <div className="space-y-4 text-sm">
+      <div>
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+          Originalverifikation V{original.voucher ?? ''} — {original.entry_date ?? ''}
+        </p>
+        <p className="text-xs text-muted-foreground italic mb-2">{original.description ?? ''}</p>
+        {original.lines && original.lines.length > 0 && (
+          <VoucherLinesTable lines={original.lines} />
+        )}
+      </div>
+      <div>
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+          Korrigerad verifikation ({correction.line_count ?? correction.lines?.length ?? 0} rader)
+        </p>
+        {correction.lines && correction.lines.length > 0 && (
+          <VoucherLinesTable lines={correction.lines} />
+        )}
+        {correction.total_debit != null && (
+          <div className="border-t pt-1 grid grid-cols-[auto_1fr_auto_auto] gap-x-3 text-xs mt-1">
+            <span></span>
+            <span className="text-muted-foreground">Summa</span>
+            <span className="font-mono tabular-nums text-right w-24 font-medium">
+              {formatCurrency(correction.total_debit)}
+            </span>
+            <span className="font-mono tabular-nums text-right w-24 font-medium">
+              {formatCurrency(correction.total_credit ?? 0)}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Render a primitive (string/number/bool) or a short summary of an array/object.
+// Used by GenericPreview to avoid the "[object Object]" stringification that
+// occurs when an operation_type has no dedicated preview component.
+function renderPrimitive(value: unknown): string {
+  if (value == null) return ''
+  if (Array.isArray(value)) return `${value.length} rader`
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
 function GenericPreview({ data }: { data: Record<string, unknown> }) {
   const entries = Object.entries(data).filter(([, v]) => v != null && v !== '')
   return (
@@ -216,7 +353,7 @@ function GenericPreview({ data }: { data: Record<string, unknown> }) {
         <Fragment key={key}>
           <span className="text-muted-foreground">{key.replace(/_/g, ' ')}</span>
           <span className={typeof value === 'number' ? 'font-mono tabular-nums' : ''}>
-            {String(value)}
+            {renderPrimitive(value)}
           </span>
         </Fragment>
       ))}
@@ -234,6 +371,10 @@ function OperationPreview({ op }: { op: PendingOperation }) {
       return <InvoicePreview data={op.preview_data} />
     case 'create_transaction':
       return <CreateTransactionPreview data={op.preview_data} />
+    case 'create_voucher':
+      return <VoucherPreview data={op.preview_data} />
+    case 'correct_entry':
+      return <CorrectEntryPreview data={op.preview_data} />
     default:
       return <GenericPreview data={op.preview_data} />
   }

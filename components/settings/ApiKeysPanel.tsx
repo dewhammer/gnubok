@@ -19,85 +19,120 @@ import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui
 import { useToast } from '@/components/ui/use-toast'
 import { Loader2, Plus, Copy, Check, Trash2, Key, ChevronDown } from 'lucide-react'
 import { getBranding } from '@/lib/branding/service'
+import type { ApiKeyScope } from '@/lib/auth/api-keys'
 
 const branding = getBranding()
 const connectorName = branding.appName.toLowerCase()
 
-const SCOPE_GROUPS = [
+type ScopeEntry = {
+  scope: ApiKeyScope
+  label: string
+  /** Number of MCP tools gated by this scope. 0 = REST-API-only scope. */
+  tools: number
+}
+
+type ScopeGroup = {
+  domain: string
+  label: string
+  read: ScopeEntry | null
+  write: ScopeEntry | null
+}
+
+const SCOPE_GROUPS: ScopeGroup[] = [
   {
     domain: 'transactions',
     label: 'Transaktioner',
-    read: 'transactions:read' as const,
-    readLabel: 'Läs — lista transaktioner, mallar, kategorier',
-    readTools: 3,
-    write: 'transactions:write' as const,
-    writeLabel: 'Skriv — kategorisera, kvittomatchning, koppling mot faktura',
-    writeTools: 3,
+    read: { scope: 'transactions:read', label: 'Läs — lista transaktioner, mallar, kategorier, inbox', tools: 8 },
+    write: { scope: 'transactions:write', label: 'Skriv — kategorisera, kvittomatchning, koppling mot faktura, dokumentuppladdning', tools: 8 },
   },
   {
     domain: 'customers',
     label: 'Kunder',
-    read: 'customers:read' as const,
-    readLabel: 'Läs — lista kunder',
-    readTools: 1,
-    write: 'customers:write' as const,
-    writeLabel: 'Skriv — skapa kunder',
-    writeTools: 1,
+    read: { scope: 'customers:read', label: 'Läs — lista kunder', tools: 1 },
+    write: { scope: 'customers:write', label: 'Skriv — skapa kunder', tools: 1 },
   },
   {
     domain: 'invoices',
     label: 'Fakturor',
-    read: 'invoices:read' as const,
-    readLabel: 'Läs — lista fakturor',
-    readTools: 1,
-    write: 'invoices:write' as const,
-    writeLabel: 'Skriv — skapa, skicka, markera betald/skickad',
-    writeTools: 4,
+    read: { scope: 'invoices:read', label: 'Läs — lista fakturor', tools: 1 },
+    write: { scope: 'invoices:write', label: 'Skriv — skapa, skicka, markera betald/skickad, kreditera, konvertera', tools: 6 },
   },
   {
     domain: 'suppliers',
     label: 'Leverantörer',
-    read: 'suppliers:read' as const,
-    readLabel: 'Läs — lista leverantörer och leverantörsfakturor',
-    readTools: 2,
-    write: null,
-    writeLabel: null,
-    writeTools: 0,
+    read: { scope: 'suppliers:read', label: 'Läs — lista leverantörer och leverantörsfakturor', tools: 2 },
+    write: { scope: 'suppliers:write', label: 'Skriv — godkänn, kreditera, skapa leverantörsfaktura från inbox', tools: 3 },
   },
   {
     domain: 'reports',
     label: 'Rapporter',
-    read: 'reports:read' as const,
-    readLabel: 'Läs — kontoplan, huvudbok, balansräkning, resultaträkning, moms, KPI, kundreskontra, leverantörsreskontra, räkenskapsperioder, bankavstämning',
-    readTools: 11,
+    read: { scope: 'reports:read', label: 'Läs — kontoplan, huvudbok, BR, RR, moms, KPI, reskontra, perioder, bankavstämning, SIE-export', tools: 18 },
     write: null,
-    writeLabel: null,
-    writeTools: 0,
   },
-] as const
+  {
+    domain: 'bookkeeping',
+    label: 'Bokföring',
+    read: null,
+    write: { scope: 'bookkeeping:write', label: 'Skriv — stänga/låsa perioder, IB, bokslut, SIE-import, verifikat, korrigeringar (alla stagas)', tools: 11 },
+  },
+  {
+    domain: 'payroll',
+    label: 'Löner',
+    read: { scope: 'payroll:read', label: 'Läs — lista anställda, lönekörningar, lönejournal', tools: 3 },
+    write: { scope: 'payroll:write', label: 'Skriv — skapa lönekörning, beräkna, generera AGI', tools: 3 },
+  },
+  {
+    domain: 'pending_operations',
+    label: 'Stagade operationer',
+    read: { scope: 'pending_operations:read', label: 'Läs — lista pending_operations som väntar på godkännande', tools: 1 },
+    write: { scope: 'pending_operations:approve', label: 'Godkänn — committa eller avvisa staged ops via API (ersätter web-UI:s granskning)', tools: 2 },
+  },
+  {
+    domain: 'documents',
+    label: 'Dokument (REST API)',
+    read: { scope: 'documents:read', label: 'Läs — lista och hämta dokumentbilagor', tools: 0 },
+    write: { scope: 'documents:write', label: 'Skriv — ladda upp och koppla dokument till verifikationer', tools: 0 },
+  },
+  {
+    domain: 'companies',
+    label: 'Företag (REST API)',
+    read: { scope: 'companies:read', label: 'Läs — företagsprofiler nyckeln har åtkomst till', tools: 0 },
+    write: null,
+  },
+  {
+    domain: 'events',
+    label: 'Händelser (REST API)',
+    read: { scope: 'events:read', label: 'Läs — polla event_log som webhook-fallback', tools: 0 },
+    write: null,
+  },
+  {
+    domain: 'webhooks',
+    label: 'Webhooks (REST API)',
+    read: null,
+    write: { scope: 'webhooks:manage', label: 'Hantera — skapa, lista, uppdatera, radera prenumerationer', tools: 0 },
+  },
+  {
+    domain: 'operations',
+    label: 'Operationer (REST API)',
+    read: { scope: 'operations:read', label: 'Läs — status för långkörande operationer (import, bokslut, omvärdering)', tools: 0 },
+    write: null,
+  },
+  {
+    domain: 'compliance',
+    label: 'Compliance (REST API)',
+    read: { scope: 'compliance:read', label: 'Läs — pre-flight: momsstängning, bokslutsberedskap, voucher-gap, IB/UB-kontinuitet', tools: 0 },
+    write: null,
+  },
+]
 
-type Scope =
-  | 'transactions:read' | 'transactions:write'
-  | 'customers:read' | 'customers:write'
-  | 'invoices:read' | 'invoices:write'
-  | 'suppliers:read'
-  | 'reports:read'
+type Scope = ApiKeyScope
 
-const ALL_SCOPES: Scope[] = SCOPE_GROUPS.flatMap((g) =>
-  g.write ? [g.read, g.write] : [g.read]
-)
-
-/** Map scope key → display label for badges */
-const SCOPE_LABELS: Record<Scope, string> = {
-  'transactions:read': 'Transaktioner (läs)',
-  'transactions:write': 'Transaktioner (skriv)',
-  'customers:read': 'Kunder (läs)',
-  'customers:write': 'Kunder (skriv)',
-  'invoices:read': 'Fakturor (läs)',
-  'invoices:write': 'Fakturor (skriv)',
-  'suppliers:read': 'Leverantörer (läs)',
-  'reports:read': 'Rapporter (läs)',
-}
+const ALL_SCOPES: Scope[] = SCOPE_GROUPS.flatMap((g) => {
+  const out: Scope[] = []
+  if (g.read) out.push(g.read.scope)
+  if (g.write) out.push(g.write.scope)
+  return out
+})
 
 interface ApiKey {
   id: string
@@ -426,46 +461,52 @@ export function ApiKeysPanel() {
                   <div key={group.domain} className="space-y-1.5">
                     <p className="text-sm font-medium">{group.label}</p>
                     <div className="space-y-1 pl-1">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <Checkbox
-                          checked={newKeyScopes.has(group.read)}
-                          onCheckedChange={(checked) => {
-                            setNewKeyScopes((prev) => {
-                              const next = new Set(prev)
-                              if (checked) {
-                                next.add(group.read)
-                              } else {
-                                next.delete(group.read)
-                                // Remove write too — write without read makes no sense
-                                if (group.write) next.delete(group.write)
-                              }
-                              return next
-                            })
-                          }}
-                        />
-                        <span className="text-xs text-muted-foreground">{group.readLabel}</span>
-                        <span className="text-[10px] tabular-nums text-muted-foreground/60">{group.readTools} verktyg</span>
-                      </label>
-                      {group.write && (
+                      {group.read && (
                         <label className="flex items-center gap-2 cursor-pointer">
                           <Checkbox
-                            checked={newKeyScopes.has(group.write)}
+                            checked={newKeyScopes.has(group.read.scope)}
                             onCheckedChange={(checked) => {
                               setNewKeyScopes((prev) => {
                                 const next = new Set(prev)
                                 if (checked) {
-                                  next.add(group.write!)
-                                  // Auto-check read when write is checked
-                                  next.add(group.read)
+                                  next.add(group.read!.scope)
                                 } else {
-                                  next.delete(group.write!)
+                                  next.delete(group.read!.scope)
+                                  // Remove write too — write without read makes no sense
+                                  if (group.write) next.delete(group.write.scope)
                                 }
                                 return next
                               })
                             }}
                           />
-                          <span className="text-xs text-muted-foreground">{group.writeLabel}</span>
-                          <span className="text-[10px] tabular-nums text-muted-foreground/60">{group.writeTools} verktyg</span>
+                          <span className="text-xs text-muted-foreground">{group.read.label}</span>
+                          <span className="text-[10px] tabular-nums text-muted-foreground/60">
+                            {group.read.tools > 0 ? `${group.read.tools} verktyg` : 'REST'}
+                          </span>
+                        </label>
+                      )}
+                      {group.write && (
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <Checkbox
+                            checked={newKeyScopes.has(group.write.scope)}
+                            onCheckedChange={(checked) => {
+                              setNewKeyScopes((prev) => {
+                                const next = new Set(prev)
+                                if (checked) {
+                                  next.add(group.write!.scope)
+                                  // Auto-check read when write is checked (when read exists)
+                                  if (group.read) next.add(group.read.scope)
+                                } else {
+                                  next.delete(group.write!.scope)
+                                }
+                                return next
+                              })
+                            }}
+                          />
+                          <span className="text-xs text-muted-foreground">{group.write.label}</span>
+                          <span className="text-[10px] tabular-nums text-muted-foreground/60">
+                            {group.write.tools > 0 ? `${group.write.tools} verktyg` : 'REST'}
+                          </span>
                         </label>
                       )}
                     </div>
