@@ -256,9 +256,11 @@ export const enableBankingExtension: Extension = {
         })
         if (!rl.ok) return rl.response!
 
-        // Default 90 days: most callers (Sync Now button, post-activation gap fill)
+        // Default 120 days: most callers (Sync Now button, post-activation gap fill)
         // want a deep refresh, not a 30-day blip. Cron uses 7-day incrementals separately.
-        const { connection_id, days_back: rawDaysBack = 90 } = await request.json()
+        // Bank may still cap at ~90 days per PSD2 without fresh SCA — asking for more
+        // is harmless and surfaces whatever the ASPSP is willing to return.
+        const { connection_id, days_back: rawDaysBack = 120 } = await request.json()
         const days_back = Math.min(Math.max(1, rawDaysBack), 365)
 
         const { data: connection, error: connectionError } = await supabase
@@ -514,9 +516,11 @@ export const enableBankingExtension: Extension = {
         }
 
         // initial_lookback_days only applies on the pending_selection→active transition.
-        // Default 90 (PSD2 standard); clamp to [30, 365]. Ignored for selection edits.
+        // Default 120; clamp to [30, 365]. Ignored for selection edits.
+        // PSD2 obliges ASPSPs to ~90 days without fresh SCA, but many Swedish banks
+        // return more if asked — request 120 and accept whatever the bank gives back.
         const initialLookbackDays = (() => {
-          const n = typeof rawLookback === 'number' && Number.isFinite(rawLookback) ? rawLookback : 90
+          const n = typeof rawLookback === 'number' && Number.isFinite(rawLookback) ? rawLookback : 120
           return Math.min(365, Math.max(30, Math.round(n)))
         })()
 
