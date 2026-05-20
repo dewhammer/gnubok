@@ -200,19 +200,19 @@ export async function GET(request: Request) {
   const scopeBindingValue = scopeParam ?? ''
   const scopeBindingSignature = signScopeBinding(scopeBindingValue)
 
-  // The consent UI is bounded to a server-enforced ceiling, regardless of
-  // what the user ticks:
+  // Two-level model for the consent UI:
   //
-  //   - Client requested specific scopes → ceiling = that set (RFC 6749 §3.3
-  //     strict least-privilege).
-  //   - Client passed no scope (or only the legacy `mcp` marker — the case
-  //     Claude's connector hits today) → ceiling = DEFAULT_OAUTH_SCOPES
-  //     (read-only). This preserves GDPR Art. 25(2) data-protection-by-default
-  //     and keeps a server-enforced read-only guarantee for clients that
-  //     never declared any intent. Widening the ceiling beyond
-  //     DEFAULT_OAUTH_SCOPES requires the client to ask for it via the
-  //     `scope` parameter.
-  const grantCeiling = new Set<ApiKeyScope>(parsed.scopes ?? DEFAULT_OAUTH_SCOPES)
+  //   - Client requested specific scopes → ceiling = that set, pre-checked =
+  //     that set (RFC 6749 §3.3 strict least-privilege).
+  //   - Client passed no scope (or only the legacy `mcp` marker — Claude's
+  //     connector today) → ceiling = ALL_SCOPES so every read/write row
+  //     renders; pre-checked = DEFAULT_OAUTH_SCOPES so only the read rows
+  //     start ticked. The user has to actively tick :write to widen the
+  //     grant. This preserves GDPR Art. 25(2) (defaults are minimal /
+  //     read-only) while still letting the resource owner authorise write
+  //     scopes per RFC 6749 §3.3 ("based on … the resource owner's
+  //     instructions") — which is the whole point of the consent step.
+  const grantCeiling = new Set<ApiKeyScope>(parsed.scopes ?? ALL_SCOPES)
   const preChecked = new Set<ApiKeyScope>(parsed.scopes ?? DEFAULT_OAUTH_SCOPES)
   const scopeCheckboxesHtml = renderScopeCheckboxes(preChecked, grantCeiling)
 
@@ -574,11 +574,18 @@ export async function GET(request: Request) {
   // script-src bound to the per-request nonce ensures the consent page's
   // inline JS can only be the block we actually emitted. Anything injected
   // by a forged response or persisted XSS would be blocked.
+  //
+  // form-action must include the redirect_uri origin: the POST handler
+  // returns a 303 to the OAuth client's callback (e.g. claude.ai), and CSP
+  // form-action re-checks every hop in the redirect chain. With only 'self'
+  // the browser would block the post-consent redirect. The origin is safe
+  // to whitelist here because isAllowedRedirectUri() already gated it above.
+  const redirectOrigin = new URL(redirectUri).origin
   const csp = [
     "default-src 'none'",
     `script-src 'nonce-${cspNonce}'`,
     "style-src 'unsafe-inline'",
-    "form-action 'self'",
+    `form-action 'self' ${redirectOrigin}`,
     "base-uri 'none'",
     "frame-ancestors 'none'",
   ].join('; ')
@@ -677,13 +684,14 @@ export async function POST(request: Request) {
   //          can never end up with write grants, even if the user tampered
   //          with the form (least-privilege, SOC 2 CC6.3, NIST AC-6).
   //        • If the client passed no scope (or only the `mcp` marker), the
-  //          ceiling = DEFAULT_OAUTH_SCOPES (read-only). A client that never
-  //          declared write intent cannot receive write grants, even if the
-  //          user tampered with the form — preserving GDPR Art. 25(2)
-  //          data-protection-by-default.
+  //          ceiling = ALL_SCOPES. The resource owner has full discretion at
+  //          consent time, which RFC 6749 §3.3 permits ("based on … the
+  //          resource owner's instructions"). The silent fallback when the
+  //          user selects nothing remains DEFAULT_OAUTH_SCOPES (read-only),
+  //          preserving GDPR Art. 25(2) data-protection-by-default.
   const submittedScopes = formData.getAll('scopes').filter((s): s is string => typeof s === 'string')
   const validated = validateScopes(submittedScopes)
-  const clientCeiling: ApiKeyScope[] = parsed.scopes ?? [...DEFAULT_OAUTH_SCOPES]
+  const clientCeiling: ApiKeyScope[] = parsed.scopes ?? [...ALL_SCOPES]
   const ceilingSet = new Set<ApiKeyScope>(clientCeiling)
   const boundedToClient = (validated ?? []).filter(s => ceilingSet.has(s))
   const grantedScopes: ApiKeyScope[] = boundedToClient.length > 0

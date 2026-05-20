@@ -263,6 +263,14 @@ export async function ingestTransactions(
 
     if (insertError || !newTransaction) {
       result.errors++
+      if (!result.first_error && insertError) {
+        result.first_error = {
+          message: insertError.message,
+          code: insertError.code ?? null,
+          details: insertError.details ?? null,
+          hint: insertError.hint ?? null,
+        }
+      }
       continue
     }
 

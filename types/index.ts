@@ -2578,6 +2578,8 @@ export interface IngestResult {
   auto_matched_invoices: number
   errors: number
   transaction_ids: string[]
+  /** First insert error encountered, surfaced for debugging. Optional. */
+  first_error?: { message: string; code?: string | null; details?: string | null; hint?: string | null }
 }
 
 // ── Invoice extraction (used by invoice-inbox extension and core utils) ──
