@@ -24,6 +24,26 @@ import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { CreateSupplierInvoiceSchema, BookInboxItemDirectlySchema } from '@/lib/api/schemas'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { checkInboxUploadRateLimit } from '@/lib/rate-limits/inbox'
+import { simpleParser } from 'mailparser'
+import path from 'node:path'
+
+/**
+ * Defensive filename sanitisation for content arriving from .eml inner
+ * attachments and rejected-attachment metadata. The document-service already
+ * sanitises before storage paths are built (lib/core/documents/document-service.ts),
+ * so this is defense-in-depth: strip directory traversal sequences and exotic
+ * characters before they ever flow into DB columns or downstream consumers.
+ */
+function sanitiseFilename(raw: string | null | undefined, fallback: string): string {
+  const base = path.basename(String(raw ?? '').trim())
+  const cleaned = base.replace(/[^\w.-]/g, '_').slice(0, 200)
+  return cleaned || fallback
+}
+
+function sanitiseMime(raw: string | null | undefined): string {
+  const value = String(raw ?? '').trim().slice(0, 120)
+  return /^[\w./+-]+$/.test(value) ? value : 'application/octet-stream'
+}
 import type { InvoiceExtractionResult, InvoiceInboxItem, SupplierInvoice, SupplierInvoiceItem } from '@/types'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -1116,6 +1136,45 @@ export const invoiceInboxExtension: Extension = {
         }
 
         const results: Array<{ attachment_id: string; inbox_item_id?: string; error?: string; duplicate?: boolean }> = []
+
+        // Persist a "rejected" inbox row so the user has visibility into the drop.
+        // Without this, attachments that fail MIME validation vanish silently —
+        // a common Gmail "forward as attachment" foot-gun until we added .eml
+        // handling below.
+        const logRejection = async (
+          attachmentId: string,
+          attachmentName: string | null,
+          mime: string,
+          reason: string,
+        ) => {
+          // attachment_name and mime are attacker-controlled (they come from the
+          // forwarded email headers); sanitise before they land in the JSONB
+          // raw_email_payload column so they can't surface as injection or
+          // oversized values when read back into the UI / audit trails.
+          try {
+            await serviceSupabase.from('invoice_inbox_items').insert({
+              company_id: inbox.company_id,
+              user_id: userId,
+              status: 'error',
+              source: 'email',
+              email_from: from,
+              email_subject: subject,
+              email_received_at: created_at,
+              email_body_text: bodyText,
+              resend_email_id: email_id,
+              resend_attachment_id: attachmentId,
+              error_message: reason.slice(0, 500),
+              raw_email_payload: {
+                messageId: message_id,
+                attachment_name: sanitiseFilename(attachmentName, 'unknown'),
+                mime: sanitiseMime(mime),
+              },
+            })
+          } catch (insertErr) {
+            console.error('[invoice-inbox/inbound] Failed to log rejected attachment:', insertErr)
+          }
+        }
+
         for (const att of attachments) {
           try {
             const { data: existing } = await serviceSupabase
@@ -1130,11 +1189,66 @@ export const invoiceInboxExtension: Extension = {
             }
 
             const download = await fetchInboundAttachment(email_id, att.id)
+
+            // Gmail "Forward as attachment" wraps the original email as message/rfc822.
+            // Unwrap it and process the inner attachments as if they had arrived
+            // directly, carrying the inner email's subject/from into our metadata.
+            if (download.contentType === 'message/rfc822') {
+              const parsed = await simpleParser(Buffer.from(download.buffer))
+              const innerAttachments = parsed.attachments || []
+              if (innerAttachments.length === 0) {
+                await logRejection(att.id, download.filename, download.contentType, 'Det vidarebefordrade meddelandet innehöll inga bilagor')
+                results.push({ attachment_id: att.id, error: 'eml_no_inner_attachments' })
+                continue
+              }
+              const innerFrom = parsed.from?.text || from
+              const innerSubject = parsed.subject || subject
+              for (let i = 0; i < innerAttachments.length; i++) {
+                const inner = innerAttachments[i]
+                const innerType = sanitiseMime(inner.contentType)
+                const innerName = sanitiseFilename(inner.filename, `attachment-${i}`)
+                const innerBuffer = inner.content
+                if (!innerBuffer) continue
+                const innerId = `${att.id}#${i}`
+                if (!UPLOAD_ALLOWED_MIME_TYPES.has(innerType)) {
+                  await logRejection(innerId, innerName, innerType, `Avvisad bilaga från vidarebefordrat mejl: filtypen ${innerType} stöds inte`)
+                  results.push({ attachment_id: innerId, error: `Unsupported type ${innerType}` })
+                  continue
+                }
+                if (innerBuffer.byteLength > MAX_FILE_SIZE) {
+                  await logRejection(innerId, innerName, innerType, 'Bilagan i det vidarebefordrade mejlet är för stor')
+                  results.push({ attachment_id: innerId, error: 'Inner attachment too large' })
+                  continue
+                }
+                const innerArrayBuffer = new Uint8Array(innerBuffer).buffer
+                const innerResult = await uploadAndExtract(
+                  serviceSupabase,
+                  userId,
+                  inbox.company_id,
+                  { name: innerName, buffer: innerArrayBuffer, type: innerType },
+                  'email',
+                  {
+                    from: innerFrom,
+                    subject: innerSubject,
+                    receivedAt: created_at,
+                    messageId: message_id,
+                    bodyText,
+                    resendEmailId: email_id,
+                    resendAttachmentId: innerId,
+                  }
+                )
+                results.push({ attachment_id: innerId, inbox_item_id: innerResult.inbox_item_id })
+              }
+              continue
+            }
+
             if (!UPLOAD_ALLOWED_MIME_TYPES.has(download.contentType)) {
+              await logRejection(att.id, download.filename, download.contentType, `Avvisad: filtypen ${download.contentType} stöds inte`)
               results.push({ attachment_id: att.id, error: `Unsupported type ${download.contentType}` })
               continue
             }
             if (download.buffer.byteLength > MAX_FILE_SIZE) {
+              await logRejection(att.id, download.filename, download.contentType, 'Bilagan är för stor')
               results.push({ attachment_id: att.id, error: 'Attachment too large' })
               continue
             }

@@ -3407,7 +3407,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_match_transaction_to_invoice',
-    description: 'Match a bank transaction (income, amount>0) to a customer invoice. Stages for approval. Supports partial payments and auto-storno of prior categorization.',
+    description: 'Match a bank transaction (income, amount>0) to a customer invoice. Confirm tx date/amount and invoice number/customer match before staging — preview mirrors what you pass. Supports partial payments and auto-storno of prior categorization.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -3432,7 +3432,7 @@ export const tools: McpTool[] = [
       // Validate both exist and are matchable
       const { data: transaction, error: txError } = await supabase
         .from('transactions')
-        .select('id, description, merchant_name, amount, currency, invoice_id')
+        .select('id, description, merchant_name, amount, currency, date, invoice_id')
         .eq('id', transactionId)
         .eq('company_id', companyId)
         .single()
@@ -3462,9 +3462,14 @@ export const tools: McpTool[] = [
           transaction_description: txDesc,
           transaction_amount: transaction.amount,
           transaction_currency: transaction.currency,
+          // Surface both dates so the reviewer can spot a material mismatch
+          // between the payment and the invoice it's being matched against
+          // before approving.
+          transaction_date: transaction.date,
           invoice_number: invoice.invoice_number,
           invoice_total: invoice.total,
           invoice_currency: invoice.currency,
+          invoice_date: invoice.invoice_date,
           customer_name: (invoice.customer as Record<string, unknown>)?.name as string,
         },
         actor
@@ -4369,7 +4374,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_attach_document_to_transaction',
-    description: 'Stage attaching a document to a bank transaction. The document is pinned to the tx; when the tx is later categorized the link propagates to the journal entry. Stages for approval.',
+    description: 'Stage attaching a document to a bank transaction. Verify tx (date, amount, counterparty) and document (filename, vendor, amount) match first — the preview shown to the human reviewer mirrors what you pass here. Stages for approval.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

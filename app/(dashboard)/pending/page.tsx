@@ -23,6 +23,8 @@ import {
   BookOpen,
 } from 'lucide-react'
 import type { PendingOperation, PendingOperationStatus } from '@/types'
+import { AttachDocumentPreview } from '@/components/bookkeeping/AttachDocumentPreview'
+import { MatchTransactionInvoicePreview } from '@/components/bookkeeping/MatchTransactionInvoicePreview'
 
 const operationLabels: Record<string, { label: string; icon: typeof ArrowLeftRight; variant: 'default' | 'secondary' | 'outline' }> = {
   categorize_transaction: { label: 'Kategorisering', icon: ArrowLeftRight, variant: 'default' },
@@ -375,6 +377,10 @@ function OperationPreview({ op }: { op: PendingOperation }) {
       return <VoucherPreview data={op.preview_data} />
     case 'correct_entry':
       return <CorrectEntryPreview data={op.preview_data} />
+    case 'attach_document_to_transaction':
+      return <AttachDocumentPreview data={op.preview_data} params={op.params} />
+    case 'match_transaction_invoice':
+      return <MatchTransactionInvoicePreview data={op.preview_data} />
     default:
       return <GenericPreview data={op.preview_data} />
   }

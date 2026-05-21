@@ -107,6 +107,17 @@ export default function NewSupplierInvoicePage() {
   const { canWrite } = useCanWrite()
   const { toast } = useToast()
 
+  // When opened from an invoice-inbox item, every redirect should land the
+  // user back in the inbox so they can pick the next document. Outside the
+  // inbox flow, preserve the original behavior (detail page when we have an
+  // invoice id, otherwise the list).
+  const afterCreate = (invoiceId?: string) =>
+    inboxItemId
+      ? '/e/general/invoice-inbox'
+      : invoiceId
+        ? `/supplier-invoices/${invoiceId}`
+        : '/supplier-invoices'
+
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [suppliersLoaded, setSuppliersLoaded] = useState(false)
   const [accounts, setAccounts] = useState<BASAccount[]>([])
@@ -624,7 +635,7 @@ export default function NewSupplierInvoicePage() {
         title: 'Utlägg registrerat',
         description: `Ankomstnummer: ${result.data.arrival_number}`,
       })
-      router.push('/supplier-invoices')
+      router.push(afterCreate())
       setIsSubmitting(false)
       return
     }
@@ -637,10 +648,10 @@ export default function NewSupplierInvoicePage() {
         description: 'Fakturan skapades men kunde inte godkännas automatiskt',
         variant: 'destructive',
       })
-      router.push(`/supplier-invoices/${result.data.id}`)
+      router.push(afterCreate(result.data.id))
     } else {
       toast({ title: 'Faktura registrerad', description: `Ankomstnummer: ${result.data.arrival_number}` })
-      router.push('/supplier-invoices')
+      router.push(afterCreate())
     }
     setIsSubmitting(false)
   }
@@ -686,7 +697,7 @@ export default function NewSupplierInvoicePage() {
         toast({ title: 'Faktura registrerad', description: `Ankomstnummer: ${arrivalNumber}` })
       }
 
-      router.push(`/supplier-invoices/${invoiceId}`)
+      router.push(afterCreate(invoiceId))
     } else {
       // Treat duplicate-number as a recoverable conflict; everything else as a hard error.
       if (status === 409 && result.error === 'duplicate_supplier_invoice_number') {
@@ -751,7 +762,7 @@ export default function NewSupplierInvoicePage() {
         description: `Ankomstnummer: ${result.data.arrival_number}`,
       })
       reset(pendingData)
-      router.push(`/supplier-invoices/${result.data.id}`)
+      router.push(afterCreate(result.data.id))
       return
     }
 
@@ -828,13 +839,18 @@ export default function NewSupplierInvoicePage() {
       })
     }
     reset(pendingData)
-    router.push(`/supplier-invoices/${invoiceId}`)
+    router.push(afterCreate(invoiceId))
   }
 
   return (
     <div className="space-y-6 max-w-4xl">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => router.push('/supplier-invoices')} aria-label="Tillbaka till leverantörsfakturor">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => router.push(inboxItemId ? '/e/general/invoice-inbox' : '/supplier-invoices')}
+          aria-label={inboxItemId ? 'Tillbaka till inkorgen' : 'Tillbaka till leverantörsfakturor'}
+        >
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <div>
@@ -1320,7 +1336,7 @@ export default function NewSupplierInvoicePage() {
 
         {/* Submit */}
         <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-3 sm:gap-4">
-          <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => router.push('/supplier-invoices')}>
+          <Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => router.push(inboxItemId ? '/e/general/invoice-inbox' : '/supplier-invoices')}>
             Avbryt
           </Button>
           {!watchedPaidPrivately && (

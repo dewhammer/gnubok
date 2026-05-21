@@ -458,6 +458,7 @@ export const enableBankingExtension: Extension = {
         const connection_id = body?.connection_id
         const enabled_uids = body?.enabled_uids
         const rawLookback = body?.initial_lookback_days
+        const rawLookbackFromDate = body?.initial_lookback_from_date
         const account_mappings = body?.account_mappings
 
         if (typeof connection_id !== 'string' || !connection_id) {
@@ -519,7 +520,35 @@ export const enableBankingExtension: Extension = {
         // Default 120; clamp to [30, 365]. Ignored for selection edits.
         // PSD2 obliges ASPSPs to ~90 days without fresh SCA, but many Swedish banks
         // return more if asked — request 120 and accept whatever the bank gives back.
+        //
+        // If the client sent initial_lookback_from_date (preferred for fiscal-year-anchored
+        // backfills), derive days from that and reject future dates outright. Otherwise
+        // fall back to initial_lookback_days (or the 120-day default).
+        if (typeof rawLookbackFromDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawLookbackFromDate)) {
+          const from = new Date(rawLookbackFromDate + 'T00:00:00Z')
+          if (!Number.isFinite(from.getTime())) {
+            return NextResponse.json(
+              { error: 'initial_lookback_from_date är inte ett giltigt datum.' },
+              { status: 400 }
+            )
+          }
+          const diffMs = Date.now() - from.getTime()
+          const daysFromDate = Math.ceil(diffMs / (24 * 60 * 60 * 1000))
+          if (daysFromDate <= 0) {
+            return NextResponse.json(
+              { error: 'initial_lookback_from_date måste ligga i det förflutna.' },
+              { status: 400 }
+            )
+          }
+        }
         const initialLookbackDays = (() => {
+          if (typeof rawLookbackFromDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawLookbackFromDate)) {
+            const from = new Date(rawLookbackFromDate + 'T00:00:00Z')
+            // Future/invalid dates already rejected above; days > 0 is guaranteed.
+            const diffMs = Date.now() - from.getTime()
+            const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000))
+            return Math.min(365, Math.max(1, days))
+          }
           const n = typeof rawLookback === 'number' && Number.isFinite(rawLookback) ? rawLookback : 120
           return Math.min(365, Math.max(30, Math.round(n)))
         })()
