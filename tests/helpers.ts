@@ -406,6 +406,7 @@ export function makeCustomer(overrides: Partial<Customer> = {}): Customer {
     vat_number_validated: true,
     vat_number_validated_at: '2024-01-01T00:00:00Z',
     personal_number: null,
+    language: 'sv',
     default_payment_terms: 30,
     notes: null,
     created_at: '2024-01-01T00:00:00Z',

@@ -90,7 +90,7 @@ export async function POST(request: Request) {
     id: 'preview',
     user_id: user.id,
     customer_id,
-    invoice_number: typeof invoice_number === 'string' && invoice_number.trim() ? invoice_number : 'FÖRHANDSGRANSKNING',
+    invoice_number: typeof invoice_number === 'string' && invoice_number.trim() ? invoice_number : null,
     invoice_date: invoice_date || new Date().toISOString().split('T')[0],
     due_date: due_date || new Date().toISOString().split('T')[0],
     delivery_date: delivery_date || null,

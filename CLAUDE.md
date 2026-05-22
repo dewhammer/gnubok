@@ -385,8 +385,8 @@ Add new strings to both `messages/sv.json` and `messages/en.json` under the matc
 
 | Surface | Reason |
 |---|---|
-| Invoice PDFs (`lib/invoices/pdf-template.tsx`) | Sent to the user's customers, who are typically Swedish |
-| Customer email templates (`lib/email/invoice-templates.ts`, `reminder-templates.ts`) | Same — recipient is the customer, not the app user |
+| Invoice PDFs (`lib/invoices/pdf-template.tsx`) | Customer-facing — driven by `customer.language` (`sv` default, `en` opt-in). The template's chrome translates; statutory chapter refs (ML 17 kap 24§, ML 3 kap.) stay intact in both locales. |
+| Customer email templates (`lib/email/invoice-templates.ts`, `reminder-templates.ts`) | Same — `customer.language` drives the output. `reminder-templates.ts` is still Swedish-only; mirror the PDF/invoice-templates approach if you add English here. |
 | Year-end wizard (`app/(dashboard)/bookkeeping/year-end/page.tsx`) | Statutory bokslut terminology; English would be misleading |
 | Journal entry editor (`app/(dashboard)/bookkeeping/[id]/page.tsx`) | Deeply regulatory (verifikat, voucher numbers, BAS) |
 | INK2 / NE-bilaga / SRU (`lib/reports/ink2/**`, `lib/reports/ne-bilaga/**`, `lib/reports/sru-*`) | Skatteverket forms — field codes and labels are statutory |

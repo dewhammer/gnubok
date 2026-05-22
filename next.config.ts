@@ -17,7 +17,7 @@ const cspDirectives = [
   "img-src 'self' data: blob: https:",
   "font-src 'self'",
   "worker-src 'self' blob:",
-  `frame-src 'self' ${supabaseUrl}${activepiecesUrl ? ` ${activepiecesUrl}` : ""}`,
+  `frame-src 'self' blob: ${supabaseUrl}${activepiecesUrl ? ` ${activepiecesUrl}` : ""}`,
   "frame-ancestors 'none'",
 ].join("; ");
 
@@ -79,6 +79,22 @@ const nextConfig: NextConfig = {
           {
             key: "Content-Security-Policy",
             value: cspDirectives,
+          },
+        ],
+      },
+      // Document inline-preview proxy must be embeddable in same-origin
+      // iframes (used by the verifikat document preview Sheet).
+      // Overrides the strict catch-all above for this single endpoint.
+      {
+        source: "/api/documents/:id/inline",
+        headers: [
+          {
+            key: "X-Frame-Options",
+            value: "SAMEORIGIN",
+          },
+          {
+            key: "Content-Security-Policy",
+            value: "frame-ancestors 'self'",
           },
         ],
       },

@@ -266,6 +266,7 @@ export const CreateCustomerSchema = z.object({
     .regex(/^(\d{6}|\d{8})[-+]?\d{4}$/, 'Invalid personal number')
     .optional()
     .nullable(),
+  language: z.enum(['sv', 'en']).optional(),
   default_payment_terms: z.number().int().positive().optional(),
   notes: z.string().optional(),
 })

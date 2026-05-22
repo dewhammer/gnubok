@@ -1804,9 +1804,11 @@ export default function ImportPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">{t('title')}</h1>
+        <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">
+          {view === 'export' ? t('export_title') : t('title')}
+        </h1>
         <p className="text-muted-foreground">
-          {t('subtitle')}
+          {view === 'export' ? t('export_subtitle') : t('subtitle')}
         </p>
       </div>
 
@@ -2014,48 +2016,55 @@ export default function ImportPage() {
             </TabsContent>
 
             <TabsContent value="export" className="mt-6">
-              <div className="grid gap-4 md:grid-cols-2 items-start">
-              {/* SIE-export */}
-              <Card id="sie-export" className="scroll-mt-24">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    {t('export_sie_title')}
-                  </CardTitle>
-                  <CardDescription>{t('export_sie_description')}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <FiscalYearSelector
-                    value={exportPeriodId}
-                    onChange={setExportPeriodId}
-                    includeAllOption={false}
-                    hideFuturePeriods
-                    label={t('export_sie_period_label')}
-                  />
-                  <Button
-                    onClick={() => {
-                      if (exportPeriodId) {
-                        window.open(`/api/reports/sie-export?period_id=${exportPeriodId}`, '_blank')
-                      }
-                    }}
-                    disabled={!exportPeriodId || isSandbox}
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    {t('export_sie_button')}
-                  </Button>
-                  {!exportPeriodId && (
-                    <p className="text-xs text-muted-foreground">{t('export_sie_no_period')}</p>
-                  )}
-                </CardContent>
-              </Card>
+              <div className="space-y-4">
+                {/* SIE-export */}
+                <div id="sie-export" className="scroll-mt-24 rounded-lg border border-border bg-card p-6">
+                  <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+                    {/* Identity */}
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-foreground/[0.06]">
+                        <FileSpreadsheet className="h-[18px] w-[18px] text-foreground/60" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-[15px] font-semibold leading-tight">{t('export_sie_title')}</h3>
+                        <p className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                          {t('export_sie_description')}
+                        </p>
+                      </div>
+                    </div>
 
-              {/* Molnsynkronisering (Google Drive) */}
-              {hasCloudBackup && (
-                <div id="cloud-backup" className="scroll-mt-24">
-                  <CloudBackupCard />
+                    {/* Controls */}
+                    <div className="space-y-4">
+                      <FiscalYearSelector
+                        value={exportPeriodId}
+                        onChange={setExportPeriodId}
+                        includeAllOption={false}
+                        hideFuturePeriods
+                        label={t('export_sie_period_label')}
+                      />
+                      <Button
+                        onClick={() => {
+                          if (exportPeriodId) {
+                            window.open(`/api/reports/sie-export?period_id=${exportPeriodId}`, '_blank')
+                          }
+                        }}
+                        disabled={!exportPeriodId || isSandbox}
+                        className="w-full sm:w-auto"
+                      >
+                        <Download className="mr-2 h-4 w-4" />
+                        {t('export_sie_button')}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </div>
+
+                {/* Molnsynkronisering (Google Drive) */}
+                {hasCloudBackup && (
+                  <div id="cloud-backup" className="scroll-mt-24">
+                    <CloudBackupCard />
+                  </div>
+                )}
+              </div>
             </TabsContent>
           </Tabs>
         </>

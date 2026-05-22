@@ -522,6 +522,10 @@
     "vat_failed_default": "VAT-numret kunde inte verifieras",
     "vat_error_title": "Kunde inte verifiera VAT-nummer",
     "payment_terms_label": "Betalningsvillkor (dagar)",
+    "language_label": "Fakturaspråk",
+    "language_sv": "Svenska",
+    "language_en": "Engelska",
+    "language_hint": "Fakturor och e-post till denna kund skickas på det valda språket. Påverkar inte hur fakturan bokförs.",
     "notes_label": "Anteckningar",
     "notes_placeholder": "Interna anteckningar om kunden...",
     "submit_save": "Spara kund",
@@ -945,6 +949,7 @@
   },
   "settings_invoicing_preview": {
     "title": "Förhandsvisning",
+    "preview_button": "Förhandsvisa faktura",
     "loading": "Genererar förhandsvisning...",
     "error": "Kunde inte ladda förhandsvisning",
     "no_customers": "Lägg till en kund för att se en förhandsvisning av din faktura.",
@@ -3146,6 +3151,8 @@
   "import": {
     "title": "Importera",
     "subtitle": "Importera banktransaktioner eller bokföringsdata till ditt företag",
+    "export_title": "Exportera",
+    "export_subtitle": "Ladda ner bokföringen som SIE-fil eller säkerhetskopia till Google Drive",
     "tab_import": "Importera",
     "tab_export": "Exportera",
     "sandbox_disabled": "Import är inte tillgängligt i sandlådemiljön. Skapa ett konto för att importera data.",

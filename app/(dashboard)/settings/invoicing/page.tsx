@@ -50,25 +50,21 @@ export default function InvoicingSettingsPage() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      <div className="lg:col-span-2 space-y-8">
-        <SettingsFormWrapper onSave={handleSave} className="space-y-8">
-          <BankDetailsForm settings={settings} />
-          <div className="border-t border-border/8 pt-8">
-            <InvoiceSettingsForm settings={settings} />
-          </div>
-        </SettingsFormWrapper>
-
-        {/* PDF settings — saves individually via toggle switches */}
-        <div className="border-t border-border/8 pt-8">
-          <PdfPrintSettings settings={settings} onUpdate={updateSettings} />
-        </div>
+    <div className="space-y-8">
+      <div className="flex justify-end">
+        <InvoicePreviewCard settings={settings} />
       </div>
 
-      <div className="lg:col-span-1">
-        <div className="lg:sticky lg:top-8">
-          <InvoicePreviewCard settings={settings} />
+      <SettingsFormWrapper onSave={handleSave} className="space-y-8">
+        <BankDetailsForm settings={settings} />
+        <div className="border-t border-border/8 pt-8">
+          <InvoiceSettingsForm settings={settings} />
         </div>
+      </SettingsFormWrapper>
+
+      {/* PDF settings — saves individually via toggle switches */}
+      <div className="border-t border-border/8 pt-8">
+        <PdfPrintSettings settings={settings} onUpdate={updateSettings} />
       </div>
     </div>
   )

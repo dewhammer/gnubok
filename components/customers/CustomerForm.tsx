@@ -52,6 +52,7 @@ export default function CustomerForm({
       .regex(/^(\d{6}|\d{8})[-+]?\d{4}$/, t('personal_number_invalid'))
       .optional()
       .or(z.literal('')),
+    language: z.enum(['sv', 'en']).optional(),
     default_payment_terms: z.number().min(1).optional(),
     notes: z.string().optional(),
   }), [t])
@@ -78,6 +79,7 @@ export default function CustomerForm({
       org_number: initialData?.org_number || '',
       vat_number: initialData?.vat_number || '',
       personal_number: initialData?.personal_number || '',
+      language: initialData?.language || 'sv',
       default_payment_terms: initialData?.default_payment_terms || 30,
       notes: initialData?.notes || '',
     },
@@ -316,6 +318,27 @@ export default function CustomerForm({
           type="number"
           {...register('default_payment_terms', { valueAsNumber: true })}
         />
+      </div>
+
+      {/* Invoice language */}
+      <div className="space-y-2">
+        <Label>{t('language_label')}</Label>
+        <Controller
+          name="language"
+          control={control}
+          render={({ field }) => (
+            <Select value={field.value ?? 'sv'} onValueChange={(v) => { if (v) field.onChange(v) }}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="sv">{t('language_sv')}</SelectItem>
+                <SelectItem value="en">{t('language_en')}</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
+        />
+        <p className="text-xs text-muted-foreground">{t('language_hint')}</p>
       </div>
 
       {/* Notes */}

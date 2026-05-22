@@ -479,6 +479,9 @@ export interface Customer {
   vat_number_validated_at: string | null
   personal_number: string | null
 
+  // Language for customer-facing invoice PDF and email
+  language: 'sv' | 'en'
+
   // Payment
   default_payment_terms: number  // Days
 
@@ -830,6 +833,7 @@ export interface CreateCustomerInput {
   org_number?: string
   vat_number?: string
   personal_number?: string
+  language?: 'sv' | 'en'
   default_payment_terms?: number
   notes?: string
 }

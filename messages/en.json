@@ -522,6 +522,10 @@
     "vat_failed_default": "The VAT number could not be verified",
     "vat_error_title": "Could not verify VAT number",
     "payment_terms_label": "Payment terms (days)",
+    "language_label": "Invoice language",
+    "language_sv": "Swedish",
+    "language_en": "English",
+    "language_hint": "Invoices and emails to this customer are sent in the chosen language. Does not affect how the invoice is booked.",
     "notes_label": "Notes",
     "notes_placeholder": "Internal notes about the customer...",
     "submit_save": "Save customer",
@@ -945,6 +949,7 @@
   },
   "settings_invoicing_preview": {
     "title": "Preview",
+    "preview_button": "Preview invoice",
     "loading": "Generating preview...",
     "error": "Could not load preview",
     "no_customers": "Add a customer to see a preview of your invoice.",
@@ -3146,6 +3151,8 @@
   "import": {
     "title": "Import",
     "subtitle": "Import bank transactions or bookkeeping data into your company",
+    "export_title": "Export",
+    "export_subtitle": "Download your bookkeeping as a SIE file or back it up to Google Drive",
     "tab_import": "Import",
     "tab_export": "Export",
     "sandbox_disabled": "Import is not available in the sandbox. Create an account to import data.",
