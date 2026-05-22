@@ -107,18 +107,14 @@ export default function ReportsPage() {
           hideFuturePeriods
           onReady={() => setIsLoadingInit(false)}
         />
-        {selectedPeriod && (
-          <Button
-            variant="outline"
-            onClick={() => {
-              window.open(`/api/reports/sie-export?period_id=${selectedPeriod}`, '_blank')
-            }}
-          >
-            <Download className="h-4 w-4 mr-2" />
-            {t('download_sie')}
-          </Button>
-        )}
       </div>
+      <p className="text-sm text-muted-foreground">
+        {t('sie_moved_hint')}{' '}
+        <Link href="/import?view=export#sie-export" className="text-foreground underline underline-offset-4 decoration-muted-foreground/40 hover:decoration-foreground">
+          {t('sie_moved_link')}
+        </Link>
+        .
+      </p>
 
       {isLoadingInit ? (
         <div className="space-y-6">

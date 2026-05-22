@@ -261,6 +261,11 @@ export const CreateCustomerSchema = z.object({
   country: z.string().optional(),
   org_number: z.string().optional(),
   vat_number: z.string().optional(),
+  personal_number: z
+    .string()
+    .regex(/^(\d{6}|\d{8})[-+]?\d{4}$/, 'Invalid personal number')
+    .optional()
+    .nullable(),
   default_payment_terms: z.number().int().positive().optional(),
   notes: z.string().optional(),
 })

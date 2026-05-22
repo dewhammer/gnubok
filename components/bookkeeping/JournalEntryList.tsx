@@ -18,6 +18,7 @@ import { getAccountDescription } from '@/lib/bookkeeping/account-descriptions'
 import JournalEntryAttachments from '@/components/bookkeeping/JournalEntryAttachments'
 import CorrectionEntryDialog from '@/components/bookkeeping/CorrectionEntryDialog'
 import JournalEntryStatusBadge from '@/components/bookkeeping/JournalEntryStatusBadge'
+import AttachmentPreviewSheet from '@/components/bookkeeping/AttachmentPreviewSheet'
 import { useToast } from '@/components/ui/use-toast'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
@@ -50,6 +51,7 @@ export default function JournalEntryList({ periodId }: Props) {
   const [attachmentCounts, setAttachmentCounts] = useState<Record<string, number>>({})
   const [showMissingOnly, setShowMissingOnly] = useState(false)
   const [correctionEntry, setCorrectionEntry] = useState<JournalEntry | null>(null)
+  const [previewEntryId, setPreviewEntryId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'voucher_asc' | 'voucher_desc'>('date_desc')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -343,10 +345,36 @@ export default function JournalEntryList({ periodId }: Props) {
                   )}
                   <span className="flex-1 truncate">{entry.description}</span>
                   {attachmentCounts[entry.id] ? (
-                    <span className="flex items-center gap-0.5 text-muted-foreground mr-1" title={t('attachment_count_tooltip', { count: attachmentCounts[entry.id] })}>
-                      <Paperclip className="h-3.5 w-3.5" />
-                      <span className="text-xs">{attachmentCounts[entry.id]}</span>
-                    </span>
+                    <Button
+                      asChild
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 mr-1 text-muted-foreground transition-colors duration-150 hover:bg-secondary"
+                    >
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={t('view_attachments')}
+                        title={t('attachment_count_tooltip', { count: attachmentCounts[entry.id] })}
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setPreviewEntryId(entry.id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setPreviewEntryId(entry.id)
+                          }
+                        }}
+                      >
+                        <span className="flex items-center gap-0.5">
+                          <Paperclip className="h-3.5 w-3.5" />
+                          <span className="text-xs">{attachmentCounts[entry.id]}</span>
+                        </span>
+                      </span>
+                    </Button>
                   ) : (
                     NEEDS_ATTACHMENT.has(entry.source_type) && entry.status === 'posted' && (
                       <span className="mr-1" title={t('missing_attachment_tooltip')}>
@@ -387,10 +415,36 @@ export default function JournalEntryList({ periodId }: Props) {
                     )}
                     <span className="ml-auto flex items-center gap-1">
                       {attachmentCounts[entry.id] ? (
-                        <span className="flex items-center gap-0.5 text-muted-foreground" title={t('attachment_count_tooltip', { count: attachmentCounts[entry.id] })}>
-                          <Paperclip className="h-3.5 w-3.5" />
-                          <span className="text-xs">{attachmentCounts[entry.id]}</span>
-                        </span>
+                        <Button
+                          asChild
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground transition-colors duration-150 hover:bg-secondary"
+                        >
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-label={t('view_attachments')}
+                            title={t('attachment_count_tooltip', { count: attachmentCounts[entry.id] })}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              setPreviewEntryId(entry.id)
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                setPreviewEntryId(entry.id)
+                              }
+                            }}
+                          >
+                            <span className="flex items-center gap-0.5">
+                              <Paperclip className="h-3.5 w-3.5" />
+                              <span className="text-xs">{attachmentCounts[entry.id]}</span>
+                            </span>
+                          </span>
+                        </Button>
                       ) : (
                         NEEDS_ATTACHMENT.has(entry.source_type) && entry.status === 'posted' && (
                           <span title={t('missing_attachment_tooltip')}>
@@ -524,6 +578,13 @@ export default function JournalEntryList({ periodId }: Props) {
           onCorrected={() => { setCorrectionEntry(null); fetchEntries() }}
         />
       )}
+
+      {/* Attachment preview sheet */}
+      <AttachmentPreviewSheet
+        entryId={previewEntryId}
+        open={previewEntryId !== null}
+        onOpenChange={(open) => { if (!open) setPreviewEntryId(null) }}
+      />
 
       {/* Pagination */}
       {count > pageSize && (

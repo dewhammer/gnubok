@@ -3,6 +3,7 @@
 import { useTranslations } from 'next-intl'
 import { BankDetailsForm, validateBankFields } from '@/components/settings/BankDetailsForm'
 import { InvoiceSettingsForm } from '@/components/settings/InvoiceSettingsForm'
+import { InvoicePreviewCard } from '@/components/settings/InvoicePreviewCard'
 import { PdfPrintSettings } from '@/components/settings/PdfPrintSettings'
 import { SettingsFormWrapper } from '@/components/settings/SettingsFormWrapper'
 import { SettingsLoadingSkeleton } from '@/components/settings/SettingsLoadingSkeleton'
@@ -49,17 +50,25 @@ export default function InvoicingSettingsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <SettingsFormWrapper onSave={handleSave} className="space-y-8">
-        <BankDetailsForm settings={settings} />
-        <div className="border-t border-border/8 pt-8">
-          <InvoiceSettingsForm settings={settings} />
-        </div>
-      </SettingsFormWrapper>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="lg:col-span-2 space-y-8">
+        <SettingsFormWrapper onSave={handleSave} className="space-y-8">
+          <BankDetailsForm settings={settings} />
+          <div className="border-t border-border/8 pt-8">
+            <InvoiceSettingsForm settings={settings} />
+          </div>
+        </SettingsFormWrapper>
 
-      {/* PDF settings — saves individually via toggle switches */}
-      <div className="border-t border-border/8 pt-8">
-        <PdfPrintSettings settings={settings} onUpdate={updateSettings} />
+        {/* PDF settings — saves individually via toggle switches */}
+        <div className="border-t border-border/8 pt-8">
+          <PdfPrintSettings settings={settings} onUpdate={updateSettings} />
+        </div>
+      </div>
+
+      <div className="lg:col-span-1">
+        <div className="lg:sticky lg:top-8">
+          <InvoicePreviewCard settings={settings} />
+        </div>
       </div>
     </div>
   )

@@ -35,7 +35,6 @@ export function SettingsNav({ isSandbox }: { isSandbox?: boolean }) {
     { href: '/settings/skatteverket', label: t('skatteverket'), show: hasCompany && !isSandbox && hasSkatteverketExtension },
     { href: '/settings/salary', label: t('salary'), show: hasCompany && company?.entity_type === 'aktiebolag' },
     { href: '/settings/templates', label: t('templates'), show: hasCompany },
-    { href: '/settings/backup', label: t('backup'), show: hasCompany },
     { href: '/settings/account', label: t('account'), show: true },
     { href: '/settings/api', label: t('api'), show: hasCompany && hasMcpExtension },
   ].filter(item => item.show)

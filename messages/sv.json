@@ -72,7 +72,7 @@
     "bookkeeping": "Bokföring",
     "assets": "Anläggningstillgångar",
     "reports": "Rapporter",
-    "import": "Importera",
+    "import": "Importera/Exportera",
     "salary": "Löner",
     "employees": "Anställda",
     "expenses": "Utlägg",
@@ -156,7 +156,6 @@
     "skatteverket": "Skatteverket",
     "salary": "Löner",
     "templates": "Mallar",
-    "backup": "Säkerhetsbackup",
     "account": "Konto",
     "api": "API"
   },
@@ -506,6 +505,10 @@
     "country_label": "Land",
     "country_placeholder": "Sweden",
     "business_section": "Företagsuppgifter",
+    "individual_section": "Personuppgifter",
+    "personal_number_label": "Personnummer",
+    "personal_number_placeholder": "YYYYMMDD-XXXX",
+    "personal_number_invalid": "Ogiltigt personnummer",
     "org_number_label": "Organisationsnummer",
     "org_number_placeholder": "XXXXXX-XXXX",
     "vat_label": "VAT-nummer (momsreg.nr)",
@@ -939,6 +942,14 @@
   },
   "settings_invoicing": {
     "bank_validation_title": "Kontrollera bankuppgifter"
+  },
+  "settings_invoicing_preview": {
+    "title": "Förhandsvisning",
+    "loading": "Genererar förhandsvisning...",
+    "error": "Kunde inte ladda förhandsvisning",
+    "no_customers": "Lägg till en kund för att se en förhandsvisning av din faktura.",
+    "sample_item_description": "Exempelrad",
+    "iframe_title": "PDF-förhandsvisning av faktura"
   },
   "settings_bookkeeping": {
     "method_heading": "Bokföringsmetod",
@@ -2552,7 +2563,14 @@
     "toast_posted_title": "Verifikat bokfört",
     "toast_posted_description": "Verifikat {voucher} har bokförts.",
     "toast_post_failed": "Kunde inte bokföra",
-    "toast_post_failed_generic": "Kunde inte bokföra verifikat"
+    "toast_post_failed_generic": "Kunde inte bokföra verifikat",
+    "view_attachments": "Visa bilagor"
+  },
+  "attachment_preview_sheet": {
+    "title": "Bilagor",
+    "empty": "Inga bilagor",
+    "open_in_new_tab": "Öppna i nytt fönster",
+    "not_previewable": "Förhandsvisning är inte tillgänglig för denna filtyp."
   },
   "journal_attachments": {
     "loading": "Laddar underlag...",
@@ -2999,7 +3017,13 @@
     "type_swedish_business": "Svenskt företag eller organisation",
     "type_eu_business": "EU-företag",
     "type_non_eu_business": "Utanför EU",
-    "verified": "Verifierad"
+    "verified": "Verifierad",
+    "col_name": "Namn",
+    "col_type": "Typ",
+    "col_identifier": "Org.nr / Personnummer",
+    "col_email": "E-post",
+    "col_city": "Stad",
+    "col_created": "Skapad"
   },
   "invoices": {
     "title": "Fakturor",
@@ -3073,6 +3097,8 @@
   "reports": {
     "title": "Rapporter",
     "download_sie": "Ladda ner SIE-fil",
+    "sie_moved_hint": "SIE-export finns nu under Importera/Exportera.",
+    "sie_moved_link": "Öppna SIE-export",
     "download_pdf": "Ladda ner PDF",
     "categories_aria": "Rapportkategorier",
     "group_interim": "Löpande",
@@ -3120,6 +3146,8 @@
   "import": {
     "title": "Importera",
     "subtitle": "Importera banktransaktioner eller bokföringsdata till ditt företag",
+    "tab_import": "Importera",
+    "tab_export": "Exportera",
     "sandbox_disabled": "Import är inte tillgängligt i sandlådemiljön. Skapa ett konto för att importera data.",
     "back_to_choices": "Tillbaka till val",
     "psd2_title": "Koppla bank",
@@ -3136,7 +3164,14 @@
     "csv_chip_suppliers": "Leverantörer",
     "sie_title": "Bokföringsdata (SIE)",
     "sie_description": "Importera verifikationer och kontoplan från ett annat bokföringsprogram.",
-    "loading_migration": "Laddar migreringsverktyg..."
+    "loading_migration": "Laddar migreringsverktyg...",
+    "export_heading": "Exportera",
+    "export_sie_title": "Exportera SIE-fil",
+    "export_sie_description": "Exportera bokföringen som SIE4-fil för revisor eller programmigrering.",
+    "export_sie_period_label": "Räkenskapsår",
+    "export_sie_button": "Ladda ner SIE",
+    "export_sie_no_period": "Välj ett räkenskapsår för att exportera.",
+    "export_cloud_title": "Säkerhetskopia till Google Drive"
   },
   "empty": {
     "invoices_title": "Inga fakturor ännu",

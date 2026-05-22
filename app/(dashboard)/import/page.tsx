@@ -1,14 +1,15 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useTranslations } from 'next-intl'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, FileSpreadsheet } from 'lucide-react'
+import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, FileSpreadsheet, Download } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -70,6 +71,8 @@ import type {
 import type { BASAccount } from '@/types'
 import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
 import dynamic from 'next/dynamic'
+import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
+import CloudBackupCard from '@/extensions/general/cloud-backup/components/CloudBackupCard'
 
 const MigrationWizard = dynamic(
   () => import('@/components/extensions/general/ArcimMigrationWorkspace'),
@@ -1728,9 +1731,13 @@ type ImportMode = null | 'psd2' | 'bank' | 'sie' | 'csv_data' | 'migration'
 export default function ImportPage() {
   const { company } = useCompany()
   const [mode, setMode] = useState<ImportMode>(null)
+  const [view, setView] = useState<'import' | 'export'>('import')
   const [userId, setUserId] = useState('')
   const [isSandbox, setIsSandbox] = useState(false)
+  const [exportPeriodId, setExportPeriodId] = useState<string | null>(null)
   const t = useTranslations('import')
+  const router = useRouter()
+  const hasCloudBackup = ENABLED_EXTENSION_IDS.has('cloud-backup')
 
   // Fetch authenticated user ID and sandbox status
   useEffect(() => {
@@ -1750,7 +1757,7 @@ export default function ImportPage() {
     })
   }, [])
 
-  // Sync mode from URL search params (reacts to client-side navigation changes)
+  // Sync mode + view from URL search params (reacts to client-side navigation changes)
   const searchParams = useSearchParams()
   useEffect(() => {
     if (isSandbox) return
@@ -1762,7 +1769,33 @@ export default function ImportPage() {
         setMode(modeParam as ImportMode)
       }
     }
+    const viewParam = searchParams.get('view')
+    if (viewParam === 'export' || viewParam === 'import') {
+      setView(viewParam)
+    }
   }, [isSandbox, searchParams])
+
+  // Hash-based deep links (#cloud-backup, #sie-export) → switch to export tab and scroll
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const hash = window.location.hash
+    if (hash === '#cloud-backup' || hash === '#sie-export') {
+      setView('export')
+      setTimeout(() => {
+        document.querySelector(hash)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      }, 50)
+    }
+  }, [])
+
+  const handleViewChange = (next: string) => {
+    if (next !== 'import' && next !== 'export') return
+    setView(next)
+    const params = new URLSearchParams(searchParams.toString())
+    if (next === 'export') params.set('view', 'export')
+    else params.delete('view')
+    const qs = params.toString()
+    router.replace(qs ? `/import?${qs}` : '/import', { scroll: false })
+  }
   // Extensions are active if compiled in — no runtime toggle check needed
   const hasBankingExtension = ENABLED_EXTENSION_IDS.has('enable-banking')
   const hasMigrationExtension = ENABLED_EXTENSION_IDS.has('arcim-migration')
@@ -1788,7 +1821,14 @@ export default function ImportPage() {
             </div>
           )}
 
-          <div className="space-y-2">
+          <Tabs value={view} onValueChange={handleViewChange}>
+            <TabsList className="grid w-full max-w-xs grid-cols-2">
+              <TabsTrigger value="import">{t('tab_import')}</TabsTrigger>
+              <TabsTrigger value="export">{t('tab_export')}</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="import" className="mt-6">
+              <div className="space-y-2">
             {/* 1. Koppla bank */}
             {hasBankingExtension && (
               <div
@@ -1970,7 +2010,54 @@ export default function ImportPage() {
               </div>
               <ChevronRight className="h-4 w-4 text-muted-foreground/40 shrink-0 mt-2.5 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
             </div>
-          </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="export" className="mt-6">
+              <div className="grid gap-4 md:grid-cols-2 items-start">
+              {/* SIE-export */}
+              <Card id="sie-export" className="scroll-mt-24">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileText className="h-4 w-4 text-muted-foreground" />
+                    {t('export_sie_title')}
+                  </CardTitle>
+                  <CardDescription>{t('export_sie_description')}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <FiscalYearSelector
+                    value={exportPeriodId}
+                    onChange={setExportPeriodId}
+                    includeAllOption={false}
+                    hideFuturePeriods
+                    label={t('export_sie_period_label')}
+                  />
+                  <Button
+                    onClick={() => {
+                      if (exportPeriodId) {
+                        window.open(`/api/reports/sie-export?period_id=${exportPeriodId}`, '_blank')
+                      }
+                    }}
+                    disabled={!exportPeriodId || isSandbox}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    {t('export_sie_button')}
+                  </Button>
+                  {!exportPeriodId && (
+                    <p className="text-xs text-muted-foreground">{t('export_sie_no_period')}</p>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Molnsynkronisering (Google Drive) */}
+              {hasCloudBackup && (
+                <div id="cloud-backup" className="scroll-mt-24">
+                  <CloudBackupCard />
+                </div>
+              )}
+            </div>
+            </TabsContent>
+          </Tabs>
         </>
       )}
 

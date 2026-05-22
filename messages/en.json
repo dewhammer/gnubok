@@ -72,7 +72,7 @@
     "bookkeeping": "Bookkeeping",
     "assets": "Fixed assets",
     "reports": "Reports",
-    "import": "Import",
+    "import": "Import/Export",
     "salary": "Payroll",
     "employees": "Employees",
     "expenses": "Expenses",
@@ -156,7 +156,6 @@
     "skatteverket": "Skatteverket",
     "salary": "Payroll",
     "templates": "Templates",
-    "backup": "Backup",
     "account": "Account",
     "api": "API"
   },
@@ -506,6 +505,10 @@
     "country_label": "Country",
     "country_placeholder": "Sweden",
     "business_section": "Business details",
+    "individual_section": "Personal details",
+    "personal_number_label": "Personal number",
+    "personal_number_placeholder": "YYYYMMDD-XXXX",
+    "personal_number_invalid": "Invalid personal number",
     "org_number_label": "Org. number",
     "org_number_placeholder": "XXXXXX-XXXX",
     "vat_label": "VAT number",
@@ -939,6 +942,14 @@
   },
   "settings_invoicing": {
     "bank_validation_title": "Check bank details"
+  },
+  "settings_invoicing_preview": {
+    "title": "Preview",
+    "loading": "Generating preview...",
+    "error": "Could not load preview",
+    "no_customers": "Add a customer to see a preview of your invoice.",
+    "sample_item_description": "Sample line",
+    "iframe_title": "Invoice PDF preview"
   },
   "settings_bookkeeping": {
     "method_heading": "Accounting method",
@@ -2552,7 +2563,14 @@
     "toast_posted_title": "Journal entry posted",
     "toast_posted_description": "Journal entry {voucher} has been posted.",
     "toast_post_failed": "Could not post",
-    "toast_post_failed_generic": "Could not post journal entry"
+    "toast_post_failed_generic": "Could not post journal entry",
+    "view_attachments": "View attachments"
+  },
+  "attachment_preview_sheet": {
+    "title": "Attachments",
+    "empty": "No attachments",
+    "open_in_new_tab": "Open in new tab",
+    "not_previewable": "Preview is not available for this file type."
   },
   "journal_attachments": {
     "loading": "Loading documents...",
@@ -2999,7 +3017,13 @@
     "type_swedish_business": "Swedish company or organization",
     "type_eu_business": "EU business",
     "type_non_eu_business": "Outside EU",
-    "verified": "Verified"
+    "verified": "Verified",
+    "col_name": "Name",
+    "col_type": "Type",
+    "col_identifier": "Org. no. / Personal no.",
+    "col_email": "Email",
+    "col_city": "City",
+    "col_created": "Created"
   },
   "invoices": {
     "title": "Invoices",
@@ -3073,6 +3097,8 @@
   "reports": {
     "title": "Reports",
     "download_sie": "Download SIE file",
+    "sie_moved_hint": "SIE export now lives under Import/Export.",
+    "sie_moved_link": "Open SIE export",
     "download_pdf": "Download PDF",
     "categories_aria": "Report categories",
     "group_interim": "Interim",
@@ -3120,6 +3146,8 @@
   "import": {
     "title": "Import",
     "subtitle": "Import bank transactions or bookkeeping data into your company",
+    "tab_import": "Import",
+    "tab_export": "Export",
     "sandbox_disabled": "Import is not available in the sandbox. Create an account to import data.",
     "back_to_choices": "Back to choices",
     "psd2_title": "Connect bank",
@@ -3136,7 +3164,14 @@
     "csv_chip_suppliers": "Suppliers",
     "sie_title": "Bookkeeping data (SIE)",
     "sie_description": "Import journal entries and chart of accounts from another bookkeeping system.",
-    "loading_migration": "Loading migration tool..."
+    "loading_migration": "Loading migration tool...",
+    "export_heading": "Export",
+    "export_sie_title": "Export SIE file",
+    "export_sie_description": "Export your bookkeeping as a SIE4 file for your accountant or for migrating to another system.",
+    "export_sie_period_label": "Fiscal year",
+    "export_sie_button": "Download SIE",
+    "export_sie_no_period": "Select a fiscal year to export.",
+    "export_cloud_title": "Cloud backup to Google Drive"
   },
   "empty": {
     "invoices_title": "No invoices yet",

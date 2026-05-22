@@ -47,6 +47,11 @@ export default function CustomerForm({
     country: z.string().optional(),
     org_number: z.string().optional(),
     vat_number: z.string().optional(),
+    personal_number: z
+      .string()
+      .regex(/^(\d{6}|\d{8})[-+]?\d{4}$/, t('personal_number_invalid'))
+      .optional()
+      .or(z.literal('')),
     default_payment_terms: z.number().min(1).optional(),
     notes: z.string().optional(),
   }), [t])
@@ -72,6 +77,7 @@ export default function CustomerForm({
       country: initialData?.country || 'Sweden',
       org_number: initialData?.org_number || '',
       vat_number: initialData?.vat_number || '',
+      personal_number: initialData?.personal_number || '',
       default_payment_terms: initialData?.default_payment_terms || 30,
       notes: initialData?.notes || '',
     },
@@ -126,6 +132,7 @@ export default function CustomerForm({
     onSubmit({
       ...data,
       email: data.email || undefined,
+      personal_number: data.personal_number || undefined,
     })
   }
 
@@ -232,8 +239,24 @@ export default function CustomerForm({
         </div>
       </div>
 
-      {/* Business info */}
-      {customerType !== 'individual' && (
+      {/* Identification — depends on customer type */}
+      {customerType === 'individual' ? (
+        <div className="space-y-4 pt-4 border-t">
+          <h3 className="font-medium">{t('individual_section')}</h3>
+
+          <div className="space-y-2">
+            <Label htmlFor="personal_number">{t('personal_number_label')}</Label>
+            <Input
+              id="personal_number"
+              placeholder={t('personal_number_placeholder')}
+              {...register('personal_number')}
+            />
+            {errors.personal_number && (
+              <p className="text-sm text-destructive">{errors.personal_number.message}</p>
+            )}
+          </div>
+        </div>
+      ) : (
         <div className="space-y-4 pt-4 border-t">
           <h3 className="font-medium">{t('business_section')}</h3>
 
@@ -246,7 +269,7 @@ export default function CustomerForm({
             />
           </div>
 
-          {(customerType === 'eu_business' || customerType === 'swedish_business') && (
+          {(customerType === 'eu_business' || customerType === 'non_eu_business') && (
             <div className="space-y-2">
               <Label htmlFor="vat_number">{t('vat_label')}</Label>
               <div className="flex gap-2">
