@@ -52,6 +52,7 @@ import {
 import { uploadDocument, linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { InvoicePDF } from '@/lib/invoices/pdf-template'
+import { prepareInvoicePdfRender } from '@/lib/invoices/pdf-render-helpers'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import { createLogger } from '@/lib/logger'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
@@ -667,13 +668,16 @@ async function commitSendInvoice(
   // Override `status` to 'sent' on the in-memory copy. The DB flip happens
   // after email delivery (line ~625); rendering with the stale 'draft' status
   // would stamp the customer's PDF with "UTKAST – inte en giltig faktura".
+  const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
+  const { branding } = prepareInvoicePdfRender(company as CompanySettings)
   const pdfBuffer = await renderToBuffer(
     InvoicePDF({
-      invoice: { ...(invoice as Invoice), status: 'sent' as const },
+      invoice: renderableInvoice,
       customer,
       items,
       company: company as CompanySettings,
       originalInvoiceNumber,
+      branding,
     })
   )
 
@@ -2537,3 +2541,4 @@ export async function commitPendingOperation(
     data: result.data,
   }
 }
+

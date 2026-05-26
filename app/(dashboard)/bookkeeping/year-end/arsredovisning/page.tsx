@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -13,10 +13,12 @@ import { Textarea } from '@/components/ui/textarea'
 import { PageHeader } from '@/components/ui/page-header'
 import { ArrowLeft, FileDown, Plus, ExternalLink, Loader2, Save, CheckCircle2 } from 'lucide-react'
 import { useToast } from '@/components/ui/use-toast'
+import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import type { ArsredovisningData } from '@/lib/bokslut/arsredovisning/types'
 import type { SignatureRequest } from '@/lib/bokslut/arsredovisning/signature-service'
 
 export default function ArsredovisningPage() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const periodId = searchParams.get('period')
   const { toast } = useToast()
@@ -205,14 +207,33 @@ export default function ArsredovisningPage() {
   if (!periodId) {
     return (
       <div className="space-y-8">
-        <PageHeader title="Årsredovisning" />
+        <PageHeader
+          title="Årsredovisning"
+          description="Förhandsgranska och ladda ner årsredovisningen för valt räkenskapsår."
+        />
         <Card>
-          <CardContent className="p-6 text-muted-foreground">
-            Saknar periodparameter. Öppna sidan från bokslutet via{' '}
-            <Link href="/bookkeeping/year-end" className="text-primary hover:underline">
-              /bookkeeping/year-end
-            </Link>
-            .
+          <CardHeader>
+            <CardTitle className="text-base">Välj räkenskapsår</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Välj det räkenskapsår du vill se årsredovisningen för. Du kan
+              förhandsgranska och ladda ner PDF-utkastet utan att stänga året — det
+              fullständiga bokslutet görs sedan via{' '}
+              <Link href="/bookkeeping/year-end" className="text-foreground underline underline-offset-4 decoration-muted-foreground/40 hover:decoration-foreground">
+                Bokslut
+              </Link>
+              .
+            </p>
+          </CardHeader>
+          <CardContent>
+            <FiscalYearSelector
+              value={null}
+              onChange={(id) => {
+                if (id) router.replace(`/bookkeeping/year-end/arsredovisning?period=${id}`)
+              }}
+              includeAllOption={false}
+              hideFuturePeriods
+              label={null}
+            />
           </CardContent>
         </Card>
       </div>
@@ -254,7 +275,11 @@ export default function ArsredovisningPage() {
     <div className="space-y-8">
       <PageHeader
         title={`Årsredovisning ${data.fiscal_period.name}`}
-        description={`${data.company.name} · ${data.company.org_number}`}
+        description={
+          data.company.org_number
+            ? `${data.company.name} · ${data.company.org_number}`
+            : data.company.name
+        }
         action={
           <Button variant="outline" asChild>
             <Link href={`/bookkeeping/year-end?period=${periodId}`}>
@@ -264,12 +289,25 @@ export default function ArsredovisningPage() {
         }
       />
 
+      {data.accounting_framework === 'k3' && (
+        <Card>
+          <CardContent className="p-4 text-sm">
+            <p className="font-medium">Årsredovisning enligt K3 (BFNAR 2012:1)</p>
+            <p className="text-muted-foreground mt-1">
+              Dokumentet innehåller kassaflödesanalys, förändring av eget kapital och
+              utökade noter (uppskjuten skatt, redovisningsprinciper, materiella
+              anläggningstillgångar) — krav som följer K3 men inte K2.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Förvaltningsberättelse — narrativ</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Texten nedan visas i PDF:en. Förändringar är lokala till denna sida tills
-            vidare; en framtida version kommer att spara dem mellan sessioner.
+            Texten nedan visas i PDF:en. Klicka på <strong>Spara texten</strong> nedan
+            för att behålla ändringarna mellan sessioner.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">

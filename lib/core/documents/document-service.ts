@@ -264,6 +264,85 @@ export async function linkToJournalEntry(
   return data as DocumentAttachment
 }
 
+export type DeleteDocumentResult =
+  | { ok: true; document: Pick<DocumentAttachment, 'id' | 'file_name'> }
+  | { ok: false; reason: 'not_found' | 'linked_to_entry'; status: number; message: string }
+
+/**
+ * Delete a document if and only if it is not yet linked to a journal entry.
+ *
+ * BFL 7 kap 2§: once a document is attached to a verifikation it becomes
+ * räkenskapsinformation and may not be deleted within the 7-year retention
+ * window. Linked docs must be superseded via createNewVersion() instead.
+ * The block_document_deletion() trigger is the DB-level backstop.
+ */
+export async function deleteDocument(
+  supabase: SupabaseClient,
+  companyId: string,
+  documentId: string
+): Promise<DeleteDocumentResult> {
+  const { data: doc, error: fetchError } = await supabase
+    .from('document_attachments')
+    .select('id, file_name, storage_path, journal_entry_id, user_id')
+    .eq('id', documentId)
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  if (fetchError || !doc) {
+    return {
+      ok: false,
+      reason: 'not_found',
+      status: 404,
+      message: 'Underlaget hittades inte.',
+    }
+  }
+
+  if (doc.journal_entry_id) {
+    return {
+      ok: false,
+      reason: 'linked_to_entry',
+      status: 409,
+      message:
+        'Underlaget är knutet till en verifikation och utgör räkenskapsinformation enligt Bokföringslagen 7 kap 2§. Räkenskapsinformation ska bevaras i minst 7 år och får inte raderas. Använd "Ersätt med ny version" om underlaget behöver korrigeras.',
+    }
+  }
+
+  const { error: deleteError } = await supabase
+    .from('document_attachments')
+    .delete()
+    .eq('id', documentId)
+    .eq('company_id', companyId)
+
+  if (deleteError) {
+    const msg = (deleteError as { message?: string }).message ?? ''
+    if (msg.includes('Bokföringslagen') || msg.includes('retention')) {
+      return {
+        ok: false,
+        reason: 'linked_to_entry',
+        status: 409,
+        message:
+          'Underlaget kan inte tas bort på grund av Bokföringslagens bevarandekrav (7 kap 2§).',
+      }
+    }
+    throw new Error(`Failed to delete document: ${msg}`)
+  }
+
+  if (doc.storage_path) {
+    await supabase.storage.from('documents').remove([doc.storage_path])
+  }
+
+  await eventBus.emit({
+    type: 'document.deleted',
+    payload: {
+      document: { id: doc.id, file_name: doc.file_name },
+      userId: doc.user_id,
+      companyId,
+    },
+  })
+
+  return { ok: true, document: { id: doc.id, file_name: doc.file_name } }
+}
+
 /**
  * Verify document integrity by re-hashing and comparing
  */

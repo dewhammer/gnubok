@@ -56,6 +56,14 @@ const LABELS = {
     net: (rate: number) => `Netto ${rate}%:`,
     vatRow: (rate: number) => `Moms ${rate}%:`,
     rounding: 'Öresavrundning:',
+    deductionRow: 'Skattereduktion ROT/RUT:',
+    deductionInfoHeading: 'Underlag för skattereduktion',
+    deductionPersonnummer: 'Personnummer:',
+    deductionHousingDesignation: 'Fastighetsbeteckning:',
+    deductionApartmentNumber: 'Lägenhetsnummer:',
+    deductionWorkType: 'Arbete:',
+    deductionLaborHours: 'Arbetstimmar:',
+    deductionNotice: 'Köparen ansöker om utbetalning hos Skatteverket via fakturamodellen. Säljaren begär utbetalning för den del köparen inte betalat.',
     toCredit: 'Att kreditera:',
     toPay: 'Att betala:',
     vatInSek: (rate: number | string) => `Moms i SEK (kurs ${rate}):`,
@@ -112,6 +120,14 @@ const LABELS = {
     net: (rate: number) => `Net ${rate}%:`,
     vatRow: (rate: number) => `VAT ${rate}%:`,
     rounding: 'Rounding:',
+    deductionRow: 'ROT/RUT tax reduction:',
+    deductionInfoHeading: 'Tax reduction details',
+    deductionPersonnummer: 'Personnummer:',
+    deductionHousingDesignation: 'Property designation:',
+    deductionApartmentNumber: 'Apartment number:',
+    deductionWorkType: 'Service type:',
+    deductionLaborHours: 'Labor hours:',
+    deductionNotice: 'The customer claims the deduction via fakturamodellen at Skatteverket. The seller requests payment from the agency for the portion not paid by the customer.',
     toCredit: 'To credit:',
     toPay: 'Total due:',
     vatInSek: (rate: number | string) => `VAT in SEK (rate ${rate}):`,
@@ -137,273 +153,419 @@ const LABELS = {
   },
 } as const
 
-// Create styles
-const styles = StyleSheet.create({
-  page: {
-    padding: 40,
-    fontSize: 10,
-    fontFamily: 'Helvetica',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 30,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1a1a1a',
-  },
-  companyInfo: {
-    textAlign: 'left',
-  },
-  companyName: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  section: {
-    marginBottom: 20,
-  },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    marginBottom: 8,
-    color: '#666',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  label: {
-    color: '#666',
-  },
-  value: {
-    fontWeight: 'bold',
-  },
-  customerBox: {
-    backgroundColor: '#f5f5f5',
-    padding: 15,
-    borderRadius: 4,
-    marginBottom: 20,
-  },
-  customerName: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    marginBottom: 4,
-  },
-  table: {
-    marginTop: 10,
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
-    paddingBottom: 8,
-    marginBottom: 8,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-  colDescription: {
-    flex: 3.5,
-  },
-  colQty: {
-    flex: 1,
-    textAlign: 'right',
-  },
-  colUnit: {
-    flex: 1,
-    textAlign: 'center',
-  },
-  colPrice: {
-    flex: 1.5,
-    textAlign: 'right',
-  },
-  colVat: {
-    flex: 1,
-    textAlign: 'right',
-  },
-  colTotal: {
-    flex: 1.5,
-    textAlign: 'right',
-  },
-  tableHeaderText: {
-    fontWeight: 'bold',
-    color: '#666',
-    fontSize: 9,
-    textTransform: 'uppercase',
-  },
-  totalsSection: {
-    marginTop: 20,
-    paddingTop: 15,
-    borderTopWidth: 2,
-    borderTopColor: '#ddd',
-  },
-  totalRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginBottom: 4,
-  },
-  totalLabel: {
-    width: 120,
-    textAlign: 'right',
-    paddingRight: 15,
-    color: '#666',
-  },
-  totalValue: {
-    width: 100,
-    textAlign: 'right',
-  },
-  grandTotal: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-  },
-  grandTotalLabel: {
-    width: 120,
-    textAlign: 'right',
-    paddingRight: 15,
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  grandTotalValue: {
-    width: 100,
-    textAlign: 'right',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  paymentSection: {
-    marginTop: 30,
-    padding: 15,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 4,
-  },
-  paymentTitle: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    marginBottom: 10,
-    color: '#333',
-  },
-  paymentRow: {
-    flexDirection: 'row',
-    marginBottom: 4,
-  },
-  paymentLabel: {
-    width: 100,
-    color: '#666',
-  },
-  paymentValue: {
-    flex: 1,
-  },
-  reverseChargeBox: {
-    marginTop: 20,
-    padding: 12,
-    backgroundColor: '#fff3cd',
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#ffc107',
-  },
-  reverseChargeText: {
-    fontSize: 9,
-    color: '#856404',
-  },
-  notesBox: {
-    marginTop: 20,
-    padding: 12,
-    backgroundColor: '#e8f4fd',
-    borderRadius: 4,
-  },
-  notesText: {
-    fontSize: 9,
-    color: '#0c5460',
-  },
-  creditNoteBox: {
-    marginBottom: 20,
-    padding: 12,
-    backgroundColor: '#f8d7da',
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: '#f5c6cb',
-  },
-  creditNoteText: {
-    fontSize: 10,
-    color: '#721c24',
-  },
-  creditNoteTitle: {
-    color: '#721c24',
-  },
-  draftBanner: {
-    marginBottom: 16,
-    padding: 10,
-    backgroundColor: '#fff3cd',
-    borderWidth: 2,
-    borderColor: '#856404',
-    borderRadius: 4,
-  },
-  draftBannerTitle: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#856404',
-    textAlign: 'center',
-    marginBottom: 2,
-  },
-  draftBannerText: {
-    fontSize: 9,
-    color: '#856404',
-    textAlign: 'center',
-  },
-  cancelledBanner: {
-    marginBottom: 16,
-    padding: 10,
-    backgroundColor: '#f8d7da',
-    borderWidth: 2,
-    borderColor: '#721c24',
-    borderRadius: 4,
-  },
-  cancelledBannerTitle: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#721c24',
-    textAlign: 'center',
-    marginBottom: 2,
-  },
-  cancelledBannerText: {
-    fontSize: 9,
-    color: '#721c24',
-    textAlign: 'center',
-  },
-  footer: {
-    position: 'absolute',
-    bottom: 30,
-    left: 40,
-    right: 40,
-    borderTopWidth: 1,
-    borderTopColor: '#ddd',
-    paddingTop: 10,
-  },
-  footerText: {
-    fontSize: 8,
-    color: '#999',
-    textAlign: 'center',
-  },
-  twoColumn: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  column: {
-    width: '48%',
-  },
-})
+// Labor-only disclaimer for the ROT/RUT block. Kept Swedish-only in both
+// locales — references Skatteverket's fakturamodell directly, which is a
+// statutory Swedish concept and has no formal English equivalent.
+const DEDUCTION_LABOR_ONLY_NOTICE =
+  'Endast arbetskostnad har inkluderats i underlaget för ROT/RUT-avdrag enligt Skatteverkets fakturamodell.'
+
+// Resolved branding values used by the stylesheet. Keeping the resolved shape
+// distinct from the prop shape lets us validate the font allowlist in one
+// place (createStyles below) and gives the rest of the component a fully
+// non-null object to work with.
+export interface InvoiceBranding {
+  /** Primary color — used for the document title and other strong text.
+   *  Default '#1a1a1a' (the existing hardcoded value). */
+  primaryColor?: string
+  /** Accent color — used for muted labels and section headings.
+   *  Default '#666666' (the existing hardcoded value). */
+  accentColor?: string
+  /** Font family — must be one of react-pdf's built-in PostScript fonts.
+   *  Default 'Helvetica'. */
+  fontFamily?: string
+  /** Optional banner text rendered above the document title. */
+  headerText?: string | null
+  /** Optional footer text rendered above the statutory company footer line. */
+  footerText?: string | null
+}
+
+interface ResolvedBranding {
+  primaryColor: string
+  accentColor: string
+  fontFamily: string
+}
+
+// react-pdf only ships these three PostScript fonts. Anything else would
+// require registerFont() with a binary file — out of scope for AGPL-clean
+// branding and a fingerprinting risk besides.
+const ALLOWED_FONTS = new Set(['Helvetica', 'Times-Roman', 'Courier'])
+
+/**
+ * Extract the InvoicePDF branding shape from a CompanySettings row. Tolerates
+ * legacy rows where the branding columns are still null/undefined — returns
+ * undefined fields that resolveBranding() then maps to the legacy defaults.
+ *
+ * Use this at every InvoicePDF call site that has access to a CompanySettings
+ * — keeping the extraction logic in one place means a future schema rename or
+ * new branding field only needs to land here.
+ */
+export function brandingFromCompanySettings(
+  company: CompanySettings | (Partial<CompanySettings> & Record<string, unknown>),
+): InvoiceBranding {
+  return {
+    primaryColor: (company as CompanySettings).invoice_primary_color ?? undefined,
+    accentColor: (company as CompanySettings).invoice_accent_color ?? undefined,
+    fontFamily: (company as CompanySettings).invoice_font_family ?? undefined,
+    headerText: (company as CompanySettings).invoice_header_text ?? null,
+    footerText: (company as CompanySettings).invoice_footer_text ?? null,
+  }
+}
+
+const DEFAULT_BRANDING: ResolvedBranding = {
+  primaryColor: '#1a1a1a',
+  accentColor: '#666666',
+  fontFamily: 'Helvetica',
+}
+
+function resolveBranding(branding: InvoiceBranding | undefined): ResolvedBranding {
+  if (!branding) return DEFAULT_BRANDING
+  const fontFamily =
+    branding.fontFamily && ALLOWED_FONTS.has(branding.fontFamily)
+      ? branding.fontFamily
+      : DEFAULT_BRANDING.fontFamily
+  return {
+    primaryColor: branding.primaryColor || DEFAULT_BRANDING.primaryColor,
+    accentColor: branding.accentColor || DEFAULT_BRANDING.accentColor,
+    fontFamily,
+  }
+}
+
+// Create styles. Calling without args yields the original (pre-branding)
+// stylesheet — required so the default code path is byte-equivalent to the
+// previous hardcoded version.
+function createStyles(branding?: InvoiceBranding) {
+  const b = resolveBranding(branding)
+  return StyleSheet.create({
+    page: {
+      padding: 40,
+      fontSize: 10,
+      fontFamily: b.fontFamily,
+    },
+    header: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: 30,
+    },
+    title: {
+      fontSize: 24,
+      fontWeight: 'bold',
+      color: b.primaryColor,
+    },
+    companyInfo: {
+      textAlign: 'left',
+    },
+    companyName: {
+      fontSize: 14,
+      fontWeight: 'bold',
+      marginBottom: 4,
+    },
+    section: {
+      marginBottom: 20,
+    },
+    sectionTitle: {
+      fontSize: 11,
+      fontWeight: 'bold',
+      marginBottom: 8,
+      color: b.accentColor,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    row: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      marginBottom: 4,
+    },
+    label: {
+      color: b.accentColor,
+    },
+    value: {
+      fontWeight: 'bold',
+    },
+    customerBox: {
+      backgroundColor: '#f5f5f5',
+      padding: 15,
+      borderRadius: 4,
+      marginBottom: 20,
+    },
+    customerName: {
+      fontSize: 12,
+      fontWeight: 'bold',
+      marginBottom: 4,
+    },
+    table: {
+      marginTop: 10,
+    },
+    tableHeader: {
+      flexDirection: 'row',
+      borderBottomWidth: 1,
+      borderBottomColor: '#ddd',
+      paddingBottom: 8,
+      marginBottom: 8,
+    },
+    tableRow: {
+      flexDirection: 'row',
+      paddingVertical: 6,
+      borderBottomWidth: 1,
+      borderBottomColor: '#eee',
+    },
+    colDescription: {
+      flex: 3.5,
+    },
+    colQty: {
+      flex: 1,
+      textAlign: 'right',
+    },
+    colUnit: {
+      flex: 1,
+      textAlign: 'center',
+    },
+    colPrice: {
+      flex: 1.5,
+      textAlign: 'right',
+    },
+    colVat: {
+      flex: 1,
+      textAlign: 'right',
+    },
+    colTotal: {
+      flex: 1.5,
+      textAlign: 'right',
+    },
+    tableHeaderText: {
+      fontWeight: 'bold',
+      color: b.accentColor,
+      fontSize: 9,
+      textTransform: 'uppercase',
+    },
+    totalsSection: {
+      marginTop: 20,
+      paddingTop: 15,
+      borderTopWidth: 2,
+      borderTopColor: '#ddd',
+    },
+    totalRow: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      marginBottom: 4,
+    },
+    totalLabel: {
+      width: 120,
+      textAlign: 'right',
+      paddingRight: 15,
+      color: b.accentColor,
+    },
+    totalValue: {
+      width: 100,
+      textAlign: 'right',
+    },
+    grandTotal: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      marginTop: 10,
+      paddingTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: '#333',
+    },
+    grandTotalLabel: {
+      width: 120,
+      textAlign: 'right',
+      paddingRight: 15,
+      fontSize: 14,
+      fontWeight: 'bold',
+    },
+    grandTotalValue: {
+      width: 100,
+      textAlign: 'right',
+      fontSize: 14,
+      fontWeight: 'bold',
+    },
+    paymentSection: {
+      marginTop: 30,
+      padding: 15,
+      backgroundColor: '#f8f9fa',
+      borderRadius: 4,
+    },
+    paymentTitle: {
+      fontSize: 11,
+      fontWeight: 'bold',
+      marginBottom: 10,
+      color: '#333',
+    },
+    paymentRow: {
+      flexDirection: 'row',
+      marginBottom: 4,
+    },
+    paymentLabel: {
+      width: 100,
+      color: b.accentColor,
+    },
+    paymentValue: {
+      flex: 1,
+    },
+    reverseChargeBox: {
+      marginTop: 20,
+      padding: 12,
+      backgroundColor: '#fff3cd',
+      borderRadius: 4,
+      borderWidth: 1,
+      borderColor: '#ffc107',
+    },
+    reverseChargeText: {
+      fontSize: 9,
+      color: '#856404',
+    },
+    notesBox: {
+      marginTop: 20,
+      padding: 12,
+      backgroundColor: '#e8f4fd',
+      borderRadius: 4,
+    },
+    notesText: {
+      fontSize: 9,
+      color: '#0c5460',
+    },
+    creditNoteBox: {
+      marginBottom: 20,
+      padding: 12,
+      backgroundColor: '#f8d7da',
+      borderRadius: 4,
+      borderWidth: 1,
+      borderColor: '#f5c6cb',
+    },
+    creditNoteText: {
+      fontSize: 10,
+      color: '#721c24',
+    },
+    creditNoteTitle: {
+      color: '#721c24',
+    },
+    draftBanner: {
+      marginBottom: 16,
+      padding: 10,
+      backgroundColor: '#fff3cd',
+      borderWidth: 2,
+      borderColor: '#856404',
+      borderRadius: 4,
+    },
+    draftBannerTitle: {
+      fontSize: 14,
+      fontWeight: 'bold',
+      color: '#856404',
+      textAlign: 'center',
+      marginBottom: 2,
+    },
+    draftBannerText: {
+      fontSize: 9,
+      color: '#856404',
+      textAlign: 'center',
+    },
+    cancelledBanner: {
+      marginBottom: 16,
+      padding: 10,
+      backgroundColor: '#f8d7da',
+      borderWidth: 2,
+      borderColor: '#721c24',
+      borderRadius: 4,
+    },
+    cancelledBannerTitle: {
+      fontSize: 14,
+      fontWeight: 'bold',
+      color: '#721c24',
+      textAlign: 'center',
+      marginBottom: 2,
+    },
+    cancelledBannerText: {
+      fontSize: 9,
+      color: '#721c24',
+      textAlign: 'center',
+    },
+    footer: {
+      position: 'absolute',
+      bottom: 30,
+      left: 40,
+      right: 40,
+      borderTopWidth: 1,
+      borderTopColor: '#ddd',
+      paddingTop: 10,
+    },
+    footerText: {
+      fontSize: 8,
+      color: '#999',
+      textAlign: 'center',
+    },
+    twoColumn: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+    },
+    column: {
+      width: '48%',
+    },
+    // New: optional branding banner above the document title.
+    brandingHeader: {
+      marginBottom: 12,
+      paddingBottom: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: '#eee',
+    },
+    brandingHeaderText: {
+      fontSize: 9,
+      color: b.accentColor,
+      textAlign: 'left',
+    },
+    // ROT/RUT-avdrag info box (Skattereduktion ROT/RUT). Surfaces the
+    // customer's personnummer last 4, fastighetsbeteckning, work type per
+    // row and the statutory notice about fakturamodellen.
+    deductionBox: {
+      marginTop: 18,
+      padding: 12,
+      backgroundColor: '#f5f5f5',
+      borderRadius: 4,
+      borderWidth: 1,
+      borderColor: '#ddd',
+    },
+    deductionTitle: {
+      fontSize: 10,
+      fontWeight: 'bold',
+      marginBottom: 6,
+      color: b.primaryColor,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    deductionRow: {
+      flexDirection: 'row',
+      marginBottom: 3,
+    },
+    deductionLabel: {
+      width: 130,
+      fontSize: 9,
+      color: b.accentColor,
+    },
+    deductionValue: {
+      fontSize: 9,
+      flex: 1,
+    },
+    deductionLineItem: {
+      fontSize: 9,
+      marginTop: 4,
+      paddingLeft: 8,
+      color: '#444',
+    },
+    deductionNotice: {
+      fontSize: 8,
+      marginTop: 8,
+      color: b.accentColor,
+      fontStyle: 'italic',
+    },
+    // New: optional branding footnote rendered above the statutory company
+    // line in the footer block.
+    brandingFooterText: {
+      fontSize: 8,
+      color: b.accentColor,
+      textAlign: 'center',
+      marginBottom: 4,
+    },
+  })
+}
 
 // Format currency with explicit ISO code so non-Swedish recipients see "1 234,56 SEK"
 // instead of the Swedish symbol "kr". Decimal style + appended code works for any
@@ -451,11 +613,22 @@ interface InvoicePDFProps {
   originalInvoiceNumber?: string
   isPreview?: boolean
   language?: PdfLang
+  /**
+   * Per-company branding overrides. Omit to render with the original default
+   * stylesheet — the rendered output is byte-equivalent to the pre-branding
+   * version of this template, which makes the rollout safe for the snapshot
+   * suite and for callers that haven't yet been migrated to forward branding.
+   */
+  branding?: InvoiceBranding
 }
 
-export function InvoicePDF({ invoice, customer, items, company, originalInvoiceNumber, isPreview, language }: InvoicePDFProps) {
+export function InvoicePDF({ invoice, customer, items, company, originalInvoiceNumber, isPreview, language, branding }: InvoicePDFProps) {
   const lang: PdfLang = language ?? customer.language ?? 'sv'
   const L = LABELS[lang]
+  // Build the stylesheet per-render so each invoice picks up its company's
+  // current branding. createStyles() with no argument returns the original
+  // hardcoded stylesheet — the default code path is unchanged.
+  const styles = createStyles(branding)
   const isCreditNote = !!invoice.credited_invoice_id
 
   // Check if items have mixed VAT rates
@@ -480,9 +653,23 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
   const isDeliveryNote = docType === 'delivery_note'
   const isProforma = docType === 'proforma'
 
+  // Optional branding banner text. Rendered only when the company has set
+  // invoice_header_text — invisible chrome by default, so the byte-equivalence
+  // promise for un-branded callers holds.
+  const headerText = branding?.headerText ?? null
+  const footerText = branding?.footerText ?? null
+
   return (
     <Document>
       <Page size="A4" style={styles.page}>
+        {/* Optional branded header — rendered above the status banners so it
+            sits at the very top of the page. Non-statutory free-form text. */}
+        {headerText && (
+          <View style={styles.brandingHeader}>
+            <Text style={styles.brandingHeaderText}>{headerText}</Text>
+          </View>
+        )}
+
         {/* Status banner — cancelled takes precedence over draft so a cancelled
             row that lacks a number (legacy un-numbered draft that was later
             cancelled) still surfaces as MAKULERAD rather than UTKAST. The draft
@@ -674,6 +861,13 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
             )}
             {(() => {
               const rounding = getDisplayTotal(invoice, company)
+              // ROT/RUT-avdrag reduces "Att betala" — the customer only owes
+              // (total - deduction); the rest is reclaimed from Skatteverket
+              // via fakturamodellen. The rule does not apply to credit notes.
+              const showDeduction = !isCreditNote && (invoice.deduction_total ?? 0) > 0
+              const grandTotal = showDeduction
+                ? Math.round((rounding.displayed - (invoice.deduction_total ?? 0)) * 100) / 100
+                : rounding.displayed
               return (
                 <>
                   {rounding.applies && (
@@ -682,9 +876,17 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                       <Text style={[styles.totalValue, { fontSize: 8 }]}>{formatCurrency(rounding.roundingDelta, 'SEK', lang)}</Text>
                     </View>
                   )}
+                  {showDeduction && (
+                    <View style={styles.totalRow}>
+                      <Text style={styles.totalLabel}>{L.deductionRow}</Text>
+                      <Text style={styles.totalValue}>
+                        −{formatCurrency(invoice.deduction_total ?? 0, invoice.currency, lang)}
+                      </Text>
+                    </View>
+                  )}
                   <View style={styles.grandTotal}>
                     <Text style={styles.grandTotalLabel}>{isCreditNote ? L.toCredit : L.toPay}</Text>
-                    <Text style={styles.grandTotalValue}>{formatCurrency(rounding.displayed, invoice.currency, lang)}</Text>
+                    <Text style={styles.grandTotalValue}>{formatCurrency(grandTotal, invoice.currency, lang)}</Text>
                   </View>
                 </>
               )
@@ -703,6 +905,63 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                 </View>
               </View>
             )}
+          </View>
+        )}
+
+        {/* ROT/RUT-avdrag underlying details. Surfaces personnummer last 4,
+            fastighetsbeteckning, lägenhetsnummer, the per-line breakdown
+            and the statutory notice about fakturamodellen. Suppressed on
+            delivery notes (no payment info at all). */}
+        {!isDeliveryNote && !isCreditNote && (invoice.deduction_total ?? 0) > 0 && (
+          <View style={styles.deductionBox} wrap={false}>
+            <Text style={styles.deductionTitle}>{L.deductionInfoHeading}</Text>
+            {invoice.deduction_personnummer_last4 && (
+              <View style={styles.deductionRow}>
+                <Text style={styles.deductionLabel}>{L.deductionPersonnummer}</Text>
+                <Text style={styles.deductionValue}>XXXXXXXX-{invoice.deduction_personnummer_last4}</Text>
+              </View>
+            )}
+            {(() => {
+              // Show the first item-level housing_designation if any line
+              // has one (typical case for a single property). Falls back to
+              // null when only RUT lines exist (RUT doesn't require it).
+              const housing = items.find((i) => i.housing_designation)?.housing_designation
+              const apartment = items.find((i) => i.apartment_number)?.apartment_number
+              return (
+                <>
+                  {housing && (
+                    <View style={styles.deductionRow}>
+                      <Text style={styles.deductionLabel}>{L.deductionHousingDesignation}</Text>
+                      <Text style={styles.deductionValue}>{housing}</Text>
+                    </View>
+                  )}
+                  {apartment && (
+                    <View style={styles.deductionRow}>
+                      <Text style={styles.deductionLabel}>{L.deductionApartmentNumber}</Text>
+                      <Text style={styles.deductionValue}>{apartment}</Text>
+                    </View>
+                  )}
+                </>
+              )
+            })()}
+            {/* Labor-only disclaimer (Skatteverket fakturamodellen). Per ML
+                17 kap, only the labor portion qualifies — material must be
+                invoiced separately. */}
+            <Text style={styles.deductionNotice}>{DEDUCTION_LABOR_ONLY_NOTICE}</Text>
+            {/* Per-line breakdown — one row per eligible item with kind,
+                work type if present and the deducted amount. */}
+            {items
+              .filter((i) => i.deduction_type)
+              .map((i, idx) => {
+                const kind = i.deduction_type === 'rot' ? 'ROT' : 'RUT'
+                const work = i.work_type ? ` — ${i.work_type}` : ''
+                return (
+                  <Text key={idx} style={styles.deductionLineItem}>
+                    {`${kind}${work}: ${i.description} — ${formatCurrency(i.deduction_amount ?? 0, invoice.currency, lang)}`}
+                  </Text>
+                )
+              })}
+            <Text style={styles.deductionNotice}>{L.deductionNotice}</Text>
           </View>
         )}
 
@@ -745,7 +1004,7 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                 <Text style={styles.paymentValue}>{company.plusgiro}</Text>
               </View>
             )}
-            {company.swish && (company.invoice_show_swish ?? true) && (
+            {company.swish && (company.invoice_show_swish ?? false) && (
               <View style={styles.paymentRow}>
                 <Text style={styles.paymentLabel}>{L.swish}</Text>
                 <Text style={styles.paymentValue}>{company.swish}</Text>
@@ -813,8 +1072,14 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
           </View>
         )}
 
-        {/* Footer — collected legal info per ML 17 kap 24§ */}
+        {/* Footer — collected legal info per ML 17 kap 24§. Optional branded
+            footnote sits above the statutory line so it can never crowd out
+            the compliance text (which is why the user-supplied string lives
+            in its own Text node, not inside the join). */}
         <View style={styles.footer}>
+          {footerText && (
+            <Text style={styles.brandingFooterText}>{footerText}</Text>
+          )}
           <Text style={styles.footerText}>
             {[
               (company.invoice_show_company_name ?? true) &&

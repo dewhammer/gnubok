@@ -37,6 +37,7 @@ vi.mock('@/lib/reports/income-statement', () => ({
 
 vi.mock('@/lib/bookkeeping/engine', () => ({
   createJournalEntry: vi.fn(),
+  reverseEntry: vi.fn(),
 }))
 
 vi.mock('@/lib/bookkeeping/currency-revaluation', () => ({

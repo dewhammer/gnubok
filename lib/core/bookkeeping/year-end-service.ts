@@ -1,6 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { eventBus } from '@/lib/events'
-import { createJournalEntry } from '@/lib/bookkeeping/engine'
+import { createJournalEntry, reverseEntry } from '@/lib/bookkeeping/engine'
+import { roundOre, ORE_TOLERANCE } from '@/lib/bokslut/rounding'
+import { createLogger } from '@/lib/logger'
+
+const log = createLogger('year-end-service')
 import { generateTrialBalance } from '@/lib/reports/trial-balance'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
 import { lockPeriod, closePeriod, createNextPeriod } from './period-service'
@@ -303,7 +307,7 @@ export async function previewYearEndClosing(
   for (const account of resultAccounts) {
     const netBalance = account.closing_debit - account.closing_credit
 
-    if (Math.abs(netBalance) < 0.005) continue
+    if (Math.abs(netBalance) < ORE_TOLERANCE) continue
 
     resultAccountSummary.push({
       account_number: account.account_number,
@@ -317,14 +321,14 @@ export async function previewYearEndClosing(
       closingLines.push({
         account_number: account.account_number,
         debit_amount: 0,
-        credit_amount: Math.round(netBalance * 100) / 100,
+        credit_amount: roundOre(netBalance),
         line_description: `Closing: ${account.account_name}`,
       })
     } else {
       // Account has credit balance → debit it to zero
       closingLines.push({
         account_number: account.account_number,
-        debit_amount: Math.round(Math.abs(netBalance) * 100) / 100,
+        debit_amount: roundOre(Math.abs(netBalance)),
         credit_amount: 0,
         line_description: `Closing: ${account.account_name}`,
       })
@@ -337,9 +341,9 @@ export async function previewYearEndClosing(
   // If negative (loss): debit to equity (2099/2010)
   const totalClosingDebit = closingLines.reduce((sum, l) => sum + l.debit_amount, 0)
   const totalClosingCredit = closingLines.reduce((sum, l) => sum + l.credit_amount, 0)
-  const balancingAmount = Math.round(Math.abs(totalClosingDebit - totalClosingCredit) * 100) / 100
+  const balancingAmount = roundOre(Math.abs(totalClosingDebit - totalClosingCredit))
 
-  if (balancingAmount > 0.005) {
+  if (balancingAmount > ORE_TOLERANCE) {
     if (totalClosingDebit > totalClosingCredit) {
       // More debits than credits → need credit on closing account
       closingLines.push({
@@ -442,6 +446,22 @@ export async function executeYearEndClosing(
     throw new Error('No result accounts to close — period has no activity')
   }
 
+  // 3a. INVARIANT: closing entry must balance to the öre before commit.
+  // This guards against rounding drift in previewYearEndClosing — the DB
+  // balance trigger would catch it too, but we want a clear Swedish error
+  // surfaced to the user, not a generic Postgres exception.
+  const preCommitDebit = roundOre(
+    preview.closingLines.reduce((s, l) => s + l.debit_amount, 0)
+  )
+  const preCommitCredit = roundOre(
+    preview.closingLines.reduce((s, l) => s + l.credit_amount, 0)
+  )
+  if (Math.abs(preCommitDebit - preCommitCredit) > ORE_TOLERANCE) {
+    throw new Error(
+      `Bokslutsverifikationen balanserar inte: debet=${preCommitDebit}, kredit=${preCommitCredit}`
+    )
+  }
+
   // 4. Create closing entry via the journal engine
   const closingEntry = await createJournalEntry(supabase, companyId, userId, {
     fiscal_period_id: fiscalPeriodId,
@@ -451,6 +471,32 @@ export async function executeYearEndClosing(
     voucher_series: 'A',
     lines: preview.closingLines,
   })
+
+  // 4a. INVARIANT: after the closing entry, class 3-8 net must be exactly 0
+  // (to the öre). If not, we have a logic bug — fail loud rather than
+  // proceed into IB generation with a corrupt trial balance.
+  // createJournalEntry has no transactional grouping with the next call;
+  // the engine commits atomically per-entry via commit_journal_entry RPC,
+  // so a failure here means we need to reverse the just-committed entry.
+  try {
+    const postCloseTB = await generateTrialBalance(supabase, companyId, fiscalPeriodId)
+    let resultNet = 0
+    for (const row of postCloseTB.rows) {
+      if (row.account_class >= 3 && row.account_class <= 8) {
+        resultNet += row.closing_debit - row.closing_credit
+      }
+    }
+    resultNet = roundOre(resultNet)
+    if (Math.abs(resultNet) > ORE_TOLERANCE) {
+      throw new Error(
+        `Resultatkonton (klass 3-8) saknar nollställning efter bokslut: nettot är ${resultNet} SEK`
+      )
+    }
+  } catch (err) {
+    // Best-effort reversal of the closing entry before re-throwing.
+    await safeReverse(supabase, companyId, userId, closingEntry.id, 'closing entry')
+    throw err
+  }
 
   // 5. Update fiscal period with closing_entry_id
   const { error: updateError } = await supabase
@@ -481,7 +527,19 @@ export async function executeYearEndClosing(
     nextPeriod.id
   )
 
-  // 10. Validate IB/UB continuity and persist result
+  // 10. Validate IB/UB continuity and persist result.
+  // INVARIANT: any account differing by more than ORE_TOLERANCE is a hard
+  // failure. Best-effort rollback of both the IB entry and the closing
+  // entry so the user sees a clean state and can re-run the wizard.
+  //
+  // Note on atomicity: createJournalEntry uses an atomic commit_journal_entry
+  // RPC per entry, but the closing + IB entries are two separate commits with
+  // a period lock/close in between. Once committed, posted entries are
+  // immutable by DB trigger — true rollback isn't possible. reverseEntry()
+  // posts a compensating storno entry instead. The closed period was also
+  // locked & closed, but reverseEntry uses an entry_date that — under the
+  // period-lock trigger — may be blocked. We attempt reversal but tolerate
+  // failure, surfacing the original continuity error either way.
   const continuity = await validateBalanceContinuity(supabase, companyId, nextPeriod.id)
 
   await supabase
@@ -490,12 +548,21 @@ export async function executeYearEndClosing(
     .eq('id', nextPeriod.id)
     .eq('company_id', companyId)
 
-  if (!continuity.valid) {
+  const overTolerance = continuity.discrepancies.filter(
+    (d) => Math.abs(d.difference) > ORE_TOLERANCE
+  )
+  if (overTolerance.length > 0) {
+    await safeReverse(supabase, companyId, userId, openingBalanceEntry.id, 'opening balance entry')
+    await safeReverse(supabase, companyId, userId, closingEntry.id, 'closing entry')
+
     throw new Error(
-      `IB/UB continuity check failed: ${continuity.discrepancies.length} account(s) differ. ` +
-      continuity.discrepancies.map(d =>
-        `${d.account_number}: UB=${d.previous_ub_net}, IB=${d.current_ib_net}, diff=${d.difference}`
-      ).join('; ')
+      `IB/UB-kontinuitet misslyckades: ${overTolerance.length} konto(n) avviker. ` +
+        overTolerance
+          .map(
+            (d) =>
+              `${d.account_number}: UB=${d.previous_ub_net}, IB=${d.current_ib_net}, diff=${d.difference}`
+          )
+          .join('; ')
     )
   }
 
@@ -519,6 +586,7 @@ export async function executeYearEndClosing(
     nextPeriod,
     openingBalanceEntry,
     revaluationEntry: revaluationResult?.entry ?? null,
+    continuity,
   }
 }
 
@@ -562,13 +630,13 @@ export async function generateOpeningBalances(
   for (const account of balanceSheetAccounts) {
     const netBalance = account.closing_debit - account.closing_credit
 
-    if (Math.abs(netBalance) < 0.005) continue
+    if (Math.abs(netBalance) < ORE_TOLERANCE) continue
 
     if (netBalance > 0) {
       // Debit balance → opening debit
       openingLines.push({
         account_number: account.account_number,
-        debit_amount: Math.round(netBalance * 100) / 100,
+        debit_amount: roundOre(netBalance),
         credit_amount: 0,
         line_description: `Ingående balans: ${account.account_name}`,
       })
@@ -577,7 +645,7 @@ export async function generateOpeningBalances(
       openingLines.push({
         account_number: account.account_number,
         debit_amount: 0,
-        credit_amount: Math.round(Math.abs(netBalance) * 100) / 100,
+        credit_amount: roundOre(Math.abs(netBalance)),
         line_description: `Ingående balans: ${account.account_name}`,
       })
     }
@@ -591,9 +659,9 @@ export async function generateOpeningBalances(
   const totalDebit = openingLines.reduce((sum, l) => sum + l.debit_amount, 0)
   const totalCredit = openingLines.reduce((sum, l) => sum + l.credit_amount, 0)
 
-  if (Math.abs(totalDebit - totalCredit) > 0.01) {
+  if (Math.abs(totalDebit - totalCredit) > ORE_TOLERANCE) {
     throw new Error(
-      `Opening balances are not balanced: debit=${totalDebit}, credit=${totalCredit}`
+      `Ingående balanser balanserar inte: debet=${roundOre(totalDebit)}, kredit=${roundOre(totalCredit)}`
     )
   }
 
@@ -622,4 +690,33 @@ export async function generateOpeningBalances(
   }
 
   return openingEntry
+}
+
+/**
+ * Best-effort reversal used by executeYearEndClosing's rollback paths.
+ *
+ * Posted journal entries are immutable per DB trigger — we can't truly
+ * roll them back, only post a compensating storno via reverseEntry().
+ * Closed/locked periods may also block the reversal date. We swallow
+ * failures here so the caller can re-throw the original invariant error
+ * with maximum diagnostic value; the orphaned entries (if any) become
+ * a manual cleanup task documented in the surfaced Swedish error.
+ */
+async function safeReverse(
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+  entryId: string,
+  label: string
+): Promise<void> {
+  try {
+    await reverseEntry(supabase, companyId, userId, entryId)
+  } catch (err) {
+    log.error(`year-end rollback: could not reverse ${label}`, err as Error, {
+      operation: 'year_end.rollback',
+      companyId,
+      entityType: 'journal_entry',
+      entityId: entryId,
+    })
+  }
 }

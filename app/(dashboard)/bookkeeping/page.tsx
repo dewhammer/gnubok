@@ -13,6 +13,7 @@ import { FiscalYearSelector } from '@/components/common/FiscalYearSelector'
 import { useToast } from '@/components/ui/use-toast'
 import { Lock, Loader2, Copy } from 'lucide-react'
 import { PageHeader } from '@/components/ui/page-header'
+import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import type { JournalEntry, JournalEntryLine } from '@/types'
 
 interface CopyPrefill {
@@ -87,7 +88,7 @@ export default function BookkeepingPage() {
         })
         setCopyPrefill({
           sourceId: copyFromId,
-          sourceVoucherLabel: `${data.voucher_series ?? ''}${data.voucher_number ?? ''}`,
+          sourceVoucherLabel: formatVoucher(data),
           lines,
           description: data.description || '',
           notes: data.notes || '',
