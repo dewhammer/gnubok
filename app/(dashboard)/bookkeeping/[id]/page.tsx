@@ -245,8 +245,8 @@ export default function JournalEntryDetailPage({ params }: { params: Promise<{ i
                 disabled={!canWrite}
                 title={!canWrite ? t('read_only_tooltip') : undefined}
               >
-                {!canWrite && <Lock className="mr-2 h-4 w-4" />}
-                {t('create_correction')}
+                {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
+                {t('edit_entry')}
               </Button>
             )}
             {entry.status === 'posted' && (

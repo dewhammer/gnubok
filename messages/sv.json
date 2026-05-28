@@ -2350,7 +2350,25 @@
     "load_dialog_failed_title": "Kunde inte ladda bokföringsdialog",
     "try_again": "Försök igen.",
     "mark_paid_failed": "Kunde inte markera som betald",
-    "booking_failed_title": "Bokföring misslyckades"
+    "booking_failed_title": "Bokföring misslyckades",
+    "tab_new_payment": "Bokför ny betalning",
+    "tab_existing_voucher": "Befintlig verifikation"
+  },
+  "invoice_link_voucher": {
+    "intro": "Välj en befintlig verifikation som krediterar kundfordran (1510). Ingen ny verifikation skapas — du länkar bara den befintliga som betalning.",
+    "search_placeholder": "Sök på verifikatnummer eller beskrivning…",
+    "confidence_high": "Hög träff",
+    "confidence_medium": "Möjlig träff",
+    "confidence_low": "Svag träff",
+    "period_locked": "Låst period",
+    "empty_title": "Inga matchande verifikationer hittades",
+    "empty_description": "Det finns ingen bokförd verifikation som krediterar 1510 i fakturans valuta och period. Bokför istället en ny betalning, eller rätta tidigare bokföring först.",
+    "confirmation": "Detta länkar verifikat {voucher} ({amount}) som betalning för fakturan.",
+    "no_new_je_note": "Ingen ny bokföring skapas — den befintliga verifikationen utgör betalningsposten.",
+    "cancel": "Avbryt",
+    "confirm": "Länka som betalning",
+    "link_success_title": "Verifikationen länkades till fakturan",
+    "link_failed_title": "Kunde inte länka verifikationen"
   },
   "supplier_invoice_editor": {
     "page_title": "Registrera leverantörsfaktura",
@@ -2784,6 +2802,7 @@
     "delete_entry": "Radera verifikat",
     "create_correction": "Skapa ändringsverifikation",
     "copy_entry": "Kopiera verifikat",
+    "edit_entry": "Redigera",
     "details_title": "Verifikationsdetaljer",
     "field_date": "Datum",
     "field_posted_at": "Bokförd",

@@ -15,8 +15,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { useToast } from '@/components/ui/use-toast'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
+import LinkVoucherPicker from '@/components/invoices/LinkVoucherPicker'
 import { proposePaymentLines } from '@/lib/bookkeeping/propose-payment-lines'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -77,12 +79,14 @@ export default function PaymentBookingDialog({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isInitialized, setIsInitialized] = useState(false)
   const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[] | null>(null)
+  const [tab, setTab] = useState<'new' | 'existing'>('new')
 
   // Load accounts and settings when dialog opens
   useEffect(() => {
     if (!open) {
       setIsInitialized(false)
       setDuplicateCandidates(null)
+      setTab('new')
       return
     }
 
@@ -314,12 +318,30 @@ export default function PaymentBookingDialog({
               })}
             </ul>
           </div>
-        ) : !isInitialized ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
         ) : (
-          <div className="space-y-4">
+          <Tabs value={tab} onValueChange={(v) => setTab(v as 'new' | 'existing')}>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="new">{t('tab_new_payment')}</TabsTrigger>
+              <TabsTrigger value="existing">{t('tab_existing_voucher')}</TabsTrigger>
+            </TabsList>
+            <TabsContent value="existing" className="mt-4">
+              <LinkVoucherPicker
+                invoiceId={invoice.id}
+                invoiceCurrency={invoice.currency}
+                onLinked={() => {
+                  onOpenChange(false)
+                  onSuccess()
+                }}
+                onCancel={() => setTab('new')}
+              />
+            </TabsContent>
+            <TabsContent value="new" className="mt-4">
+              {!isInitialized ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <div className="space-y-4">
             {/* Payment date */}
             <div className="space-y-1.5">
               <Label htmlFor="payment-date">{t('payment_date_label')}</Label>
@@ -473,32 +495,37 @@ export default function PaymentBookingDialog({
               </div>
             </div>
           </div>
+              )}
+            </TabsContent>
+          </Tabs>
         )}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting} className="w-full sm:w-auto min-h-11">
-            {t('cancel')}
-          </Button>
-          {duplicateCandidates && duplicateCandidates.length > 0 ? (
-            <Button
-              onClick={handleForceSubmit}
-              disabled={!isBalanced || isSubmitting}
-              className="w-full sm:w-auto min-h-11"
-            >
-              {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {t('book_anyway')}
+        {(duplicateCandidates && duplicateCandidates.length > 0) || tab === 'new' ? (
+          <DialogFooter>
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting} className="w-full sm:w-auto min-h-11">
+              {t('cancel')}
             </Button>
-          ) : (
-            <Button
-              onClick={handleSubmit}
-              disabled={!isBalanced || isSubmitting || !isInitialized}
-              className="w-full sm:w-auto min-h-11"
-            >
-              {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {t('confirm_and_book')}
-            </Button>
-          )}
-        </DialogFooter>
+            {duplicateCandidates && duplicateCandidates.length > 0 ? (
+              <Button
+                onClick={handleForceSubmit}
+                disabled={!isBalanced || isSubmitting}
+                className="w-full sm:w-auto min-h-11"
+              >
+                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {t('book_anyway')}
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSubmit}
+                disabled={!isBalanced || isSubmitting || !isInitialized}
+                className="w-full sm:w-auto min-h-11"
+              >
+                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {t('confirm_and_book')}
+              </Button>
+            )}
+          </DialogFooter>
+        ) : null}
       </DialogContent>
     </Dialog>
   )

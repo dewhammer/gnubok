@@ -7,7 +7,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { createJournalEntry } from '@/lib/bookkeeping/engine'
+import { createJournalEntry, reverseEntry } from '@/lib/bookkeeping/engine'
 import type {
   ParsedSIEFile,
   AccountMapping,
@@ -20,6 +20,7 @@ import type { CreateJournalEntryLineInput } from '@/types'
 import { mappingsToMap, getMappingStats } from './account-mapper'
 import { calculateFileHash } from './sie-parser'
 import { getBASReference } from '@/lib/bookkeeping/bas-reference'
+import { classifyAccount } from '@/lib/bookkeeping/account-classifier'
 import { computeSRUCode } from '@/lib/bookkeeping/bas-data/sru-mapping'
 import { populateTemplatesFromSieVouchers } from '@/lib/bookkeeping/counterparty-templates'
 import { parseDateParts } from '@/lib/bookkeeping/validate-period-duration'
@@ -191,6 +192,60 @@ export async function replaceSIEImport(
 
   if (rpcError) {
     return { success: false, deletedEntries: 0, error: `Kunde inte ersätta import: ${rpcError.message}` }
+  }
+
+  return { success: true, deletedEntries: deletedCount as number }
+}
+
+/**
+ * Undo a completed SIE import by hard-deleting its entries (transaction
+ * vouchers + opening_balance) and resetting voucher_sequences, without
+ * requiring a replacement file. Marks sie_imports.status='undone'.
+ *
+ * Pre-flight checks mirror replaceSIEImport so the user gets a Swedish
+ * error message before the RPC raises. The RPC itself is idempotent on
+ * status — calling twice surfaces the "not in completed status" error.
+ */
+export async function undoSIEImport(
+  supabase: SupabaseClient,
+  companyId: string,
+  importId: string
+): Promise<{ success: boolean; deletedEntries: number; error?: string }> {
+  const { data: importRecord } = await supabase
+    .from('sie_imports')
+    .select('status, fiscal_period_id')
+    .eq('id', importId)
+    .eq('company_id', companyId)
+    .single()
+
+  if (!importRecord) {
+    return { success: false, deletedEntries: 0, error: 'Import hittades inte' }
+  }
+
+  if (importRecord.status !== 'completed') {
+    return { success: false, deletedEntries: 0, error: `Kan bara ångra slutförda importer (status: ${importRecord.status})` }
+  }
+
+  if (importRecord.fiscal_period_id) {
+    const { data: period } = await supabase
+      .from('fiscal_periods')
+      .select('is_closed, locked_at')
+      .eq('id', importRecord.fiscal_period_id)
+      .eq('company_id', companyId)
+      .single()
+
+    if (period?.is_closed || period?.locked_at) {
+      return { success: false, deletedEntries: 0, error: 'Kan inte ångra import i ett låst eller stängt räkenskapsår. Öppna perioden först.' }
+    }
+  }
+
+  const { data: deletedCount, error: rpcError } = await supabase.rpc('undo_sie_import', {
+    p_company_id: companyId,
+    p_import_id: importId,
+  })
+
+  if (rpcError) {
+    return { success: false, deletedEntries: 0, error: `Kunde inte ångra import: ${rpcError.message}` }
   }
 
   return { success: true, deletedEntries: deletedCount as number }
@@ -593,6 +648,170 @@ export async function linkOpeningBalanceEntryToPeriod(
 
   if (error) {
     throw new Error(`Failed to link opening balance entry to fiscal period: ${error.message}`)
+  }
+}
+
+/**
+ * Pragmatic IB resync.
+ *
+ * Backfill scenario: user already imported 2026 (or set its IB manually),
+ * then later imports 2025. The previously-set 2026 IB no longer matches
+ * the 2025 UB we just computed — resync it by stornoing the old IB and
+ * creating a fresh one from the just-imported #UB.
+ *
+ * Returns:
+ *   - { resynced: true, ...details } when storno + new IB succeeded
+ *   - { resynced: false, reason } when there's no next period, no existing
+ *     IB to replace, or the next period is locked/closed
+ *
+ * Caller is responsible for surfacing the result in ImportResult.
+ */
+export async function resyncNextPeriodOpeningBalance(
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+  justImportedPeriodEnd: string,
+  parsed: ParsedSIEFile,
+  accountMap: Map<string, string>
+): Promise<
+  | {
+      resynced: true
+      nextPeriodId: string
+      nextPeriodName: string
+      stornoEntryId: string
+      newOpeningBalanceEntryId: string
+    }
+  | { resynced: false; reason: string; nextPeriodName?: string }
+> {
+  const { data: nextPeriod } = await supabase
+    .from('fiscal_periods')
+    .select('id, name, period_start, period_end, is_closed, locked_at, opening_balance_entry_id, opening_balances_set')
+    .eq('company_id', companyId)
+    .gt('period_start', justImportedPeriodEnd)
+    .order('period_start', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (!nextPeriod) {
+    return { resynced: false, reason: 'no_next_period' }
+  }
+
+  if (!nextPeriod.opening_balance_entry_id) {
+    // No existing IB on the next period — caller has nothing to resync; the
+    // user's first IB for the next period will be derived from the import
+    // we just completed via getOpeningBalances() fallback.
+    return { resynced: false, reason: 'next_period_has_no_ib', nextPeriodName: nextPeriod.name }
+  }
+
+  if (nextPeriod.is_closed || nextPeriod.locked_at) {
+    return {
+      resynced: false,
+      reason: 'next_period_locked',
+      nextPeriodName: nextPeriod.name,
+    }
+  }
+
+  // Build the new IB lines from the just-imported year's #UB (yearIndex=0
+  // closing balances). Each balance carries the source account number; map
+  // through accountMap so chart renames in the target company are honored.
+  const currentYearUB = parsed.closingBalances.filter((b) => b.yearIndex === 0)
+  if (currentYearUB.length === 0) {
+    return { resynced: false, reason: 'no_closing_balances', nextPeriodName: nextPeriod.name }
+  }
+
+  const newLines: CreateJournalEntryLineInput[] = []
+  for (const balance of currentYearUB) {
+    const targetAccount = accountMap.get(balance.account) ?? balance.account
+    if (balance.amount > 0) {
+      newLines.push({
+        account_number: targetAccount,
+        debit_amount: balance.amount,
+        credit_amount: 0,
+        line_description: `IB ${balance.account} (resynk efter import)`,
+      })
+    } else if (balance.amount < 0) {
+      newLines.push({
+        account_number: targetAccount,
+        debit_amount: 0,
+        credit_amount: Math.abs(balance.amount),
+        line_description: `IB ${balance.account} (resynk efter import)`,
+      })
+    }
+  }
+
+  if (newLines.length === 0) {
+    return { resynced: false, reason: 'empty_new_ib', nextPeriodName: nextPeriod.name }
+  }
+
+  // Balance check: if the new IB doesn't balance (excluded accounts, etc.),
+  // book the difference to 2099 the same way createOpeningBalanceEntry does.
+  const totalDebit = newLines.reduce((s, l) => s + l.debit_amount, 0)
+  const totalCredit = newLines.reduce((s, l) => s + l.credit_amount, 0)
+  const diff = Math.round((totalDebit - totalCredit) * 100) / 100
+  if (Math.abs(diff) > 0.01) {
+    if (diff > 0) {
+      newLines.push({
+        account_number: '2099',
+        debit_amount: 0,
+        credit_amount: diff,
+        line_description: 'Avrundningsdifferens vid IB-resynk',
+      })
+    } else {
+      newLines.push({
+        account_number: '2099',
+        debit_amount: Math.abs(diff),
+        credit_amount: 0,
+        line_description: 'Avrundningsdifferens vid IB-resynk',
+      })
+    }
+  }
+
+  // Ordering note: create the new IB FIRST, then storno the old one. If we
+  // stornoed first and the createJournalEntry call failed, the next period
+  // would be left with a reversed IB and nothing to replace it — and
+  // executeSIEImport swallows our error as a non-fatal warning. By creating
+  // first we guarantee the worst case is "new IB exists but not yet linked",
+  // which getOpeningBalances() can still reason about.
+
+  // Build the new IB entry on the next period.
+  const newEntry = await createJournalEntry(supabase, companyId, userId, {
+    fiscal_period_id: nextPeriod.id,
+    entry_date: nextPeriod.period_start as string,
+    description: 'Ingående balanser (resynk efter prior-year SIE-import)',
+    source_type: 'opening_balance',
+    voucher_series: 'A',
+    lines: newLines,
+  })
+
+  // Atomically swap the period FK pointer (two-step around the
+  // immutability trigger).
+  const { error: relinkError } = await supabase.rpc('replace_period_opening_balance_link', {
+    p_company_id: companyId,
+    p_period_id: nextPeriod.id,
+    p_new_entry_id: newEntry.id,
+  })
+
+  if (relinkError) {
+    throw new Error(`Failed to relink opening balance on next period: ${relinkError.message}`)
+  }
+
+  // Now that the period points at the new IB, storno the old one. If this
+  // throws, the period is already on the correct entry — the orphaned old
+  // entry shows up as a stray verifikat but the FK stays consistent.
+  const storno = await reverseEntry(
+    supabase,
+    companyId,
+    userId,
+    nextPeriod.opening_balance_entry_id,
+    nextPeriod.period_start as string,
+  )
+
+  return {
+    resynced: true,
+    nextPeriodId: nextPeriod.id,
+    nextPeriodName: nextPeriod.name,
+    stornoEntryId: storno.id,
+    newOpeningBalanceEntryId: newEntry.id,
   }
 }
 
@@ -1342,10 +1561,7 @@ async function ensureAccountExists(
   // Fallback: derive metadata from account number
   const classNum = parseInt(accountNumber.charAt(0), 10)
   const group = accountNumber.substring(0, 2)
-  const accountType = classNum === 1 ? 'asset'
-    : classNum === 2 ? (group === '21' ? 'untaxed_reserves' : (group === '20' ? 'equity' : 'liability'))
-    : classNum === 3 ? 'revenue'
-    : 'expense'
+  const classified = classifyAccount(accountNumber)
 
   await supabase.from('chart_of_accounts').insert({
     user_id: userId,
@@ -1354,8 +1570,8 @@ async function ensureAccountExists(
     account_name: accountName,
     account_class: classNum,
     account_group: group,
-    account_type: accountType,
-    normal_balance: classNum <= 1 || classNum >= 4 ? 'debit' : 'credit',
+    account_type: classified.account_type,
+    normal_balance: classified.normal_balance,
     sru_code: computeSRUCode(accountNumber),
     plan_type: 'full_bas',
     is_active: true,
@@ -1699,9 +1915,7 @@ export async function executeSIEImport(
           }
           const classNum = parseInt(num.charAt(0), 10)
           const group = num.substring(0, 2)
-          const accountType = classNum === 1 ? 'asset'
-            : classNum === 2 ? (group === '21' ? 'untaxed_reserves' : (group === '20' ? 'equity' : 'liability'))
-            : classNum === 3 ? 'revenue' : 'expense'
+          const classified = classifyAccount(num)
           return {
             user_id: userId,
             company_id: companyId,
@@ -1709,8 +1923,8 @@ export async function executeSIEImport(
             account_name: targetNameMap.get(num) || `Konto ${num}`,
             account_class: classNum,
             account_group: group,
-            account_type: accountType,
-            normal_balance: classNum <= 1 || classNum >= 4 ? 'debit' : 'credit',
+            account_type: classified.account_type,
+            normal_balance: classified.normal_balance,
             sru_code: computeSRUCode(num),
             plan_type: 'full_bas' as const,
             is_active: true,
@@ -2061,6 +2275,49 @@ export async function executeSIEImport(
     } catch (mappingError) {
       console.error('[sie-import] Failed to save mappings (non-fatal):', mappingError)
       result.warnings.push('Kunde inte spara kontomappningar — påverkar inte importerade data')
+    }
+
+    // Pragmatic IB resync: if a chronologically-later fiscal period already
+    // exists with its own opening_balance entry, the customer is doing a
+    // prior-year backfill. Sync the next period's IB to match the UB we
+    // just imported so reports stay consistent.
+    if (result.success && fiscalYearEnd && result.fiscalPeriodId && parsed.closingBalances.length > 0) {
+      try {
+        const resync = await resyncNextPeriodOpeningBalance(
+          supabase,
+          companyId,
+          userId,
+          fiscalYearEnd,
+          parsed,
+          accountMap,
+        )
+        if (resync.resynced) {
+          result.nextPeriodIBResync = {
+            nextPeriodId: resync.nextPeriodId,
+            nextPeriodName: resync.nextPeriodName,
+            stornoEntryId: resync.stornoEntryId,
+            newOpeningBalanceEntryId: resync.newOpeningBalanceEntryId,
+          }
+          result.journalEntriesCreated += 2 // storno + new IB
+          result.journalEntryIds.push(resync.stornoEntryId, resync.newOpeningBalanceEntryId)
+          result.warnings.push(
+            `Ingående balanser för ${resync.nextPeriodName} synkades om mot den just importerade utgående balansen.`,
+          )
+        } else if (resync.reason === 'next_period_locked' && resync.nextPeriodName) {
+          result.nextPeriodIBResyncSkipped = {
+            reason: 'locked',
+            nextPeriodName: resync.nextPeriodName,
+          }
+          result.warnings.push(
+            `Nästa räkenskapsår (${resync.nextPeriodName}) är låst — ingående balanser kunde inte synkas om automatiskt. Lås upp perioden och importera igen för att synka.`,
+          )
+        }
+      } catch (resyncError) {
+        console.error('[sie-import] IB resync failed (non-fatal):', resyncError)
+        result.warnings.push(
+          `Ingående balanser för nästa räkenskapsår kunde inte synkas om automatiskt: ${resyncError instanceof Error ? resyncError.message : 'okänt fel'}. Kontrollera och justera manuellt.`,
+        )
+      }
     }
 
     // Generate systemdokumentation (MigrationDocumentation)

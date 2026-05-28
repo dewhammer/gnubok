@@ -56,7 +56,8 @@ export async function GET(
   const { data: runEmployees, error } = await supabase
     .from('salary_run_employees')
     .select(`
-      employee_id, gross_salary, tax_withheld, avgifter_basis,
+      employee_id, gross_salary, tax_withheld, tax_withheld_override,
+      avgifter_basis, avgifter_basis_override,
       employee:employees(personnummer, specification_number, employment_start, employment_end),
       salary_run:salary_runs!inner(period_year, status),
       line_items:salary_line_items(item_type, amount)
@@ -100,8 +101,9 @@ export async function GET(
     }
 
     current.totalGross += sre.gross_salary
-    current.totalTax += sre.tax_withheld
-    current.totalAvgifterBasis += sre.avgifter_basis
+    // Honor advanced-mode override so KU matches AGI + the ledger.
+    current.totalTax += sre.tax_withheld_override ?? sre.tax_withheld
+    current.totalAvgifterBasis += sre.avgifter_basis_override ?? sre.avgifter_basis
 
     // Sum benefits by type from line items
     const lineItems = (sre.line_items || []) as Array<{ item_type: string; amount: number }>

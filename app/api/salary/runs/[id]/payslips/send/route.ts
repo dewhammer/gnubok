@@ -122,6 +122,10 @@ async function _sendPayslipsImpl(
         taxReference = `Tabell ${emp.tax_table_number}, kol ${emp.tax_column}`
       }
 
+      const effectiveTax = sre.tax_withheld_override ?? sre.tax_withheld
+      const effectiveAvgifter = sre.avgifter_amount_override ?? sre.avgifter_amount
+      const effectiveNet = sre.net_salary + (sre.tax_withheld - effectiveTax)
+
       const data: PayslipData = {
         companyName: company.name,
         companyOrgNumber: company.org_number || '',
@@ -133,14 +137,14 @@ async function _sendPayslipsImpl(
         paymentDate: run.payment_date,
         lineItems,
         grossSalary: sre.gross_salary,
-        taxWithheld: sre.tax_withheld,
-        netSalary: sre.net_salary,
+        taxWithheld: effectiveTax,
+        netSalary: effectiveNet,
         taxReference,
         avgifterRate: sre.avgifter_rate,
-        avgifterAmount: sre.avgifter_amount,
+        avgifterAmount: effectiveAvgifter,
         vacationAccrual: sre.vacation_accrual,
         vacationAccrualAvgifter: sre.vacation_accrual_avgifter,
-        totalEmployerCost: sre.gross_salary + sre.avgifter_amount + sre.vacation_accrual + sre.vacation_accrual_avgifter,
+        totalEmployerCost: sre.gross_salary + effectiveAvgifter + sre.vacation_accrual + sre.vacation_accrual_avgifter,
         ytdGross: sre.ytd_gross,
         ytdTax: sre.ytd_tax,
         ytdNet: sre.ytd_net,

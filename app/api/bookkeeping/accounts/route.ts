@@ -84,6 +84,12 @@ export async function POST(request: Request) {
     .single()
 
   if (error) {
+    if (error.code === '23505') {
+      return NextResponse.json(
+        { error: `Kontonummer ${body.account_number} finns redan i din kontoplan.` },
+        { status: 409 },
+      )
+    }
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 

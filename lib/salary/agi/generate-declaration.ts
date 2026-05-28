@@ -64,8 +64,11 @@ const SalaryRunEmployeeRowSchema = z
     employee_id: z.string().uuid(),
     gross_salary: z.number(),
     tax_withheld: z.number(),
+    tax_withheld_override: z.number().nullable().optional(),
     avgifter_basis: z.number(),
+    avgifter_basis_override: z.number().nullable().optional(),
     avgifter_amount: z.number(),
+    avgifter_amount_override: z.number().nullable().optional(),
     avgifter_rate: z.number(),
     avgifter_category: z.string().nullable().optional(),
     removed_from_agi: z.boolean().nullable().optional(),
@@ -318,13 +321,16 @@ export async function generateAgiDeclaration(
       }
 
       const isFSkatt = emp?.f_skatt_status === 'f_skatt'
+      // Honor advanced-mode per-employee overrides set during review.
+      const effectiveTax = sre.tax_withheld_override ?? sre.tax_withheld
+      const effectiveAvgifterBasis = sre.avgifter_basis_override ?? sre.avgifter_basis
       return {
         personnummer: emp?.personnummer ?? '',
         specificationNumber: emp?.specification_number ?? 0,
         removed: Boolean(sre.removed_from_agi),
         grossSalary: sre.gross_salary,
-        taxWithheld: sre.tax_withheld,
-        avgifterBasis: sre.avgifter_basis,
+        taxWithheld: effectiveTax,
+        avgifterBasis: effectiveAvgifterBasis,
         fSkattPayment: isFSkatt ? sre.gross_salary : undefined,
         // F-skatt payees: cash goes to FK131 and benefits to the ej-UlagSA
         // variants (FK132/FK133/FK134/FK137/FK138/FK139). Regular employees
@@ -368,8 +374,8 @@ export async function generateAgiDeclaration(
     const cat = (avgifterByCategory as Record<string, { basis: number; amount: number }>)[
       category
     ] || { basis: 0, amount: 0 }
-    cat.basis += sre.avgifter_basis
-    cat.amount += sre.avgifter_amount
+    cat.basis += sre.avgifter_basis_override ?? sre.avgifter_basis
+    cat.amount += sre.avgifter_amount_override ?? sre.avgifter_amount
     ;(avgifterByCategory as Record<string, { basis: number; amount: number }>)[category] = cat
   }
   const totalAvgifterAmount = Object.values(avgifterByCategory).reduce(
@@ -400,15 +406,17 @@ export async function generateAgiDeclaration(
 
   // FK497 SummaSkatteavdr must equal the sum of FK001 on active IUs (not
   // run.total_tax, which includes removed rows). Same for FK487.
+  // Coalesce override → computed so manual jämkning/FoU adjustments flow
+  // into the filed declaration.
   const totalTax = activeEmployees.reduce(
-    (sum, sre) => sum + (sre.tax_withheld || 0),
+    (sum, sre) => sum + ((sre.tax_withheld_override ?? sre.tax_withheld) || 0),
     0,
   )
 
   const totals: AGITotals = {
     totalTax: Math.round(totalTax * 100) / 100,
     totalAvgifterBasis: activeEmployees.reduce(
-      (s, e) => s + (e.avgifter_basis || 0),
+      (s, e) => s + ((e.avgifter_basis_override ?? e.avgifter_basis) || 0),
       0,
     ),
     totalAvgifterAmount: Math.round(totalAvgifterAmount * 100) / 100,

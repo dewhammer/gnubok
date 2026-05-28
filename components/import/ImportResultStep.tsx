@@ -12,15 +12,33 @@ import {
   ExternalLink,
   RotateCcw,
   Info,
+  Undo2,
 } from 'lucide-react'
+import {
+  DestructiveConfirmDialog,
+  useDestructiveConfirm,
+} from '@/components/ui/destructive-confirm-dialog'
 import type { ImportResult } from '@/lib/import/types'
 
 interface ImportResultStepProps {
   result: ImportResult
   onNewImport: () => void
+  onUndo?: (importId: string) => Promise<void> | void
 }
 
-export default function ImportResultStep({ result, onNewImport }: ImportResultStepProps) {
+export default function ImportResultStep({ result, onNewImport, onUndo }: ImportResultStepProps) {
+  const { dialogProps, confirm } = useDestructiveConfirm()
+
+  const handleUndoClick = async () => {
+    if (!result.importId || !onUndo) return
+    const ok = await confirm({
+      title: 'Ångra hela importen?',
+      description: `Detta raderar ${result.journalEntriesCreated} verifikation${result.journalEntriesCreated === 1 ? '' : 'er'} och rensar ingående balanser från den här importen. Bifogade dokument blir okopplade men finns kvar.`,
+      confirmLabel: 'Ångra import',
+    })
+    if (!ok) return
+    await onUndo(result.importId)
+  }
   const hasErrors = result.errors.length > 0
   const skipped = result.details?.skippedVouchers
 
@@ -56,6 +74,38 @@ export default function ImportResultStep({ result, onNewImport }: ImportResultSt
           </CardDescription>
         </CardHeader>
       </Card>
+
+      {/* IB resync notice (prior-year backfill) */}
+      {result.success && result.nextPeriodIBResync && (
+        <Card className="border-success/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CheckCircle className="h-5 w-5 text-success" />
+              Ingående balanser synkades om
+            </CardTitle>
+            <CardDescription>
+              Eftersom du importerade ett tidigare räkenskapsår uppdaterades ingående balanser för{' '}
+              <span className="font-medium">{result.nextPeriodIBResync.nextPeriodName}</span>{' '}
+              automatiskt (gammal IB makulerad, ny IB skapad från utgående balans).
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
+      {result.success && result.nextPeriodIBResyncSkipped && (
+        <Card className="border-warning/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base text-warning">
+              <AlertCircle className="h-5 w-5" />
+              Ingående balanser för {result.nextPeriodIBResyncSkipped.nextPeriodName} kunde inte synkas
+            </CardTitle>
+            <CardDescription>
+              Nästa räkenskapsår är låst eller stängt. Lås upp perioden och kör importen igen om du
+              vill att ingående balanser ska uppdateras automatiskt.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
 
       {/* Statistics */}
       {result.success && (
@@ -250,10 +300,18 @@ export default function ImportResultStep({ result, onNewImport }: ImportResultSt
 
       {/* Actions */}
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-        <Button variant="outline" className="min-h-11" onClick={onNewImport}>
-          <RotateCcw className="mr-2 h-4 w-4" />
-          Ny import
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button variant="outline" className="min-h-11" onClick={onNewImport}>
+            <RotateCcw className="mr-2 h-4 w-4" />
+            Ny import
+          </Button>
+          {result.success && result.importId && onUndo && (
+            <Button variant="outline" className="min-h-11 text-destructive hover:text-destructive" onClick={handleUndoClick}>
+              <Undo2 className="mr-2 h-4 w-4" />
+              Ångra import
+            </Button>
+          )}
+        </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           {result.success && (
             <>
@@ -273,6 +331,8 @@ export default function ImportResultStep({ result, onNewImport }: ImportResultSt
           )}
         </div>
       </div>
+
+      <DestructiveConfirmDialog {...dialogProps} />
     </div>
   )
 }

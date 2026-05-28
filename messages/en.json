@@ -2350,7 +2350,25 @@
     "load_dialog_failed_title": "Could not load the bookkeeping dialog",
     "try_again": "Try again.",
     "mark_paid_failed": "Could not mark as paid",
-    "booking_failed_title": "Bookkeeping failed"
+    "booking_failed_title": "Bookkeeping failed",
+    "tab_new_payment": "Post new payment",
+    "tab_existing_voucher": "Existing journal entry"
+  },
+  "invoice_link_voucher": {
+    "intro": "Pick an existing posted journal entry that credits accounts receivable (1510). No new entry is created — you only link the existing one as the payment.",
+    "search_placeholder": "Search by voucher number or description…",
+    "confidence_high": "Strong match",
+    "confidence_medium": "Likely match",
+    "confidence_low": "Weak match",
+    "period_locked": "Locked period",
+    "empty_title": "No matching journal entries found",
+    "empty_description": "No posted entry credits 1510 in this invoice's currency and date window. Post a new payment instead, or correct the prior bookkeeping first.",
+    "confirmation": "This links voucher {voucher} ({amount}) as the payment for the invoice.",
+    "no_new_je_note": "No new bookkeeping is created — the existing journal entry is the payment posting.",
+    "cancel": "Cancel",
+    "confirm": "Link as payment",
+    "link_success_title": "Journal entry linked to invoice",
+    "link_failed_title": "Could not link the journal entry"
   },
   "supplier_invoice_editor": {
     "page_title": "Register supplier invoice",
@@ -2784,6 +2802,7 @@
     "delete_entry": "Delete journal entry",
     "create_correction": "Create correction entry",
     "copy_entry": "Copy journal entry",
+    "edit_entry": "Edit",
     "details_title": "Journal entry details",
     "field_date": "Date",
     "field_posted_at": "Posted",

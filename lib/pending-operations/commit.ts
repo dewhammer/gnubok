@@ -39,6 +39,8 @@ import {
   createSupplierCreditNoteEntry,
   createSupplierInvoiceRegistrationEntry,
 } from '@/lib/bookkeeping/supplier-invoice-entries'
+import { linkInvoiceToVoucher } from '@/lib/invoices/voucher-matching'
+import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { parseSIEFile } from '@/lib/import/sie-parser'
 import { executeSIEImport } from '@/lib/import/sie-import'
 import type { AccountMapping } from '@/lib/import/types'
@@ -978,6 +980,50 @@ async function commitMatchTransactionInvoice(
   } catch { /* non-critical */ }
 
   return { data: { invoice_status: newStatus, paid_amount: newPaidAmount, journal_entry_id: journalEntryId } }
+}
+
+async function commitLinkInvoiceVoucher(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  const invoiceId = params.invoice_id as string | undefined
+  const journalEntryId = params.journal_entry_id as string | undefined
+  const notes = (params.notes as string | undefined) ?? undefined
+
+  if (!invoiceId || !journalEntryId) {
+    return { error: 'invoice_id and journal_entry_id are required', status: 400 }
+  }
+
+  const outcome = await linkInvoiceToVoucher(supabase, userId, companyId, {
+    invoiceId,
+    journalEntryId,
+    notes,
+  })
+
+  if (!outcome.ok) {
+    const entry = getErrorEntry(outcome.code)
+    const httpStatus = entry?.httpStatus ?? 500
+    // 404/409 are auto-rejected by the dispatcher (the user can re-stage with
+    // adjusted inputs); 400 surfaces as a normal failure so the UI can
+    // explain what went wrong.
+    return {
+      error: entry?.message_en ?? outcome.code,
+      status: httpStatus,
+    }
+  }
+
+  return {
+    data: {
+      invoice_status: outcome.result.invoiceStatus,
+      paid_amount: outcome.result.paidAmount,
+      remaining_amount: outcome.result.remainingAmount,
+      payment_amount: outcome.result.paymentAmount,
+      payment_id: outcome.result.paymentId,
+      journal_entry_id: outcome.result.journalEntryId,
+    },
+  }
 }
 
 // ── Stream 1 Phase 1 + follow-up executors ───────────────────────
@@ -2605,6 +2651,9 @@ export async function commitPendingOperation(
         break
       case 'match_transaction_invoice':
         result = await commitMatchTransactionInvoice(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'link_invoice_voucher':
+        result = await commitLinkInvoiceVoucher(supabase, userId, companyId, pendingOp.params)
         break
       case 'close_period':
         result = await commitClosePeriod(supabase, userId, companyId, pendingOp.params)

@@ -301,6 +301,20 @@ export interface ImportResult {
   // (Fortnox re-sync flow), the prior import's id and the count of journal
   // entries that were deleted as a result.
   replacedPriorImport?: { importId: string; deletedEntries: number } | null
+
+  // If a prior-year backfill triggered IB resync on the immediately-following
+  // fiscal period (storno + recreate of its opening_balance entry), the
+  // details of what happened — populated only when the resync ran.
+  nextPeriodIBResync?: {
+    nextPeriodId: string
+    nextPeriodName: string
+    stornoEntryId: string
+    newOpeningBalanceEntryId: string
+  } | null
+
+  // If the next period's IB needed resync but we couldn't do it (locked,
+  // closed, or no existing IB), the human-readable reason.
+  nextPeriodIBResyncSkipped?: { reason: string; nextPeriodName: string } | null
 }
 
 /**

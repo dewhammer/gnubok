@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { BASAccount } from '@/types'
 import type { BASReferenceAccount } from '@/lib/bookkeeping/bas-reference'
 import type { SIEAccount, SIEAccountMappingRecord } from '../types'
+import { classifyAccount } from '@/lib/bookkeeping/account-classifier'
 import {
   suggestMappings,
   validateMappings,
@@ -15,14 +16,7 @@ import {
 
 function makeBASAccount(number: string, name: string): BASAccount {
   const classNum = parseInt(number.charAt(0), 10)
-  const accountType =
-    classNum <= 1
-      ? 'asset'
-      : classNum === 2
-        ? 'liability'
-        : classNum === 3
-          ? 'revenue'
-          : 'expense'
+  const classified = classifyAccount(number)
   return {
     id: `bas-${number}`,
     user_id: 'user-1',
@@ -31,8 +25,8 @@ function makeBASAccount(number: string, name: string): BASAccount {
     account_name: name,
     account_class: classNum,
     account_group: number.substring(0, 2),
-    account_type: accountType,
-    normal_balance: classNum <= 1 || classNum >= 4 ? 'debit' : 'credit',
+    account_type: classified.account_type,
+    normal_balance: classified.normal_balance,
     plan_type: 'k1',
     is_active: true,
     is_system_account: false,

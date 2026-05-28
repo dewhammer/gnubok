@@ -13,6 +13,7 @@ import { config } from 'dotenv'
 config({ path: '.env.local' })
 import { createClient } from '@supabase/supabase-js'
 import { getBASReference } from '../lib/bookkeeping/bas-reference'
+import { classifyAccount } from '../lib/bookkeeping/account-classifier'
 import { computeSRUCode } from '../lib/bookkeeping/bas-data/sru-mapping'
 
 const DRY_RUN = process.argv.includes('--dry-run')
@@ -63,25 +64,6 @@ const NON_BAS_OVERRIDES: Record<string, AccountOverride> = {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function deriveAccountType(accountNumber: string): 'asset' | 'liability' | 'equity' | 'revenue' | 'expense' | 'untaxed_reserves' {
-  const classNum = parseInt(accountNumber.charAt(0), 10)
-  const group = accountNumber.substring(0, 2)
-
-  if (classNum === 1) return 'asset'
-  if (classNum === 2) {
-    if (group === '20') return 'equity'
-    if (group === '21') return 'untaxed_reserves'
-    return 'liability'
-  }
-  if (classNum === 3) return 'revenue'
-  return 'expense'
-}
-
-function deriveNormalBalance(accountNumber: string): 'debit' | 'credit' {
-  const classNum = parseInt(accountNumber.charAt(0), 10)
-  return classNum <= 1 || classNum >= 4 ? 'debit' : 'credit'
-}
 
 async function getUsedAccountNumbers(userId: string): Promise<Set<string>> {
   const usedSet = new Set<string>()
@@ -178,8 +160,9 @@ async function backfillForUser(userId: string): Promise<number> {
     // Check hardcoded overrides (for company-specific accounts with known metadata)
     const override = NON_BAS_OVERRIDES[accountNumber]
     if (override) {
-      const accountType = override.account_type ?? deriveAccountType(accountNumber)
-      const normalBalance = override.normal_balance ?? deriveNormalBalance(accountNumber)
+      const classified = classifyAccount(accountNumber)
+      const accountType = override.account_type ?? classified.account_type
+      const normalBalance = override.normal_balance ?? classified.normal_balance
       const classNum = parseInt(accountNumber.charAt(0), 10)
       return {
         user_id: userId,
@@ -206,14 +189,15 @@ async function backfillForUser(userId: string): Promise<number> {
       console.warn(`  WARNING: Account ${accountNumber} not in BAS or SIE — deriving all metadata`)
     }
 
+    const classified = classifyAccount(accountNumber)
     return {
       user_id: userId,
       account_number: accountNumber,
       account_name: sieName ?? `Konto ${accountNumber}`,
       account_class: classNum,
       account_group: accountNumber.substring(0, 2),
-      account_type: deriveAccountType(accountNumber),
-      normal_balance: deriveNormalBalance(accountNumber),
+      account_type: classified.account_type,
+      normal_balance: classified.normal_balance,
       sru_code: computeSRUCode(accountNumber),
       k2_excluded: false,
       plan_type: 'full_bas' as const,

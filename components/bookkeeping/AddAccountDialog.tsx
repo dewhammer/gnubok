@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Loader2, AlertTriangle } from 'lucide-react'
 import { isStandardBASAccount } from '@/lib/bookkeeping/bas-reference'
+import { classifyAccount } from '@/lib/bookkeeping/account-classifier'
 import type { BASAccount } from '@/types'
 
 interface AddAccountDialogProps {
@@ -24,27 +25,6 @@ interface AddAccountDialogProps {
   onCreated: (account: BASAccount) => void
   initialAccountNumber?: string
   initialAccountName?: string
-}
-
-function deriveAccountType(accountNumber: string): { type: string; balance: string } {
-  const cls = parseInt(accountNumber[0])
-  switch (cls) {
-    case 1: return { type: 'asset', balance: 'debit' }
-    case 2: {
-      const group = parseInt(accountNumber.substring(0, 2))
-      if (group <= 20) return { type: 'equity', balance: 'credit' }
-      return { type: 'liability', balance: 'credit' }
-    }
-    case 3: return { type: 'revenue', balance: 'credit' }
-    case 4: case 5: case 6: case 7: return { type: 'expense', balance: 'debit' }
-    case 8: {
-      const group = parseInt(accountNumber.substring(0, 2))
-      if (group >= 83 && group <= 83) return { type: 'revenue', balance: 'credit' }
-      if (group >= 84 && group <= 84) return { type: 'expense', balance: 'debit' }
-      return { type: 'expense', balance: 'debit' }
-    }
-    default: return { type: 'expense', balance: 'debit' }
-  }
 }
 
 export function AddAccountDialog({
@@ -73,12 +53,12 @@ export function AddAccountDialog({
     setAccountName(initialAccountName ?? '')
     setError('')
     if (num.length === 4) {
-      setNormalBalance(deriveAccountType(num).balance as 'debit' | 'credit')
+      setNormalBalance(classifyAccount(num).normal_balance)
     }
   }, [open, initialAccountNumber, initialAccountName])
 
   const isBASMatch = accountNumber.length === 4 && isStandardBASAccount(accountNumber)
-  const derived = accountNumber.length === 4 ? deriveAccountType(accountNumber) : null
+  const derived = accountNumber.length === 4 ? classifyAccount(accountNumber) : null
 
   async function handleCreate() {
     setError('')
@@ -101,7 +81,7 @@ export function AddAccountDialog({
         body: JSON.stringify({
           account_number: accountNumber,
           account_name: accountName.trim(),
-          account_type: derived?.type || 'expense',
+          account_type: derived?.account_type || 'expense',
           normal_balance: normalBalance,
           description: description || null,
           default_vat_code: defaultVatCode || null,
@@ -160,8 +140,7 @@ export function AddAccountDialog({
                   const v = e.target.value.replace(/\D/g, '').slice(0, 4)
                   setAccountNumber(v)
                   if (v.length === 4) {
-                    const d = deriveAccountType(v)
-                    setNormalBalance(d.balance as 'debit' | 'credit')
+                    setNormalBalance(classifyAccount(v).normal_balance)
                   }
                 }}
                 placeholder="T.ex. 1935"
@@ -187,7 +166,12 @@ export function AddAccountDialog({
             <p className="text-xs text-muted-foreground">
               Auto-detekterad typ:{' '}
               <span className="font-medium">
-                {derived.type === 'asset' ? 'Tillgång' : derived.type === 'liability' ? 'Skuld' : derived.type === 'equity' ? 'Eget kapital' : derived.type === 'revenue' ? 'Intäkt' : 'Kostnad'}
+                {derived.account_type === 'asset' ? 'Tillgång'
+                  : derived.account_type === 'liability' ? 'Skuld'
+                  : derived.account_type === 'equity' ? 'Eget kapital'
+                  : derived.account_type === 'untaxed_reserves' ? 'Obeskattade reserver'
+                  : derived.account_type === 'revenue' ? 'Intäkt'
+                  : 'Kostnad'}
               </span>
             </p>
           )}

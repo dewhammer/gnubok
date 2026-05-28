@@ -98,14 +98,19 @@ export async function GET(
   }
 
   const employees: Pain001Employee[] = runEmployees
-    .filter(sre => sre.net_salary > 0)
     .map(sre => {
+      const effectiveNet =
+        sre.net_salary + (sre.tax_withheld - (sre.tax_withheld_override ?? sre.tax_withheld))
+      return { sre, effectiveNet }
+    })
+    .filter(({ effectiveNet }) => effectiveNet > 0)
+    .map(({ sre, effectiveNet }) => {
       const emp = sre.employee as { first_name: string; last_name: string; clearing_number: string; bank_account_number: string }
       return {
         name: `${emp.first_name} ${emp.last_name}`,
         clearingNumber: emp.clearing_number,
         bankAccountNumber: emp.bank_account_number,
-        netSalary: sre.net_salary,
+        netSalary: effectiveNet,
       }
     })
 

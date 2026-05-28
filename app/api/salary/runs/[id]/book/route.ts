@@ -60,9 +60,11 @@ export const POST = withRouteContext(
             employee_id: sre.employee_id,
             employment_type: sre.employee?.employment_type || 'employee',
             gross_salary: sre.gross_salary,
-            tax_withheld: sre.tax_withheld,
-            net_salary: sre.net_salary,
-            avgifter_amount: sre.avgifter_amount,
+            // Apply per-employee overrides (advanced mode) so manual
+            // adjustments for FoU-avdrag / jämkning flow into the ledger.
+            tax_withheld: sre.tax_withheld_override ?? sre.tax_withheld,
+            net_salary: sre.net_salary + (sre.tax_withheld - (sre.tax_withheld_override ?? sre.tax_withheld)),
+            avgifter_amount: sre.avgifter_amount_override ?? sre.avgifter_amount,
             avgifter_rate: sre.avgifter_rate,
             vacation_accrual: sre.vacation_accrual,
             vacation_accrual_avgifter: sre.vacation_accrual_avgifter,

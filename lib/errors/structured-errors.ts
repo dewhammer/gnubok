@@ -994,6 +994,11 @@ const SIE_IMPORT: Record<string, StructuredErrorEntry> = {
     message_sv: 'SIE-importen kunde inte ersättas.',
     message_en: 'Failed to replace SIE import.',
   },
+  SIE_UNDO_FAILED: {
+    httpStatus: 400,
+    message_sv: 'SIE-importen kunde inte ångras.',
+    message_en: 'Failed to undo SIE import.',
+  },
 }
 
 const BANK_FILE: Record<string, StructuredErrorEntry> = {
@@ -1659,6 +1664,68 @@ const PROVIDER: Record<string, StructuredErrorEntry> = {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Link invoice to an existing posted verifikat (no new JE)
+// ─────────────────────────────────────────────────────────────────
+
+const LINK_INVOICE_VOUCHER: Record<string, StructuredErrorEntry> = {
+  LINK_VOUCHER_INVOICE_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Fakturan kunde inte hittas.',
+    message_en: 'Invoice not found.',
+  },
+  LINK_VOUCHER_VOUCHER_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Verifikationen kunde inte hittas.',
+    message_en: 'Journal entry not found.',
+  },
+  LINK_VOUCHER_NOT_POSTED: {
+    httpStatus: 409,
+    message_sv: 'Verifikationen är inte bokförd. Endast bokförda verifikationer kan länkas som betalning.',
+    message_en: 'Journal entry is not posted. Only posted entries can be linked as a payment.',
+  },
+  LINK_VOUCHER_NO_AR_CREDIT: {
+    httpStatus: 400,
+    message_sv:
+      'Verifikationen krediterar inte ett kundfordringskonto (151x). Bokföringen behöver först rättas med en stornoverifikation som krediterar 1510, t.ex. via gnubok_correct_entry.',
+    message_en:
+      'The journal entry does not credit an accounts-receivable account (151x). Correct the booking first via a storno+correction (gnubok_correct_entry) that credits 1510.',
+    remediation: {
+      description:
+        'Use gnubok_correct_entry to storno the existing voucher and re-book the receipt as Dr 1930 / Cr 1510, then link the corrected voucher.',
+      tool: 'gnubok_correct_entry',
+    },
+  },
+  LINK_VOUCHER_ALREADY_LINKED: {
+    httpStatus: 409,
+    message_sv: 'Verifikationen är redan länkad till den här fakturan.',
+    message_en: 'This journal entry is already linked to this invoice.',
+  },
+  LINK_VOUCHER_AMOUNT_EXCEEDS_REMAINING: {
+    httpStatus: 400,
+    message_sv:
+      'Verifikationens kundfordringskreditering är större än fakturans återstående belopp. Verifikationen täcker fler fakturor — välj en annan verifikation eller rätta beloppet först.',
+    message_en:
+      'The voucher\'s AR credit exceeds the invoice\'s remaining balance. Split the voucher across multiple invoices via gnubok_correct_entry first, or pick a different voucher.',
+  },
+  LINK_VOUCHER_CURRENCY_MISMATCH: {
+    httpStatus: 400,
+    message_sv:
+      'Verifikationens valuta matchar inte fakturans. Endast verifikationer i fakturans valuta kan länkas.',
+    message_en: 'The voucher\'s currency does not match the invoice currency.',
+  },
+  LINK_VOUCHER_INVOICE_FULLY_PAID: {
+    httpStatus: 409,
+    message_sv: 'Fakturan har redan slutbetalats. Inget mer behöver länkas.',
+    message_en: 'Invoice is already fully paid.',
+  },
+  LINK_VOUCHER_DB_ERROR: {
+    httpStatus: 500,
+    message_sv: 'Databasfel under länkning. Försök igen.',
+    message_en: 'Database error while linking the voucher. Please retry.',
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Combined registry
 // ─────────────────────────────────────────────────────────────────
 
@@ -1668,6 +1735,7 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...TRANSACTIONS,
   ...MATCH_INVOICE,
   ...LINK_TX_JE,
+  ...LINK_INVOICE_VOUCHER,
   ...MATCH_SI,
   ...INVOICE,
   ...SUPPLIER_INVOICE,

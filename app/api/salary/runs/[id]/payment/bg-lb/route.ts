@@ -105,8 +105,15 @@ export async function GET(
   }
 
   const employees: BgLbEmployee[] = runEmployees
-    .filter((sre) => sre.net_salary > 0)
     .map((sre) => {
+      // Honor tax override on the bank payment file too — the net the
+      // employee actually receives depends on the effective tax.
+      const effectiveNet =
+        sre.net_salary + (sre.tax_withheld - (sre.tax_withheld_override ?? sre.tax_withheld))
+      return { sre, effectiveNet }
+    })
+    .filter(({ effectiveNet }) => effectiveNet > 0)
+    .map(({ sre, effectiveNet }) => {
       const emp = sre.employee as {
         first_name: string
         last_name: string
@@ -117,7 +124,7 @@ export async function GET(
         name: `${emp.first_name} ${emp.last_name}`,
         clearingNumber: emp.clearing_number,
         bankAccountNumber: emp.bank_account_number,
-        netSalary: sre.net_salary,
+        netSalary: effectiveNet,
       }
     })
 

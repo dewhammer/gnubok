@@ -45,12 +45,8 @@ export default function ChartOfAccountsManager() {
   const t = useTranslations('chart_of_accounts')
 
   const classLabel = (cls: number): string => {
-    const key = `class_${cls}` as const
-    try {
-      return t(key)
-    } catch {
-      return ''
-    }
+    if (cls < 1 || cls > 8) return ''
+    return t(`class_${cls}` as const)
   }
 
   const typeLabel = (type: string): string => {

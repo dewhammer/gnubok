@@ -8,9 +8,11 @@ export interface InvoiceMatch {
 }
 
 /**
- * Confidence thresholds for invoice matching
+ * Confidence thresholds for invoice matching. Shared with voucher-matching.ts
+ * so the two flows (transaction→invoice and existing-verifikat→invoice) rank
+ * candidates on the same scale.
  */
-const CONFIDENCE = {
+export const CONFIDENCE = {
   OCR_REFERENCE_MATCH: 0.99,
   EXACT_AMOUNT_CUSTOMER: 0.95,
   EXACT_AMOUNT_ONLY: 0.80,

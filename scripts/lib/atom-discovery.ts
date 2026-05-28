@@ -59,6 +59,13 @@ export interface DiscoveredAtom {
   schema_version: number
 }
 
+// Normalize CRLF → LF so frontmatter parsing and body inlining are
+// platform-independent (Windows checkouts ship .md files with CRLF unless
+// .gitattributes forces LF, which it doesn't for *.md).
+function normalizeLineEndings(text: string): string {
+  return text.replace(/\r\n/g, '\n')
+}
+
 // ── Frontmatter parsing ────────────────────────────────────────────────
 // SKILL.md files use YAML frontmatter with `name`, `description`, and optionally
 // `tier`, `sni_prefixes`, `trigger_signals`, `estimated_tokens`, `version`. We
@@ -227,7 +234,7 @@ async function readAtom(
     return []
   }
 
-  const content = await readFile(skillPath, 'utf8')
+  const content = normalizeLineEndings(await readFile(skillPath, 'utf8'))
   const fm = extractFrontmatter(content)
   if (!fm) {
     console.warn(`  skipped ${relative(rootDir, skillPath)} — no frontmatter`)
@@ -316,7 +323,7 @@ async function readReferenceFiles(skillDir: string): Promise<ReferenceFile[]> {
   const files = (await walkMarkdown(refsDir)).sort()
   const out: ReferenceFile[] = []
   for (const absPath of files) {
-    const body = await readFile(absPath, 'utf8')
+    const body = normalizeLineEndings(await readFile(absPath, 'utf8'))
     const relFromRefs = relative(refsDir, absPath).split(sep).join('/')
     out.push({
       absPath,

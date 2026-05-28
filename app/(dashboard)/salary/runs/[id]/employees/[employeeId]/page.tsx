@@ -6,6 +6,7 @@ import { ArrowLeft, Calculator, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { SalaryCalendar } from '@/components/salary/SalaryCalendar'
+import { SalaryOverridePanel } from '@/components/salary/SalaryOverridePanel'
 import { formatCurrency } from '@/lib/utils'
 import type { SalaryRun, SalaryRunEmployee, SalaryLineItem, SalaryLineItemType, Employee } from '@/types'
 
@@ -173,29 +174,61 @@ export default function SalaryRunEmployeeDetailPage({
               {employee.personnummer} · Lönespecifikation {periodLabel}
             </p>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCalculate}
-            disabled={calculating || readOnly}
-          >
-            {calculating ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Calculator className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            Beräkna
-          </Button>
+          {run.status === 'draft' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCalculate}
+              disabled={calculating}
+            >
+              {calculating ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Calculator className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Beräkna
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <SummaryCard label="Brutto" value={runEmployee.gross_salary} />
-        <SummaryCard label="Skatt" value={runEmployee.tax_withheld} />
-        <SummaryCard label="Netto" value={runEmployee.net_salary} accent />
-        <SummaryCard label="Avgifter" value={runEmployee.avgifter_amount} />
+        <SummaryCard
+          label="Skatt"
+          value={runEmployee.tax_withheld_override ?? runEmployee.tax_withheld}
+          overridden={runEmployee.tax_withheld_override !== null}
+        />
+        <SummaryCard
+          label="Netto"
+          value={runEmployee.net_salary + (runEmployee.tax_withheld - (runEmployee.tax_withheld_override ?? runEmployee.tax_withheld))}
+          accent
+          overridden={runEmployee.tax_withheld_override !== null}
+        />
+        <SummaryCard
+          label="Avgifter"
+          value={runEmployee.avgifter_amount_override ?? runEmployee.avgifter_amount}
+          overridden={runEmployee.avgifter_amount_override !== null}
+        />
       </div>
+
+      {/* Advanced mode — per-employee override of tax / arbetsgivaravgift */}
+      {run.status === 'review' && (
+        <SalaryOverridePanel
+          runId={runId}
+          employeeId={employeeId}
+          taxWithheld={runEmployee.tax_withheld}
+          taxOverride={runEmployee.tax_withheld_override}
+          avgifterAmount={runEmployee.avgifter_amount}
+          avgifterOverride={runEmployee.avgifter_amount_override}
+          avgifterBasis={runEmployee.avgifter_basis}
+          avgifterBasisOverride={runEmployee.avgifter_basis_override}
+          reason={runEmployee.override_reason}
+          onSaved={load}
+          disabled={readOnly}
+        />
+      )}
 
       {/* Unified calendar — worked time (for hourly) + absence on the same grid */}
       <Card>
@@ -264,10 +297,13 @@ export default function SalaryRunEmployeeDetailPage({
   )
 }
 
-function SummaryCard({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+function SummaryCard({ label, value, accent, overridden }: { label: string; value: number; accent?: boolean; overridden?: boolean }) {
   return (
-    <div className={`rounded-md border bg-card p-3 ${accent ? 'ring-1 ring-primary/40' : ''}`}>
-      <div className="text-xs text-muted-foreground">{label}</div>
+    <div className={`rounded-md border bg-card p-3 ${accent ? 'ring-1 ring-primary/40' : ''} ${overridden ? 'ring-1 ring-warning/40' : ''}`}>
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {label}
+        {overridden && <span className="text-[10px] uppercase tracking-wider text-warning">Justerat</span>}
+      </div>
       <div className="mt-0.5 text-lg font-medium tabular-nums">{formatCurrency(value)}</div>
     </div>
   )

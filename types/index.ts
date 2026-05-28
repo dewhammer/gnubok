@@ -1546,6 +1546,8 @@ export type PendingOperationType =
   // Payroll: salary run creation + AGI declaration
   | 'create_salary_run'
   | 'generate_agi'
+  // Mark invoice paid by linking an existing posted verifikat (no new JE)
+  | 'link_invoice_voucher'
 export type PendingOperationStatus = 'pending' | 'committing' | 'committed' | 'rejected'
 
 export type PendingOperationActorType = 'user' | 'api_key' | 'mcp_oauth' | 'cron'
@@ -2994,11 +2996,15 @@ export interface SalaryRunEmployee {
   benefit_values: number
   taxable_income: number
   tax_withheld: number
+  tax_withheld_override: number | null
   net_deductions: number
   net_salary: number
   avgifter_rate: number
   avgifter_amount: number
+  avgifter_amount_override: number | null
   avgifter_basis: number
+  avgifter_basis_override: number | null
+  override_reason: string | null
   vacation_accrual: number
   vacation_accrual_avgifter: number
   tax_table_number: number | null

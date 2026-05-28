@@ -25,6 +25,11 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // ── Medium: reversible booking ─────────────────────────────────────
   categorize_transaction: 'medium',
   match_transaction_invoice: 'medium',
+  // Link an existing posted verifikat as payment for an invoice. Reversible by
+  // deleting the invoice_payments row and reverting invoice status; no journal
+  // entry is created or modified. Sits next to match_transaction_invoice
+  // semantically — both attach an existing booking to an invoice.
+  link_invoice_voucher: 'medium',
   create_invoice: 'medium', // creates as draft; sending is a separate op
   create_transaction: 'medium', // ingests an uncategorized row; reversible by delete
   // Supplier master data carries payment-routing fields (IBAN, BIC, bankgiro,
