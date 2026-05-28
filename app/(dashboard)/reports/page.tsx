@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Download, FileSpreadsheet, AlertCircle, ChevronDown, ChevronRight, ArrowRight } from 'lucide-react'
+import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import { formatDate } from '@/lib/utils'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import { AccountNumber } from '@/components/ui/account-number'
@@ -1352,7 +1353,7 @@ function VatDeclarationView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <Button
           variant="outline"
           size="sm"
@@ -1361,6 +1362,11 @@ function VatDeclarationView() {
           <FileSpreadsheet className="h-4 w-4 mr-2" />
           Ladda ner Excel
         </Button>
+        <AgentSparkleButton
+          intentId="vat.review"
+          intentArgs={{ period_type: periodType, year, period }}
+          contextRef={`vat:${year}-${periodType}-${period}`}
+        />
       </div>
       {/* Period selection */}
       <Card>

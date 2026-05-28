@@ -2,11 +2,17 @@ import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { cookies } from 'next/headers'
 import DashboardContent from '@/components/dashboard/DashboardContent'
+import WelcomeGate from '@/components/onboarding/WelcomeGate'
 import { getActiveCompanyId } from '@/lib/company/context'
 import { getDisplayTotal } from '@/lib/invoices/rounding'
 import type { Deadline, ReceiptQueueSummary, OnboardingProgress } from '@/types'
 
 export const dynamic = 'force-dynamic'
+
+// Home route = Översikt (DashboardContent). The agent chat has its own nav
+// entry at /chat, so / no longer forwards there. New users who haven't built
+// their assistant yet get WelcomeGate (the build-agent checklist) instead of
+// the dashboard; once the agent is verified, / renders the normal Översikt.
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -76,6 +82,7 @@ export default async function DashboardPage() {
     { count: staleUncategorizedCount },
     { count: uncategorizedCount },
     { count: skatteverketTokenCount },
+    { data: agentProfile },
     { data: noDocRequiredEntries },
   ] = await Promise.all([
     supabase.from('company_settings').select('*').eq('company_id', companyId).single(),
@@ -106,12 +113,41 @@ export default async function DashboardPage() {
     // carry the active company_id; either filter would work — we use user_id
     // because that's what the token-store reads/writes against.
     supabase.from('skatteverket_tokens').select('*', { count: 'exact', head: true }).eq('user_id', user.id),
+    supabase.from('agent_profiles').select('verified_at').eq('company_id', companyId).maybeSingle(),
     supabase.from('journal_entry_no_doc_required').select('journal_entry_id').eq('company_id', companyId),
   ])
 
   // If onboarding is not complete, redirect to onboarding
   if (!settings?.onboarding_complete) {
     redirect('/onboarding')
+  }
+
+  const agentBuilt = Boolean(agentProfile?.verified_at)
+
+  // "Has the company already been used?" Any real business data means we must
+  // NOT hijack the dashboard with the full-screen onboarding gate — existing
+  // and migrated users get the normal Översikt with a build-assistant prompt
+  // in the hero slot (see DashboardContent's agentBuilt branch) instead.
+  const hasData =
+    (transactionCount || 0) > 0 ||
+    (sieImportCount || 0) > 0 ||
+    (invoiceCount || 0) > 0 ||
+    (receiptCount || 0) > 0 ||
+    (customerCount || 0) > 0 ||
+    (postedEntriesCount || 0) > 0
+
+  // Only a genuinely empty company without an assistant sees the full
+  // onboarding checklist (where building the assistant is the last step).
+  // Everyone else falls through to the dashboard below.
+  if (!agentBuilt && !hasData) {
+    return (
+      <WelcomeGate
+        companyId={companyId}
+        hasBookkeepingImported={(sieImportCount || 0) > 0}
+        hasBankConnected={(transactionCount || 0) > 0}
+        hasSkatteverketConnected={(skatteverketTokenCount || 0) > 0}
+      />
+    )
   }
 
   const onboardingProgress: OnboardingProgress = {
@@ -252,6 +288,7 @@ export default async function DashboardPage() {
   return (
     <DashboardContent
       companyId={companyId}
+      agentBuilt={agentBuilt}
       summary={{
         ytd: ytdTotals,
         mtd: mtdTotals,

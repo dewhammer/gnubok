@@ -1,9 +1,12 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { useDocumentExtraction } from '@/lib/hooks/use-document-extraction'
+import ExtractionStatus from '@/components/ui/extraction-status'
 import { motion } from 'framer-motion'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   DataListRow,
@@ -21,6 +24,12 @@ import {
   Loader2,
   Trash2,
 } from 'lucide-react'
+import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-extensions'
+
+// True when the AI tier is active — gates user-facing strings that promise
+// AI behavior. On the free build (document-extraction disabled) we keep the
+// upload functional but drop the "AI:n läser dokumentet" promise.
+const HAS_AI_EXTRACTION = ENABLED_EXTENSION_IDS.has('document-extraction')
 import { TransactionAttachmentIndicator } from './TransactionAttachmentIndicator'
 import type { TransactionWithInvoice, CategorizeHandler } from './transaction-types'
 
@@ -61,6 +70,33 @@ export default function TransactionInboxCard({
   const isProcessing = processingId === transaction.id
   const isDisabled = processingId !== null && processingId !== transaction.id
   const isIncome = transaction.amount > 0
+  // Optimistic override — flips the indicator to "attached" as soon as the
+  // upload POST succeeds, without waiting for the parent to refetch. The
+  // next parent refresh will sync; in the meantime the user sees the
+  // correct visual state immediately. Same hook handles agent-chat uploads
+  // via the gnubok:transaction-document-linked window event (AgentChat
+  // dispatches it after /api/agent/upload returns).
+  const [optimisticDocumentId, setOptimisticDocumentId] = useState<string | null>(null)
+  useEffect(() => {
+    function onLinked(e: Event) {
+      const detail = (e as CustomEvent<{ transaction_id?: string; document_id?: string }>).detail
+      if (!detail || detail.transaction_id !== transaction.id || !detail.document_id) return
+      setOptimisticDocumentId(detail.document_id)
+    }
+    window.addEventListener('gnubok:transaction-document-linked', onLinked)
+    return () => window.removeEventListener('gnubok:transaction-document-linked', onLinked)
+  }, [transaction.id])
+  const attachedDocumentId =
+    optimisticDocumentId ?? (transaction as { document_id?: string | null }).document_id ?? null
+  // Only poll extraction status for documents the user attached during THIS
+  // session. Pre-existing attached docs from prior sessions wouldn't change
+  // status during this view, and polling them would be wasted requests.
+  // Gated on HAS_AI_EXTRACTION so the free tier doesn't poll an endpoint
+  // whose pipeline never runs.
+  const extraction = useDocumentExtraction(
+    HAS_AI_EXTRACTION ? optimisticDocumentId : null,
+  )
+
   const hasInvoiceMatch = !!transaction.potential_invoice && !transaction.invoice_id
   const hasSupplierInvoiceMatch =
     !!transaction.potential_supplier_invoice && !transaction.supplier_invoice_id
@@ -221,6 +257,13 @@ export default function TransactionInboxCard({
                     <Link2 className="h-4 w-4" />
                   </Button>
                 )}
+                {/* The Paperclip indicator next to the description
+                    (TransactionAttachmentIndicator) is the single click
+                    target for opening the underlag. We deliberately don't
+                    duplicate that with a second icon in the trailing slot.
+                    Per-transaction agent help has moved to Dokumentinkorgen:
+                    match the underlag to the transaction and ask from there,
+                    where the receipt/invoice is in view. */}
                 {isDeletable && onDelete && (
                   <Button
                     variant="ghost"
@@ -243,7 +286,7 @@ export default function TransactionInboxCard({
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <DataListPrimary className="text-base">{transaction.description}</DataListPrimary>
-          <TransactionAttachmentIndicator documentId={transaction.document_id} />
+          <TransactionAttachmentIndicator documentId={attachedDocumentId} />
         </div>
         <DataListMeta className="mt-1">
           <span className="tabular-nums">{formatDate(transaction.date)}</span>
@@ -257,6 +300,18 @@ export default function TransactionInboxCard({
             </>
           )}
         </DataListMeta>
+        {/* Extraction status — visible only while AI is reading a freshly
+            attached document, or briefly if reading failed. */}
+        {HAS_AI_EXTRACTION &&
+          !isBatchMode &&
+          (extraction.status === 'running' || extraction.status === 'failed') && (
+            <div className="mt-2 pt-2 border-t border-border/40">
+              <ExtractionStatus
+                status={extraction.status}
+                elapsedMs={extraction.elapsedMs}
+              />
+            </div>
+          )}
       </DataListRow>
     </motion.div>
   )

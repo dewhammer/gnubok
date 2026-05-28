@@ -30,6 +30,8 @@ import { cn, formatCurrency } from '@/lib/utils'
 import type { WorkspaceComponentProps } from '@/lib/extensions/workspace-registry'
 import type { InvoiceExtractionResult } from '@/types'
 import BookDirectlyDialog from '@/components/extensions/general/BookDirectlyDialog'
+import TransactionMatchPicker from '@/components/inbox/TransactionMatchPicker'
+import { useAgentSheet } from '@/components/agent/AgentSheetProvider'
 
 type AccountingMethod = 'accrual' | 'cash'
 
@@ -94,6 +96,24 @@ function pickSupplierName(item: InboxItem): string | null {
   return item.extracted_data?.supplier?.name ?? null
 }
 
+// Lifecycle stage of an inbox item. Single source of truth shared by the list
+// filter, the count pills, and the row icons so they never drift apart.
+//
+// Precedence mirrors the FieldsRail: a booked item (supplier invoice OR a
+// direct journal entry) is done and drops out of the active inbox. A
+// matched-but-unbooked item is "linked" — it STAYS in the inbox as its own
+// category because the bank payment still needs booking (a document attached
+// to a transaction is not the same as a booked one). An extraction failure is
+// "error"; everything else needs a first action.
+type InboxStatus = 'needs_action' | 'linked' | 'booked' | 'error'
+
+function deriveInboxStatus(item: InboxItem): InboxStatus {
+  if (item.created_supplier_invoice_id || item.created_journal_entry_id) return 'booked'
+  if (item.matched_transaction_id) return 'linked'
+  if (item.status === 'error') return 'error'
+  return 'needs_action'
+}
+
 // ── Skeleton ─────────────────────────────────────────────────
 // Mirrors the live layout (top bar + 3-pane card) so the transition from
 // the route-level loading.tsx to data-loaded content has no visible reflow.
@@ -150,12 +170,16 @@ function WorkspaceSkeleton() {
 export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const { toast } = useToast()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const { openAgentSheet, identity } = useAgentSheet()
 
   const [items, setItems] = useState<InboxItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   // List filter + search (client-side over the already-fetched items list).
-  const [filter, setFilter] = useState<'all' | 'needs_action' | 'done' | 'error'>('all')
+  // Defaults to 'todo' — the active inbox (everything not yet booked) — so
+  // booked underlag drop out of the default view while attached-but-unbooked
+  // ones stay visible.
+  const [filter, setFilter] = useState<'todo' | 'linked' | 'booked' | 'error' | 'all'>('todo')
   const [searchTerm, setSearchTerm] = useState('')
   // Bulk selection. Items linked to a supplier invoice are skipped at delete
   // time (server returns 409); we still allow them to be selected so the
@@ -179,6 +203,9 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
   const [isRotating, setIsRotating] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [bookDirectOpen, setBookDirectOpen] = useState(false)
+  // Match-to-bank-transaction picker (opens when user clicks "Matcha mot
+  // transaktion" on an unmatched inbox item).
+  const [matchPickerOpen, setMatchPickerOpen] = useState(false)
   // Cash method users see "Bokför direkt" as the primary CTA; accrual users
   // see "Skapa leverantörsfaktura". Defaults to 'accrual' until we've read
   // the company settings so we don't flicker the CTA order on first paint.
@@ -188,7 +215,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
 
   const fetchItems = useCallback(async () => {
     try {
-      const res = await fetch('/api/extensions/ext/invoice-inbox/items?limit=50')
+      const res = await fetch('/api/extensions/ext/invoice-inbox/items?limit=500')
       const json = await res.json()
       if (res.ok) setItems(json.data?.items ?? [])
     } catch (err) {
@@ -263,19 +290,44 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
 
   // ── List filter + search (client-side over the fetched list) ─
 
+  // Per-status counts for the filter pills. Computed once over the full list.
+  const statusCounts = useMemo(() => {
+    const counts = { todo: 0, linked: 0, booked: 0, error: 0, all: items.length }
+    for (const item of items) {
+      const status = deriveInboxStatus(item)
+      if (status !== 'booked') counts.todo += 1
+      if (status === 'linked') counts.linked += 1
+      if (status === 'booked') counts.booked += 1
+      if (status === 'error') counts.error += 1
+    }
+    return counts
+  }, [items])
+
+  // Pills, in order. The error pill only appears when there's something errored
+  // (or it's the active filter) — keeps the happy-path inbox uncluttered.
+  const pills = useMemo(() => {
+    const list: { key: typeof filter; label: string; count: number }[] = [
+      { key: 'todo', label: 'Att göra', count: statusCounts.todo },
+      { key: 'linked', label: 'Kopplade', count: statusCounts.linked },
+      { key: 'booked', label: 'Bokförda', count: statusCounts.booked },
+    ]
+    if (statusCounts.error > 0 || filter === 'error') {
+      list.push({ key: 'error', label: 'Fel', count: statusCounts.error })
+    }
+    list.push({ key: 'all', label: 'Alla', count: statusCounts.all })
+    return list
+  }, [statusCounts, filter])
+
   const filteredItems = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
     return items.filter((item) => {
-      // Status filter
-      const isErr = item.status === 'error'
-      const isDone =
-        !!item.created_supplier_invoice_id ||
-        !!item.matched_transaction_id ||
-        !!item.created_journal_entry_id
-      const needsAction = !isErr && !isDone
-      if (filter === 'error' && !isErr) return false
-      if (filter === 'done' && !isDone) return false
-      if (filter === 'needs_action' && !needsAction) return false
+      // Status filter. "todo" is the active inbox — everything except booked.
+      const status = deriveInboxStatus(item)
+      if (filter === 'todo' && status === 'booked') return false
+      if (filter === 'linked' && status !== 'linked') return false
+      if (filter === 'booked' && status !== 'booked') return false
+      if (filter === 'error' && status !== 'error') return false
+      // 'all' → no status narrowing
 
       // Search filter — supplier name, email subject/from, placeholder filename
       if (term === '') return true
@@ -672,14 +724,7 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
                 />
               </div>
               <div className="flex flex-wrap gap-1">
-                {(
-                  [
-                    { key: 'all', label: 'Alla' },
-                    { key: 'needs_action', label: 'Behöver åtgärd' },
-                    { key: 'done', label: 'Bearbetade' },
-                    { key: 'error', label: 'Fel' },
-                  ] as const
-                ).map((pill) => (
+                {pills.map((pill) => (
                   <button
                     key={pill.key}
                     type="button"
@@ -692,6 +737,16 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
                     )}
                   >
                     {pill.label}
+                    {pill.count > 0 && (
+                      <span
+                        className={cn(
+                          'ml-1 tabular-nums',
+                          filter === pill.key ? 'opacity-80' : 'opacity-50'
+                        )}
+                      >
+                        {pill.count}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -761,7 +816,9 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
             )
           ) : filteredItems.length === 0 ? (
             <div className="p-6 text-center text-xs text-muted-foreground">
-              Inga poster matchar filtret.
+              {filter === 'todo'
+                ? 'Inget att åtgärda — allt är bearbetat.'
+                : 'Inga poster matchar filtret.'}
             </div>
           ) : (
             <ul>
@@ -824,6 +881,35 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
               accountingMethod={accountingMethod}
               onDelete={() => handleDelete(selected.id)}
               onBookDirect={() => setBookDirectOpen(true)}
+              onMatchTransaction={() => setMatchPickerOpen(true)}
+              onUnmatchTransaction={async () => {
+                const targetId = selected.id
+                const res = await fetch(
+                  `/api/extensions/ext/invoice-inbox/items/${targetId}/unmatch-transaction`,
+                  { method: 'POST' },
+                )
+                if (!res.ok) {
+                  const json = await res.json().catch(() => ({}))
+                  toast({
+                    title: 'Kunde inte avbryta matchningen',
+                    description: json.error ?? `HTTP ${res.status}`,
+                    variant: 'destructive',
+                  })
+                  return
+                }
+                await Promise.all([fetchItems(), handleSelect(targetId)])
+              }}
+              onAskAssistant={
+                identity.isVerified
+                  ? (transactionId) => {
+                      openAgentSheet({
+                        intentId: 'transaction.categorization',
+                        intentArgs: { transaction_id: transactionId },
+                        contextRef: `transaction:${transactionId}`,
+                      })
+                    }
+                  : undefined
+              }
               isDeleting={isDeleting}
               onRetryRequested={async () => {
                 await Promise.all([fetchItems(), handleSelect(selected.id)])
@@ -864,6 +950,17 @@ export default function InvoiceInboxWorkspace(_props: WorkspaceComponentProps) {
         }}
       />
     )}
+    {selected && (
+      <TransactionMatchPicker
+        open={matchPickerOpen}
+        onClose={() => setMatchPickerOpen(false)}
+        inboxItemId={selected.id}
+        extractedData={selected.extracted_data}
+        onMatched={async () => {
+          await Promise.all([fetchItems(), handleSelect(selected.id)])
+        }}
+      />
+    )}
     </div>
   )
 }
@@ -890,10 +987,11 @@ function InboxRow({
 }) {
   const amount = pickAmount(item)
   const supplierName = pickSupplierName(item)
-  const isErrored = item.status === 'error'
-  const isProcessed = !!item.created_supplier_invoice_id
-  const isLinkedToTransaction = !isProcessed && !!item.matched_transaction_id
   const isPlaceholder = !!item.isPlaceholder
+  const status = deriveInboxStatus(item)
+  const isErrored = status === 'error'
+  const isBooked = status === 'booked'
+  const isLinkedToTransaction = status === 'linked'
 
   return (
     <li
@@ -943,13 +1041,13 @@ function InboxRow({
               : (supplierName ?? item.email_subject ?? 'Okänt dokument')}
           </span>
           {isErrored && (
-            <AlertTriangle className="h-3 w-3 text-destructive shrink-0" />
+            <AlertTriangle className="h-3 w-3 text-destructive shrink-0" aria-label="Fel vid bearbetning" />
           )}
           {isLinkedToTransaction && (
             <Link2 className="h-3 w-3 text-emerald-600 shrink-0" aria-label="Kopplad till transaktion" />
           )}
-          {isProcessed && (
-            <Check className="h-3 w-3 text-emerald-600 shrink-0" />
+          {isBooked && (
+            <Check className="h-3 w-3 text-emerald-600 shrink-0" aria-label="Bokförd" />
           )}
         </div>
         <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -977,7 +1075,7 @@ function InboxRow({
 // ── Document preview pane ────────────────────────────────────
 // (placed below the row so editors can fold the row cleanly)
 
-function DocumentPreview({
+export function DocumentPreview({
   docUrl,
   docMime,
   isProcessing = false,
@@ -1262,6 +1360,9 @@ function FieldsRail({
   accountingMethod,
   onDelete,
   onBookDirect,
+  onMatchTransaction,
+  onUnmatchTransaction,
+  onAskAssistant,
   isDeleting,
   onFieldsUpdated,
   onRetryRequested,
@@ -1270,6 +1371,9 @@ function FieldsRail({
   accountingMethod: AccountingMethod
   onDelete: () => void
   onBookDirect: () => void
+  onMatchTransaction: () => void
+  onUnmatchTransaction: () => Promise<void>
+  onAskAssistant?: (transactionId: string) => void
   isDeleting: boolean
   onFieldsUpdated: (data: InvoiceExtractionResult) => void
   onRetryRequested: () => Promise<void>
@@ -1278,9 +1382,11 @@ function FieldsRail({
   const data = item.extracted_data
   const isProcessed = !!item.created_supplier_invoice_id
   const isBookedDirectly = !isProcessed && !!item.created_journal_entry_id
-  const isLinkedToTransaction =
-    !isProcessed && !isBookedDirectly && !!item.matched_transaction_id
-  const isResolved = isProcessed || isBookedDirectly || isLinkedToTransaction
+  // "Resolved" now means a journal entry exists — matched_transaction_id alone
+  // is not resolved, it's the prerequisite for booking against that tx.
+  const isLinkedToTransaction = !isProcessed && !isBookedDirectly && !!item.matched_transaction_id
+  const isResolved = isProcessed || isBookedDirectly
+  const [isUnmatchingTx, setIsUnmatchingTx] = useState(false)
   const [isRetrying, setIsRetrying] = useState(false)
 
   // Surface a quiet hint when extraction caught a supplier name but no existing
@@ -1431,43 +1537,79 @@ function FieldsRail({
             </Button>
           </Link>
         ) : isLinkedToTransaction && item.matched_transaction_id ? (
-          <Link href={`/transactions?highlight=${item.matched_transaction_id}`} className="block">
-            <Button variant="default" size="sm" className="w-full">
-              <ArrowRight className="h-3.5 w-3.5 mr-1.5" />
-              Bokför transaktionen
-            </Button>
-          </Link>
-        ) : accountingMethod === 'cash' ? (
           <>
-            <Button
-              variant="default"
-              size="sm"
-              className="w-full"
-              onClick={onBookDirect}
-            >
-              Bokför direkt
-            </Button>
-            <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
-              <Button variant="outline" size="sm" className="w-full">
-                Skapa leverantörsfaktura
+            {/* Matched-to-tx state: show the bridge to booking. The user
+                picks one of two actions — book themselves with the
+                deterministic dialog, or hand off to the assistant. */}
+            <div className="rounded-md border border-success/30 bg-success/5 px-3 py-2 text-xs">
+              <div className="flex items-center gap-1.5 text-success font-medium mb-1">
+                <Link2 className="h-3 w-3" />
+                Matchad mot transaktion
+              </div>
+              <Link
+                href={`/transactions?highlight=${item.matched_transaction_id}`}
+                className="text-muted-foreground hover:text-foreground hover:underline"
+              >
+                Öppna transaktionen →
+              </Link>
+            </div>
+            {onAskAssistant && (
+              <Button
+                variant="default"
+                size="sm"
+                className="w-full"
+                onClick={() => onAskAssistant(item.matched_transaction_id!)}
+              >
+                Fråga assistenten
               </Button>
-            </Link>
-          </>
-        ) : (
-          <>
-            <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
-              <Button variant="default" size="sm" className="w-full">
-                Skapa leverantörsfaktura
-              </Button>
-            </Link>
+            )}
             <Button
               variant="outline"
               size="sm"
               className="w-full"
               onClick={onBookDirect}
             >
-              Bokför direkt
+              Bokför manuellt
             </Button>
+            <button
+              type="button"
+              onClick={async () => {
+                setIsUnmatchingTx(true)
+                try {
+                  await onUnmatchTransaction()
+                } finally {
+                  setIsUnmatchingTx(false)
+                }
+              }}
+              disabled={isUnmatchingTx}
+              className="w-full text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
+            >
+              {isUnmatchingTx ? 'Avbryter…' : 'Avbryt matchning'}
+            </button>
+          </>
+        ) : (
+          <>
+            {/* Unmatched state: the canonical next step is to find the bank
+                transaction this underlag belongs to. "Skapa leverantörs-
+                faktura" stays as an escape hatch for users who want
+                supplier-invoice tracking (accrual flow). The old "Bokför
+                direkt" escape hatch was removed — its label was unclear
+                and the deterministic-book-without-bank-tx use case is
+                covered by "Matcha mot transaktion" → "Bokför manuellt"
+                (matched state). */}
+            <Button
+              variant="default"
+              size="sm"
+              className="w-full"
+              onClick={onMatchTransaction}
+            >
+              Matcha mot transaktion
+            </Button>
+            <Link href={`/supplier-invoices/new?inbox_item_id=${item.id}`} className="block">
+              <Button variant="outline" size="sm" className="w-full">
+                Skapa leverantörsfaktura
+              </Button>
+            </Link>
           </>
         )}
         <Button
@@ -1519,7 +1661,7 @@ function FieldsRail({
 
 // ── Extracted fields list ────────────────────────────────────
 
-function emptyExtraction(): InvoiceExtractionResult {
+export function emptyExtraction(): InvoiceExtractionResult {
   return {
     supplier: { name: null, orgNumber: null, vatNumber: null, address: null, bankgiro: null, plusgiro: null },
     invoice: { invoiceNumber: null, invoiceDate: null, dueDate: null, paymentReference: null, currency: 'SEK' },
@@ -1595,7 +1737,7 @@ function buildPatchBody(key: FieldKey, raw: string, currency: string) {
   return { [group]: { [name]: trimmed === '' ? null : trimmed } }
 }
 
-function EditableFieldsList({
+export function EditableFieldsList({
   itemId,
   data,
   disabled,

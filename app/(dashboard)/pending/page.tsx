@@ -26,9 +26,19 @@ import {
   DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu'
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog'
-import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/components/ui/use-toast'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatDate } from '@/lib/utils'
+import { createClient } from '@/lib/supabase/client'
 import {
   ClipboardCheck,
   ArrowLeftRight,
@@ -37,8 +47,16 @@ import {
   Bot,
   BookOpen,
   ChevronDown,
+  Loader2,
+  Lock,
+  MessageSquare,
+  AlertTriangle,
 } from 'lucide-react'
-import type { PendingOperation, PendingOperationStatus } from '@/types'
+import type {
+  PendingOperation,
+  PendingOperationStatus,
+  PendingOperationRejectionCategory,
+} from '@/types'
 import { AttachDocumentPreview } from '@/components/bookkeeping/AttachDocumentPreview'
 import { MatchTransactionInvoicePreview } from '@/components/bookkeeping/MatchTransactionInvoicePreview'
 
@@ -82,9 +100,12 @@ function bulkActionLabel(operationType: string, count: number, t: (key: string) 
   return `${count} × ${fallback}`
 }
 
-// Full-sentence warning for the single-op confirmation dialog. Phrased so the
-// user sees the consequence of clicking Godkänn, not a generic verifikation note.
+// Full-sentence warning for the single-op confirmation dialog AND the inline
+// list-view warning when risk is medium/high. The list-view truncates beyond
+// one line; the dialog shows it in full. Order roughly low → high risk so
+// reviewers scanning the source see the destructive paths grouped together.
 const singleActionWarnings: Record<string, string> = {
+  // Low/medium risk — light verifikation work
   create_transaction: 'Genom att klicka godkänn så skapar du en transaktion.',
   create_customer: 'Genom att klicka godkänn så skapar du en kund.',
   create_invoice: 'Genom att klicka godkänn så skapas ett fakturautkast (det skickas inte).',
@@ -95,13 +116,58 @@ const singleActionWarnings: Record<string, string> = {
   send_invoice: 'Genom att klicka godkänn så skickas fakturan till kunden.',
   mark_invoice_paid: 'Genom att klicka godkänn så bokförs en betalning på fakturan.',
   mark_invoice_sent: 'Genom att klicka godkänn så märks fakturan som skickad och en verifikation skapas.',
-  create_voucher: 'Genom att klicka godkänn så bokförs verifikationen med ett nytt verifikationsnummer.',
-  correct_entry: 'Genom att klicka godkänn så bokförs en storno och en ny korrigerad verifikation i samma period (BFL 5 kap 5§).',
-  reverse_entry: 'Genom att klicka godkänn så makuleras verifikationen via en storno i samma period.',
+  // High risk — period/year-end/voucher edits. These are the ones the reviewer
+  // really needs the warning for, so we keep them concrete: name the
+  // irreversibility or compliance consequence, not the generic risk-level.
+  lock_period: 'Genom att klicka godkänn så låses perioden — inga nya verifikationer kan bokföras tills den låses upp.',
+  unlock_period: 'Genom att klicka godkänn så låses perioden upp. Använd endast för rättelser; lås igen efter.',
+  close_period: 'Genom att klicka godkänn så stängs perioden permanent (BFL). Stängningen kan inte ångras.',
+  run_year_end: 'Genom att klicka godkänn så körs bokslut: resultatkonton nollställs, perioden låses, nästa period skapas.',
+  set_opening_balances: 'Genom att klicka godkänn så bokförs ingående balans i nästa period.',
+  run_currency_revaluation: 'Genom att klicka godkänn så bokförs valutaomvärdering (3960/7960).',
+  create_voucher: 'Genom att klicka godkänn så bokförs verifikationen med ett nytt löpnummer.',
+  correct_entry: 'Genom att klicka godkänn så stornas originalverifikationen och en rättelse bokförs (BFL 5 kap 5§).',
+  reverse_entry: 'Genom att klicka godkänn så stornas verifikationen — originalet behålls synligt (BFL 5 kap).',
+  credit_invoice: 'Genom att klicka godkänn så skapas en kreditfaktura och originalverifikationen stornas.',
+  credit_supplier_invoice: 'Genom att klicka godkänn så krediteras leverantörsfakturan och registreringsverifikationen stornas.',
+  approve_supplier_invoice: 'Genom att klicka godkänn så attesteras leverantörsfakturan och blir betalningsbar.',
+  convert_invoice: 'Genom att klicka godkänn så konverteras proformafakturan till en riktig faktura med F-nummer.',
+  import_sie: 'Genom att klicka godkänn så importeras SIE-filen: räkenskapsperiod, ingående balans och verifikationer skapas.',
+  explain_voucher_gap: 'Genom att klicka godkänn så dokumenteras förklaringen för verifikationsluckan (BFNAR 2013:2).',
+  post_annual_depreciation: 'Genom att klicka godkänn så bokförs planenlig avskrivning — en verifikation per tillgång.',
 }
 
 function singleActionWarning(operationType: string): string {
   return singleActionWarnings[operationType] ?? ''
+}
+
+// Period status carried inside preview_data when stagePendingOperation can
+// resolve it. Shape mirrors PeriodStatusForDate in lib/core/bookkeeping/period-service.ts.
+interface PeriodStatusShape {
+  period_id: string | null
+  status: 'open' | 'locked' | 'closed'
+  lock_date: string | null
+}
+
+function getPeriodStatus(op: PendingOperation): PeriodStatusShape | null {
+  const raw = (op.preview_data as Record<string, unknown>)?.period_status
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  const status = obj.status
+  if (status !== 'open' && status !== 'locked' && status !== 'closed') return null
+  return {
+    period_id: typeof obj.period_id === 'string' ? obj.period_id : null,
+    status,
+    lock_date: typeof obj.lock_date === 'string' ? obj.lock_date : null,
+  }
+}
+
+const REJECTION_CATEGORY_LABELS: Record<PendingOperationRejectionCategory, string> = {
+  wrong_category: 'Fel kategori / konto',
+  wrong_amount: 'Fel belopp',
+  duplicate: 'Dubblett',
+  wrong_period: 'Fel period',
+  other: 'Annat',
 }
 
 function formatRelativeTime(dateStr: string): string {
@@ -365,7 +431,9 @@ function renderPrimitive(value: unknown): string {
 }
 
 function GenericPreview({ data }: { data: Record<string, unknown> }) {
-  const entries = Object.entries(data).filter(([, v]) => v != null && v !== '')
+  // Skip period_status here — it's surfaced in the dedicated banner, not the
+  // generic key-value dump (otherwise the approver sees the same fact twice).
+  const entries = Object.entries(data).filter(([k, v]) => v != null && v !== '' && k !== 'period_status')
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
       {entries.map(([key, value]) => (
@@ -406,6 +474,34 @@ function OperationPreview({ op }: { op: PendingOperation }) {
   return body
 }
 
+/**
+ * Inline period-lock banner. Renders when the staged operation touches a
+ * period that's already locked or closed — the server's commit-time trigger
+ * will reject it, so we tell the approver up front rather than letting them
+ * click and see a generic "Misslyckades" toast. The fiscal_period_id link
+ * goes to the periods management page where unlocking is possible.
+ */
+function PeriodLockBanner({ period }: { period: PeriodStatusShape }) {
+  const lockedThrough = period.lock_date ? formatDate(period.lock_date) : null
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
+      <Lock className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+      <div className="flex-1">
+        <p className="font-medium text-destructive">
+          {period.status === 'closed'
+            ? 'Perioden är stängd permanent (BFL) — kan inte ändras.'
+            : `Perioden är låst${lockedThrough ? ` t.o.m. ${lockedThrough}` : ''}.`}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {period.status === 'closed'
+            ? 'Använd en omprövning i en öppen period i stället.'
+            : 'Lås upp perioden via Bokföring → Räkenskapsperioder, ändra entry-datum, eller avvisa.'}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 type SourceFilter = 'all' | 'agent' | 'high_risk'
 
 const sourceFilterLabels = (
@@ -425,6 +521,7 @@ export default function PendingOperationsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<PendingOperationStatus>('pending')
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [conversationFilter, setConversationFilter] = useState<string | null>(null)
   const [counts, setCounts] = useState<StatusCounts>({
     pending: null,
     committed: null,
@@ -437,8 +534,22 @@ export default function PendingOperationsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showBulkDialog, setShowBulkDialog] = useState(false)
   const [isBulkCommitting, setIsBulkCommitting] = useState(false)
+  // Reject dialog state — separate from the generic destructive-confirm so we
+  // can ask for a category + free-text reason that feeds back to the agent.
+  const [rejectOp, setRejectOp] = useState<PendingOperation | null>(null)
+  const [rejectCategory, setRejectCategory] = useState<PendingOperationRejectionCategory | ''>('')
+  const [rejectReason, setRejectReason] = useState('')
+  const [isRejecting, setIsRejecting] = useState(false)
   const { toast } = useToast()
-  const { dialogProps, confirm } = useDestructiveConfirm()
+
+  // Read ?conversation= once on mount so deep-links from the agent context
+  // strip filter the list automatically.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    const conv = url.searchParams.get('conversation')
+    if (conv) setConversationFilter(conv)
+  }, [])
 
   const fetchOperations = useCallback(async () => {
     setIsLoading(true)
@@ -479,10 +590,34 @@ export default function PendingOperationsPage() {
     fetchAllCounts()
   }, [fetchAllCounts])
 
+  // Realtime subscription: refetch when ANY pending_operations row changes for
+  // this company. RLS scopes the channel automatically — we don't see other
+  // tenants' events. We refetch the whole list (rather than patching state
+  // in-place) so server-side filtering, sorting, and computed fields stay in
+  // sync with whatever the API route returned. The counts endpoint isn't
+  // pushed by the same trigger, so we also refresh counts on every change.
+  useEffect(() => {
+    const supabase = createClient()
+    const channel = supabase
+      .channel('pending_operations:list')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pending_operations' },
+        () => {
+          fetchOperations()
+          fetchAllCounts()
+        }
+      )
+      .subscribe()
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [fetchOperations, fetchAllCounts])
+
   // Clear selection when filters/tab change
   useEffect(() => {
     setSelectedIds(new Set())
-  }, [activeTab, sourceFilter])
+  }, [activeTab, sourceFilter, conversationFilter])
 
   async function handleCommit() {
     if (!selectedOp) return
@@ -552,27 +687,51 @@ export default function PendingOperationsPage() {
     setIsBulkCommitting(false)
   }
 
-  async function handleReject(op: PendingOperation) {
-    const ok = await confirm({
-      title: 'Avvisa operation?',
-      description: `"${op.title}" kommer att avvisas.`,
-      confirmLabel: 'Avvisa',
-      variant: 'destructive',
-    })
-    if (!ok) return
+  function openRejectDialog(op: PendingOperation) {
+    setRejectOp(op)
+    setRejectCategory('')
+    setRejectReason('')
+  }
 
+  async function handleReject() {
+    if (!rejectOp) return
+    setIsRejecting(true)
     try {
-      const res = await fetch(`/api/pending-operations/${op.id}/reject`, { method: 'POST' })
-      if (!res.ok) throw new Error('Misslyckades')
-      toast({ title: 'Avvisad', description: op.title })
+      const body =
+        rejectCategory || rejectReason.trim()
+          ? {
+              ...(rejectCategory ? { rejection_category: rejectCategory } : {}),
+              ...(rejectReason.trim() ? { rejection_reason: rejectReason.trim() } : {}),
+            }
+          : undefined
+      const res = await fetch(`/api/pending-operations/${rejectOp.id}/reject`, {
+        method: 'POST',
+        ...(body
+          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+          : {}),
+      })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        throw new Error(json.error || 'Misslyckades')
+      }
+      toast({ title: 'Avvisad', description: rejectOp.title })
+      setRejectOp(null)
       fetchOperations()
       fetchAllCounts()
-    } catch {
-      toast({ title: 'Kunde inte avvisa', variant: 'destructive' })
+    } catch (err) {
+      toast({
+        title: 'Kunde inte avvisa',
+        description: err instanceof Error ? err.message : 'Okänt fel',
+        variant: 'destructive',
+      })
     }
+    setIsRejecting(false)
   }
 
   const filteredOperations = operations.filter((op) => {
+    if (conversationFilter && op.agent_metadata?.conversation_id !== conversationFilter) {
+      return false
+    }
     switch (sourceFilter) {
       case 'agent':
         return op.actor_type === 'api_key' || op.actor_type === 'mcp_oauth' || op.actor_type === 'cron'
@@ -585,14 +744,28 @@ export default function PendingOperationsPage() {
   })
 
   const showBulkControls = activeTab === 'pending'
+  // Pending ops that meet two criteria: not high risk AND the period covering
+  // them is open. We exclude locked/closed periods from bulk because they will
+  // be rejected at commit time anyway — silently letting the user "select all"
+  // and watching some fail is a worse UX than excluding them up front.
   const bulkEligible = useMemo(
-    () => filteredOperations.filter((op) => op.status === 'pending' && op.risk_level !== 'high'),
+    () =>
+      filteredOperations.filter((op) => {
+        if (op.status !== 'pending') return false
+        if (op.risk_level === 'high') return false
+        const period = getPeriodStatus(op)
+        if (period && period.status !== 'open') return false
+        return true
+      }),
     [filteredOperations]
   )
   const bulkEligibleIds = useMemo(() => bulkEligible.map((op) => op.id), [bulkEligible])
   const allSelected =
     bulkEligibleIds.length > 0 && bulkEligibleIds.every((id) => selectedIds.has(id))
   const someSelected = bulkEligibleIds.some((id) => selectedIds.has(id))
+
+  const pendingTotal = filteredOperations.filter((op) => op.status === 'pending').length
+  const excludedFromBulk = pendingTotal - bulkEligible.length
 
   function toggleSelected(id: string) {
     setSelectedIds((prev) => {
@@ -654,6 +827,33 @@ export default function PendingOperationsPage() {
         description={t('subtitle')}
       />
 
+      {conversationFilter && (
+        <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-sm">
+          <div className="flex items-center gap-2">
+            <MessageSquare className="h-4 w-4 text-muted-foreground" />
+            <span>
+              {t('conversation_filter_label')}{' '}
+              <span className="font-mono">#{conversationFilter.slice(0, 8)}</span>
+            </span>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            onClick={() => {
+              setConversationFilter(null)
+              if (typeof window !== 'undefined') {
+                const url = new URL(window.location.href)
+                url.searchParams.delete('conversation')
+                window.history.replaceState({}, '', url.toString())
+              }
+            }}
+          >
+            {t('conversation_filter_clear')}
+          </Button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as PendingOperationStatus)}>
           <TabsList>
@@ -703,11 +903,19 @@ export default function PendingOperationsPage() {
               <label htmlFor="select-all" className="text-sm cursor-pointer">
                 {selectedCount > 0
                   ? t('selected_count', { count: selectedCount })
-                  : t('select_all_count', { count: bulkEligible.length })}
+                  : excludedFromBulk > 0
+                    ? t('select_all_count_partial', {
+                        eligible: bulkEligible.length,
+                        total: pendingTotal,
+                        excluded: excludedFromBulk,
+                      })
+                    : t('select_all_count', { count: bulkEligible.length })}
               </label>
             </div>
 
-            {typeCounts.length > 0 && selectedCount === 0 && (
+            {/* Only worth showing when there's more than one type to pick from —
+                with a single type it just duplicates "Markera alla". */}
+            {typeCounts.length >= 2 && selectedCount === 0 && (
               <div className="flex flex-wrap items-center gap-1">
                 <span className="text-xs text-muted-foreground">{t('quick_pick')}</span>
                 {typeCounts.map(([type, count]) => {
@@ -745,7 +953,9 @@ export default function PendingOperationsPage() {
                 disabled={selectedCount === 0 || isBulkCommitting}
                 onClick={() => setShowBulkDialog(true)}
               >
-                {t('approve_selected', { count: selectedCount })}
+                {selectedCount > 0
+                  ? t('approve_selected', { count: selectedCount })
+                  : t('approve_selected_none')}
               </Button>
             </div>
           </DataListHeader>
@@ -776,9 +986,16 @@ export default function PendingOperationsPage() {
               ? { label: t(entry.labelKey), icon: entry.icon, variant: entry.variant }
               : { label: op.operation_type, icon: ClipboardCheck, variant: 'default' as const }
             const isExpanded = expandedId === op.id
-            const canBulkSelect = showBulkControls && op.status === 'pending' && op.risk_level !== 'high'
+            const period = getPeriodStatus(op)
+            const periodLocked = period != null && period.status !== 'open'
+            const canBulkSelect =
+              showBulkControls && op.status === 'pending' && op.risk_level !== 'high' && !periodLocked
             const isSelected = selectedIds.has(op.id)
             const isAgent = op.actor_type && op.actor_type !== 'user'
+            const conversationId = op.agent_metadata?.conversation_id ?? null
+            const warningSentence = singleActionWarning(op.operation_type)
+            const showHighRiskWarning =
+              op.risk_level === 'high' && warningSentence && op.status === 'pending'
 
             return (
               <DataListRow
@@ -803,8 +1020,11 @@ export default function PendingOperationsPage() {
                       <Button
                         size="sm"
                         className="h-8 px-3 text-xs"
+                        disabled={periodLocked}
+                        title={periodLocked ? 'Perioden är låst' : undefined}
                         onClick={(e) => {
                           e.stopPropagation()
+                          if (periodLocked) return
                           setSelectedOp(op)
                           setShowCommitDialog(true)
                         }}
@@ -817,7 +1037,7 @@ export default function PendingOperationsPage() {
                         className="h-8 px-3 text-xs"
                         onClick={(e) => {
                           e.stopPropagation()
-                          handleReject(op)
+                          openRejectDialog(op)
                         }}
                       >
                         {t('reject')}
@@ -825,7 +1045,18 @@ export default function PendingOperationsPage() {
                     </>
                   ) : undefined
                 }
-                expandedContent={<OperationPreview op={op} />}
+                expandedContent={
+                  <>
+                    {/* Period-lock banner sits ABOVE the preview so the reviewer
+                        sees the blocker as soon as they expand the row. */}
+                    {periodLocked && period && op.status === 'pending' && (
+                      <div className="mb-3">
+                        <PeriodLockBanner period={period} />
+                      </div>
+                    )}
+                    <OperationPreview op={op} />
+                  </>
+                }
               >
                 <DataListPrimary>{op.title}</DataListPrimary>
                 <DataListMeta>
@@ -835,7 +1066,19 @@ export default function PendingOperationsPage() {
                       <DataListMetaSeparator />
                       <span className="inline-flex items-center gap-1">
                         <Bot className="h-3 w-3" />
-                        {op.actor_label || op.actor_type}
+                        {/* The actor label doubles as the deep-link into the
+                            originating conversation — no separate strip needed. */}
+                        {conversationId ? (
+                          <a
+                            href={`/pending?conversation=${conversationId}`}
+                            className="hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {op.actor_label || op.actor_type}
+                          </a>
+                        ) : (
+                          op.actor_label || op.actor_type
+                        )}
                       </span>
                     </>
                   )}
@@ -847,6 +1090,18 @@ export default function PendingOperationsPage() {
                     </Badge>
                   )}
                 </DataListMeta>
+                {showHighRiskWarning && (
+                  <p className="mt-1 flex items-start gap-1 text-xs text-destructive">
+                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                    <span>{warningSentence}</span>
+                  </p>
+                )}
+                {op.status === 'rejected' && op.rejection_category && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Avvisad: {REJECTION_CATEGORY_LABELS[op.rejection_category]}
+                    {op.rejection_reason ? ` — "${op.rejection_reason}"` : ''}
+                  </p>
+                )}
               </DataListRow>
             )
           })
@@ -892,8 +1147,62 @@ export default function PendingOperationsPage() {
         </div>
       </ConfirmationDialog>
 
-      {/* Reject confirmation dialog */}
-      <DestructiveConfirmDialog {...dialogProps} />
+      {/* Reject dialog — category + free-text reason. Both optional so the user
+          can still reject quickly without filling anything in. */}
+      <Dialog open={rejectOp != null} onOpenChange={(open) => { if (!open) setRejectOp(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Avvisa operation</DialogTitle>
+            <DialogDescription>
+              {rejectOp?.title}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-sm font-medium" htmlFor="reject-category">
+                Anledning (valfritt)
+              </label>
+              <Select
+                value={rejectCategory}
+                onValueChange={(v) => setRejectCategory(v as PendingOperationRejectionCategory)}
+              >
+                <SelectTrigger id="reject-category">
+                  <SelectValue placeholder="Välj kategori" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(REJECTION_CATEGORY_LABELS) as PendingOperationRejectionCategory[]).map((cat) => (
+                    <SelectItem key={cat} value={cat}>{REJECTION_CATEGORY_LABELS[cat]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium" htmlFor="reject-reason">
+                Notering (valfritt)
+              </label>
+              <Textarea
+                id="reject-reason"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="T.ex. fel kund matchades, beloppet stämmer inte med fakturan…"
+                rows={3}
+                maxLength={2000}
+              />
+              <p className="text-xs text-muted-foreground">
+                Synlig för agenten via gnubok_get_recent_rejections — hjälper den att korrigera nästa förslag.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectOp(null)} disabled={isRejecting}>
+              Avbryt
+            </Button>
+            <Button variant="destructive" onClick={handleReject} disabled={isRejecting}>
+              {isRejecting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Avvisa'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

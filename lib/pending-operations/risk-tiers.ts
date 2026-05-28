@@ -51,6 +51,10 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   set_opening_balances: 'high',
   run_year_end: 'high',
   run_currency_revaluation: 'high',
+  // Planenlig avskrivning: one journal entry per asset, each independently
+  // reversible (storno). Mid-stakes bokslut posting — staged and human-reviewed,
+  // but not the irreversible tier that year-end close / period lock occupy.
+  post_annual_depreciation: 'medium',
   import_sie: 'high',
   explain_voucher_gap: 'medium',
   uncategorize_transaction: 'medium',
@@ -71,6 +75,15 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   create_voucher: 'high',
   correct_entry: 'high',
   reverse_entry: 'high',
+
+  // ── Payroll ────────────────────────────────────────────────────────
+  // Salary run creation materialises a draft + per-employee base lines. The
+  // run is reversible while still draft, so 'medium' aligns with other
+  // create-draft operations. AGI generation produces the Skatteverket
+  // underlag (XML, BFL 7-year retention) — statutory artifact, always
+  // staged.
+  create_salary_run: 'medium',
+  generate_agi: 'high',
 }
 
 export function getRiskLevel(operationType: string): RiskLevel {

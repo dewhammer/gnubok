@@ -42,7 +42,7 @@ import {
 import { parseSIEFile } from '@/lib/import/sie-parser'
 import { executeSIEImport } from '@/lib/import/sie-import'
 import type { AccountMapping } from '@/lib/import/types'
-import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
+import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { getEmailService } from '@/lib/email/service'
 import {
   generateInvoiceEmailHtml,
@@ -86,6 +86,12 @@ export interface CommitResult {
   error?: string
   http_status?: number
   auto_rejected?: boolean
+  // Set when the commit failed because the booking posts to BAS accounts not
+  // active in the company chart. Recoverable — the op is left 'pending' so the
+  // caller can activate the accounts and retry. Lets the route rebuild the
+  // structured ACCOUNTS_NOT_IN_CHART envelope (code + account_numbers).
+  code?: string
+  account_numbers?: string[]
 }
 
 export interface CommitOptions {
@@ -210,6 +216,14 @@ async function commitCategorizeTransaction(
   const txId = params.transaction_id as string
   const category = params.category as TransactionCategory
   const vatTreatment = params.vat_treatment as VatTreatment | undefined
+  // Optional audit-trail text the agent passed alongside the categorization.
+  // For representation bookings the agent captures deltagare + syfte and
+  // funnels them in here so the verifikation's description carries the
+  // context an external auditor needs (SKV's representationsregler).
+  const notes =
+    typeof params.notes === 'string' && params.notes.trim().length > 0
+      ? (params.notes as string)
+      : undefined
 
   const { data: transaction, error: fetchError } = await supabase
     .from('transactions').select('*').eq('id', txId).eq('company_id', companyId).single()
@@ -242,7 +256,7 @@ async function commitCategorizeTransaction(
   let journalEntryId: string | null = null
   try {
     const journalEntry = await createTransactionJournalEntry(
-      supabase, companyId, userId, transaction as Transaction, mappingResult
+      supabase, companyId, userId, transaction as Transaction, mappingResult, notes,
     )
     if (journalEntry) journalEntryId = journalEntry.id
   } catch (err) {
@@ -259,6 +273,63 @@ async function commitCategorizeTransaction(
   if (updateError) {
     log.error('Failed to update transaction:', updateError)
     return { error: 'Failed to update transaction', status: 500 }
+  }
+
+  // Propagate the underlag from a matched invoice-inbox item onto the new
+  // verifikation. Without this, BFL 7 kap is violated: a verifikation
+  // exists with no underlag attached even though the user has explicitly
+  // linked an inbox item (with a document) to this transaction in the
+  // inbox workspace. We:
+  //   1. find the inbox item(s) where matched_transaction_id = txId
+  //   2. for each item with a document_id, set
+  //        document_attachments.journal_entry_id = journalEntryId
+  //      (idempotent — re-linking the same doc is a no-op write).
+  //   3. stamp invoice_inbox_items.created_journal_entry_id so the inbox
+  //      row visibly moves to "Bearbetade" and shows "Öppna verifikation".
+  // Errors are logged but don't fail the commit — the verifikation itself
+  // is already posted, and the link can be repaired by re-running this
+  // step. A future PR can move this into a single transaction with the
+  // journal entry creation.
+  if (journalEntryId) {
+    try {
+      const { data: matchedInboxItems } = await supabase
+        .from('invoice_inbox_items')
+        .select('id, document_id')
+        .eq('company_id', companyId)
+        .eq('matched_transaction_id', txId)
+        .is('created_journal_entry_id', null)
+      for (const inbox of (matchedInboxItems ?? []) as Array<{
+        id: string
+        document_id: string | null
+      }>) {
+        if (inbox.document_id) {
+          try {
+            await linkToJournalEntry(supabase, companyId, inbox.document_id, journalEntryId)
+          } catch (err) {
+            log.error('Failed to link inbox document to journal entry', {
+              inbox_item_id: inbox.id,
+              document_id: inbox.document_id,
+              journal_entry_id: journalEntryId,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+        const { error: stampError } = await supabase
+          .from('invoice_inbox_items')
+          .update({ created_journal_entry_id: journalEntryId })
+          .eq('id', inbox.id)
+          .eq('company_id', companyId)
+        if (stampError) {
+          log.error('Failed to stamp inbox item created_journal_entry_id', {
+            inbox_item_id: inbox.id,
+            journal_entry_id: journalEntryId,
+            error: stampError.message,
+          })
+        }
+      }
+    } catch (err) {
+      log.error('Failed to propagate underlag from matched inbox items', err)
+    }
   }
 
   try {
@@ -1208,6 +1279,40 @@ async function commitRunCurrencyRevaluation(
   } catch (err) {
     if (isBookkeepingError(err)) throw err
     return { error: err instanceof Error ? err.message : 'Revaluation failed', status: 400 }
+  }
+}
+
+async function commitPostAnnualDepreciation(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  const fiscalPeriodId = params.fiscal_period_id as string
+  if (!fiscalPeriodId) return { error: 'fiscal_period_id is required', status: 400 }
+  const assetIds = Array.isArray(params.asset_ids) ? (params.asset_ids as string[]) : undefined
+
+  try {
+    const { commitAnnualPostings } = await import('@/lib/bokslut/assets/depreciation-engine')
+    const { posted, skipped } = await commitAnnualPostings(supabase, companyId, userId, fiscalPeriodId, {
+      assetIds,
+    })
+    return {
+      data: {
+        posted_count: posted.length,
+        skipped_count: skipped.length,
+        posted: posted.map((p) => ({
+          asset_id: p.assetId,
+          journal_entry_id: p.entry.id,
+          voucher_number: p.entry.voucher_number,
+          schedule_id: p.scheduleId,
+        })),
+        skipped,
+      },
+    }
+  } catch (err) {
+    if (isBookkeepingError(err)) throw err
+    return { error: err instanceof Error ? err.message : 'Depreciation posting failed', status: 400 }
   }
 }
 
@@ -2345,6 +2450,90 @@ async function commitReverseEntry(
   }
 }
 
+// ── Payroll executors ────────────────────────────────────────────
+
+async function commitCreateSalaryRun(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  const periodYear = params.period_year as number
+  const periodMonth = params.period_month as number
+  const paymentDate = params.payment_date as string
+  if (
+    !Number.isInteger(periodYear) ||
+    !Number.isInteger(periodMonth) ||
+    typeof paymentDate !== 'string'
+  ) {
+    return { error: 'period_year, period_month, payment_date are required', status: 400 }
+  }
+
+  try {
+    const { createSalaryRunWithEmployees } = await import('@/lib/salary/create-run')
+    const { run, employeeCount } = await createSalaryRunWithEmployees(
+      supabase,
+      companyId,
+      userId,
+      { periodYear, periodMonth, paymentDate },
+    )
+    return {
+      data: {
+        salary_run_id: (run as { id?: string }).id,
+        employee_count: employeeCount,
+        period: `${periodYear}-${String(periodMonth).padStart(2, '0')}`,
+      },
+    }
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : 'Failed to create salary run',
+      status: 500,
+    }
+  }
+}
+
+async function commitGenerateAgi(
+  supabase: SupabaseClient,
+  userId: string,
+  companyId: string,
+  params: Record<string, unknown>
+): Promise<ExecutorResult> {
+  const salaryRunId = params.salary_run_id as string
+  if (!salaryRunId) return { error: 'salary_run_id is required', status: 400 }
+
+  try {
+    const { generateAgiDeclaration } = await import('@/lib/salary/agi/generate-declaration')
+    const { randomUUID } = await import('node:crypto')
+    const result = await generateAgiDeclaration({
+      supabase,
+      companyId,
+      userId,
+      userEmail: null,
+      salaryRunId,
+      log: createLogger('commit/generate_agi'),
+      requestId: randomUUID(),
+    })
+    if (!result.ok) {
+      return { error: `AGI-generering misslyckades: ${result.code}`, status: 500 }
+    }
+    const period = `${result.periodYear}-${String(result.periodMonth).padStart(2, '0')}`
+    return {
+      data: {
+        agi_declaration_id: result.agiDeclarationId,
+        period,
+        employee_count: result.employeeCount,
+        is_correction: result.isCorrection,
+        download_url: `/api/salary/runs/${salaryRunId}/agi/xml`,
+      },
+    }
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : 'Failed to generate AGI',
+      status: 500,
+    }
+  }
+}
+
 // ── Public dispatcher ────────────────────────────────────────────
 
 /**
@@ -2471,6 +2660,15 @@ export async function commitPendingOperation(
       case 'reverse_entry':
         result = await commitReverseEntry(supabase, userId, companyId, pendingOp.params)
         break
+      case 'post_annual_depreciation':
+        result = await commitPostAnnualDepreciation(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'create_salary_run':
+        result = await commitCreateSalaryRun(supabase, userId, companyId, pendingOp.params)
+        break
+      case 'generate_agi':
+        result = await commitGenerateAgi(supabase, userId, companyId, pendingOp.params)
+        break
       default:
         return {
           status: 'failed',
@@ -2479,6 +2677,24 @@ export async function commitPendingOperation(
         }
     }
   } catch (err) {
+    // Accounts-not-in-chart is RECOVERABLE: the booking itself is valid; the
+    // company's chart just lacks the (standard BAS) accounts it posts to. Do
+    // NOT consume the op — release the atomic claim back to 'pending' so the
+    // user can activate the accounts and retry the SAME op — and surface the
+    // structured code + numbers so the client can offer one-click activation.
+    if (err instanceof AccountsNotInChartError) {
+      await supabase
+        .from('pending_operations')
+        .update({ status: 'pending' })
+        .eq('id', pendingOp.id)
+      return {
+        status: 'failed',
+        error: err.message,
+        http_status: 400,
+        code: ACCOUNTS_NOT_IN_CHART,
+        account_numbers: err.accountNumbers,
+      }
+    }
     const isBkErr = isBookkeepingError(err)
     const message = err instanceof Error ? err.message : (isBkErr ? 'Bookkeeping error' : 'Executor failed')
     // Release the claim by transitioning to 'rejected' so the row never gets

@@ -30,6 +30,7 @@ import CustomerForm from '@/components/customers/CustomerForm'
 import { BankDetailsSetupDialog } from '@/components/invoices/BankDetailsSetupDialog'
 import { FirstInvoiceLogoPrompt } from '@/components/invoices/FirstInvoiceLogoPrompt'
 import { useCompany } from '@/contexts/CompanyContext'
+import AgentSparkleButton from '@/components/agent/AgentSparkleButton'
 import {
   ROT_WORK_TYPES,
   RUT_WORK_TYPES,
@@ -599,7 +600,7 @@ export default function NewInvoicePage() {
         <Button variant="ghost" size="icon" onClick={() => router.back()} aria-label={t('back')}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
-        <div>
+        <div className="flex-1 min-w-0">
           <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">
             {titleText}
             {numberPreview && (
@@ -610,6 +611,11 @@ export default function NewInvoicePage() {
           </h1>
           <p className="text-muted-foreground">{subtitleText}</p>
         </div>
+        <AgentSparkleButton
+          intentId="invoice.draft"
+          intentArgs={{ customer_id: watchCustomerId ?? null }}
+          contextRef={watchCustomerId ? `customer:${watchCustomerId}` : 'invoice:new'}
+        />
       </div>
 
       {hasBankDetails === false && (

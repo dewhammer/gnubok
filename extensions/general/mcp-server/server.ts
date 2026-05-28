@@ -28,7 +28,8 @@ import { generateMonthlyBreakdown } from '@/lib/reports/monthly-breakdown'
 import { uiWidgets, findUiWidget, WIDGET_MIME_TYPE } from './widgets'
 import { dataResources, findResource, parseResourceQuery } from './resources'
 import { prompts, findPrompt } from './prompts'
-import { skills, findSkill, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
+import { findSkill, loadAllSkills, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
+import type { SkillTier } from './skills'
 import { getRiskLevel } from '@/lib/pending-operations/risk-tiers'
 import { CreateSupplierParamsSchema } from '@/lib/pending-operations/schemas/create-supplier'
 import { z } from 'zod'
@@ -38,7 +39,7 @@ import {
   hashRequest,
   IdempotencyKeyReuseError,
 } from '@/lib/api/idempotency'
-import { toToolError } from './tool-result'
+import { toToolError, type NextActionHint } from './tool-result'
 import { generateBalanceSheet } from '@/lib/reports/balance-sheet'
 import { generateGeneralLedger } from '@/lib/reports/general-ledger'
 import { decryptPersonnummer, maskPersonnummer } from '@/lib/salary/personnummer'
@@ -75,6 +76,13 @@ interface ActorContext {
   type: 'user' | 'api_key' | 'mcp_oauth' | 'cron'
   id?: string
   label?: string
+  /**
+   * Stable agent-session identifier from the `Mcp-Session-Id` JSON-RPC header
+   * when present, otherwise null. Used to correlate `mcp.tool_called`,
+   * `mcp.workflow_started`, `mcp.next_hint_followed`, etc. events across a
+   * single agent conversation. Not used for auth.
+   */
+  sessionId?: string | null
 }
 
 // ── JSON-RPC types ───────────────────────────────────────────
@@ -109,6 +117,10 @@ interface McpTool {
   outputSchema?: Record<string, unknown>
   annotations: McpToolAnnotations
   _meta?: { ui: { resourceUri: string } }
+  // Result-level UI hint: when set, a call passing render_ui=true gets a
+  // _meta.ui.resourceUri on the RESULT, so the host renders the widget only when
+  // asked. (Contrast _meta above, on the definition, which renders on every call.)
+  uiResourceUri?: string
   execute: (
     args: Record<string, unknown>,
     companyId: string,
@@ -121,6 +133,11 @@ interface McpTool {
 // ── Shared constants ─────────────────────────────────────────
 
 const log = createLogger('mcp-server')
+
+// gnubok_feedback rate limit: 1 per 60s per actor. In-memory single-process;
+// no Redis dependency. See the gnubok_feedback tool definition below.
+const FEEDBACK_RATE_LIMIT_MS = 60_000
+const feedbackRateLimit = new Map<string, number>()
 
 const VALID_CATEGORIES = [
   'income_services', 'income_products', 'income_other',
@@ -137,11 +154,32 @@ const VALID_VAT_TREATMENTS = [
 
 // ── Pending operations staging ───────────────────────────────
 
-interface StageNextHint {
-  description: string
-  tool?: string
-  args?: Record<string, unknown>
-  resource?: string
+/**
+ * Param-keys we'll scan for an affärshändelse date when the caller doesn't
+ * pass `dateForPeriodCheck` explicitly. Ordered: most-specific first. The
+ * first ISO yyyy-MM-dd hit wins. Adding a new field is safe — unknown values
+ * just fall through to undefined.
+ */
+const AUTO_PERIOD_DATE_KEYS = [
+  'entry_date',
+  'payment_date',
+  'invoice_date',
+  'date',
+  'period_end',
+  'period_start',
+  'voucher_date',
+  'paid_date',
+  'transfer_date',
+] as const
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+function autoExtractDateForPeriodCheck(params: Record<string, unknown>): string | undefined {
+  for (const key of AUTO_PERIOD_DATE_KEYS) {
+    const value = params[key]
+    if (typeof value === 'string' && ISO_DATE_RE.test(value)) return value
+  }
+  return undefined
 }
 
 interface StageOptions {
@@ -183,7 +221,7 @@ async function stagePendingOperation(
   params: Record<string, unknown>,
   previewData: Record<string, unknown>,
   actor: ActorContext = { type: 'user' },
-  next?: StageNextHint,
+  next?: NextActionHint,
   options: StageOptions = {}
 ): Promise<{
   staged: boolean
@@ -196,25 +234,26 @@ async function stagePendingOperation(
   approve?: { tool: string; args: Record<string, unknown> }
   preview: Record<string, unknown>
   period_status?: PeriodStatusForDate
-  next?: StageNextHint
+  next?: NextActionHint
 }> {
   const riskLevel = getRiskLevel(operationType)
   const branding = getBranding().appName.toLowerCase()
 
-  // Resolve period_status once, in parallel with downstream IO when possible.
-  // Failure is non-fatal: the DB triggers are authoritative, so a missing
-  // envelope just degrades the agent's preview UX rather than blocking a write.
-  // We log the failure so a systematic outage (e.g. missing company_settings row,
-  // dropped query) is observable in audit logs rather than silently degraded.
+  // Resolve period_status once. The caller can pass `dateForPeriodCheck`
+  // explicitly; otherwise we scan params for a known affärshändelse-date
+  // field so every date-bearing operation surfaces a period_status envelope
+  // without each tool having to opt in. Failure is non-fatal — DB triggers
+  // are the authoritative gate; a missing envelope just degrades preview UX.
+  const dateForPeriodCheck = options.dateForPeriodCheck ?? autoExtractDateForPeriodCheck(params)
   let periodStatus: PeriodStatusForDate | undefined
-  if (options.dateForPeriodCheck) {
+  if (dateForPeriodCheck) {
     try {
-      periodStatus = await resolvePeriodStatusForDate(supabase, companyId, options.dateForPeriodCheck)
+      periodStatus = await resolvePeriodStatusForDate(supabase, companyId, dateForPeriodCheck)
     } catch (err) {
       log.warn('resolvePeriodStatusForDate failed', {
         operationType,
         companyId,
-        dateForPeriodCheck: options.dateForPeriodCheck,
+        dateForPeriodCheck,
         error: err instanceof Error ? err.message : String(err),
       })
       periodStatus = undefined
@@ -412,6 +451,12 @@ async function categorizeTransactionCore(
   vat_lines?: Array<{ account_number: string; debit_amount: number; credit_amount: number; description: string }>
   message?: string
   transaction?: Transaction
+  underlag?: {
+    document_id: string
+    total: number | null
+    vat_amount: number | null
+    currency: string | null
+  } | null
 }> {
   // Validate category
   if (!VALID_CATEGORIES.includes(category as typeof VALID_CATEGORIES[number])) {
@@ -438,6 +483,46 @@ async function categorizeTransactionCore(
 
   if (fetchError || !transaction) {
     throw new Error('Transaction not found. Check the transaction_id is correct.')
+  }
+
+  // Underlag guard: if the transaction has an attached document with
+  // AI-extracted invoice data, use it to validate the proposed VAT treatment
+  // BEFORE we build the booking. The historical failure mode here was the
+  // agent stamping reverse_charge on any foreign-vendor charge and producing
+  // fictive 2645/2614 VAT lines (25% of the SEK amount) on an invoice where
+  // the seller had already debited real VAT. Block that explicitly.
+  let underlagSummary: {
+    document_id: string
+    total: number | null
+    vat_amount: number | null
+    currency: string | null
+  } | null = null
+  if (transaction.document_id) {
+    const { data: doc } = await supabase
+      .from('document_attachments')
+      .select('id, extracted_data')
+      .eq('id', transaction.document_id)
+      .eq('company_id', companyId)
+      .maybeSingle()
+    const ex = (doc?.extracted_data ?? null) as
+      | { totals?: { total?: number; vatAmount?: number }; invoice?: { currency?: string } }
+      | null
+    if (doc) {
+      underlagSummary = {
+        document_id: doc.id as string,
+        total: ex?.totals?.total ?? null,
+        vat_amount: ex?.totals?.vatAmount ?? null,
+        currency: ex?.invoice?.currency ?? null,
+      }
+      const sellerChargedVat = (ex?.totals?.vatAmount ?? 0) > 0
+      if (vatTreatment === 'reverse_charge' && sellerChargedVat) {
+        throw new Error(
+          `Reverse charge avvisas: underlaget (document_id=${doc.id}) visar att säljaren redan har debiterat moms ` +
+          `(${ex?.totals?.vatAmount} ${ex?.invoice?.currency ?? ''}). Omvänd skattskyldighet gäller bara fakturor utan säljarens moms. ` +
+          `Bokför som vanlig kostnad (utan vat_treatment, eller standard_25 om svensk faktura) — den utländska momsen ingår i kostnaden.`,
+        )
+      }
+    }
   }
 
   if (transaction.journal_entry_id) {
@@ -496,6 +581,7 @@ async function categorizeTransactionCore(
         description: v.description,
       })),
       message: 'Preview only — no changes made. Call again with confirm: true to create the journal entry.',
+      underlag: underlagSummary,
     }
   }
 
@@ -606,6 +692,18 @@ const PAGINATION_PROPS = {
   next_offset: { type: 'number', description: 'Offset for the next page (omitted on last page)' },
 } as const
 
+const NEXT_ACTION_HINT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    description: { type: 'string' },
+    tool: { type: 'string' },
+    args: { type: 'object', additionalProperties: true },
+    resource: { type: 'string' },
+  },
+  required: ['description'],
+} as const
+
 const STAGED_OPERATION_SCHEMA = {
   type: 'object',
   properties: {
@@ -627,7 +725,7 @@ const STAGED_OPERATION_SCHEMA = {
         lock_date: { type: ['string', 'null'] },
       },
     },
-    next: { type: 'object' },
+    next: NEXT_ACTION_HINT_SCHEMA,
   },
   required: ['staged', 'risk_level', 'actor', 'message', 'preview'],
 } as const
@@ -1004,6 +1102,35 @@ function monthName(m: number): string {
     'juli', 'augusti', 'september', 'oktober', 'november', 'december'][m - 1] ?? ''
 }
 
+// ── agent_memory dedup helpers ───────────────────────────────
+// Cheap, embedding-free near-duplicate detection for gnubok_remember_fact.
+// Lowercase, strip punctuation, drop very short / stop-ish words, and
+// compare two memories by Jaccard similarity over their word sets. Good
+// enough to catch the agent re-remembering the same fact in slightly
+// different words; not a substitute for semantic embeddings, but zero-cost.
+const MEMORY_DEDUP_STOPWORDS = new Set([
+  'och', 'att', 'det', 'som', 'en', 'ett', 'är', 'för', 'med', 'på', 'av',
+  'till', 'den', 'de', 'i', 'om', 'har', 'var', 'kan', 'ska', 'samt',
+  'the', 'a', 'an', 'is', 'are', 'for', 'with', 'of', 'to', 'and', 'in',
+])
+
+function tokenizeForDedup(text: string): Set<string> {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !MEMORY_DEDUP_STOPWORDS.has(t))
+  return new Set(tokens)
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let intersection = 0
+  for (const t of a) if (b.has(t)) intersection++
+  const union = a.size + b.size - intersection
+  return union === 0 ? 0 : intersection / union
+}
+
 export async function computeVatCloseCheck(
   args: Record<string, unknown>,
   companyId: string,
@@ -1323,10 +1450,31 @@ export const tools: McpTool[] = [
       })
 
       if (query) {
-        candidates = candidates.filter((t) => {
-          const haystack = `${t.name} ${t.description}`.toLowerCase()
-          return haystack.includes(query)
-        })
+        // Match: every whitespace-separated term must appear in name or description
+        // (for a single-word query this is identical to a literal substring match).
+        // Rank by relevance so the most on-point tool comes first instead of
+        // whichever happens to be defined earliest: exact-ish name match > full
+        // query as a name substring > per-term name hits > description hits. Ties
+        // fall back to definition order (stable).
+        const terms = query.split(/\s+/).filter(Boolean)
+        const ranked = candidates
+          .map((t, idx) => {
+            const name = t.name.toLowerCase()
+            const desc = t.description.toLowerCase()
+            const hay = `${name} ${desc}`
+            if (!terms.every((term) => hay.includes(term))) return null
+            let score = 0
+            if (name === query || name === `gnubok_${query}` || name.endsWith(`_${query}`)) score += 100
+            if (name.includes(query)) score += 40
+            for (const term of terms) {
+              if (name.includes(term)) score += 10
+              if (desc.includes(term)) score += 1
+            }
+            return { t, score, idx }
+          })
+          .filter((x): x is { t: McpTool; score: number; idx: number } => x !== null)
+          .sort((a, b) => b.score - a.score || a.idx - b.idx)
+        candidates = ranked.map((x) => x.t)
       }
 
       const totalMatched = candidates.length
@@ -1360,12 +1508,21 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_list_skills',
-    description: 'List available domain-knowledge skills (workflows for month-end close, VAT review, year-end, invoicing, payroll). Call gnubok_load_skill(slug) to read the body.',
+    description: 'List available domain-knowledge skills filtered to this company (entity type, VAT, payroll). Workflow guides + loaded specialty atoms. Pass include_all=true to see hidden skills. Call gnubok_load_skill(slug) for any body.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        tag: { type: 'string', description: 'Optional filter — return only skills matching this tag (e.g. "vat", "monthly", "yearly", "payroll").' },
+        tag: { type: 'string', description: 'Optional filter by tag (e.g. "vat", "monthly", "yearly", "payroll", or the tier name "workflow"/"horizontal"/"vertical"/"modifier").' },
+        tier: {
+          type: 'string',
+          enum: ['workflow', 'horizontal', 'vertical', 'modifier'],
+          description: 'Optional filter by tier. workflow = static guides, horizontal = regulatory atoms (Swedish VAT/payroll/…), vertical = industry atoms (konsult-IT, e-handel…), modifier = cross-cutting atoms (holding-AB…).',
+        },
+        include_all: {
+          type: 'boolean',
+          description: 'When true, ignore the company-context filter (entity_type, employees, vat_registered) and return all skills. Default false.',
+        },
       },
     },
     outputSchema: {
@@ -1381,13 +1538,25 @@ export const tools: McpTool[] = [
               name: { type: 'string' },
               summary: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
+              tier: { type: 'string', enum: ['workflow', 'horizontal', 'vertical', 'modifier'] },
             },
-            required: ['slug', 'name', 'summary'],
+            required: ['slug', 'name', 'summary', 'tier'],
           },
         },
         count: { type: 'number' },
+        hidden_count: { type: 'number', description: 'Skills hidden by company-context filter. Re-call with include_all=true to see them.' },
+        company_context: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'Snapshot of the filter inputs used to compute the list — useful when debugging "why isn\'t skill X showing up?".',
+          properties: {
+            entity_type: { type: ['string', 'null'] },
+            has_employees: { type: 'boolean' },
+            vat_registered: { type: 'boolean' },
+          },
+        },
       },
-      required: ['skills', 'count'],
+      required: ['skills', 'count', 'hidden_count', 'company_context'],
     },
     annotations: {
       readOnlyHint: true,
@@ -1395,31 +1564,80 @@ export const tools: McpTool[] = [
       idempotentHint: true,
       openWorldHint: false,
     },
-    async execute(args) {
+    async execute(args, companyId, _userId, supabase) {
       const tag = (args.tag as string | undefined)?.toLowerCase().trim()
-      const filtered = tag
-        ? skills.filter((s) => s.tags.some((t) => t.toLowerCase() === tag))
-        : skills
+      const tier = (args.tier as SkillTier | undefined)
+      const includeAll = args.include_all === true
+
+      // Resolve company context — read once per call. Failures degrade
+      // gracefully: an unresolved field means "don't filter on it" so a
+      // misconfigured company still gets the full skill list.
+      const [settings, employeeCount] = await Promise.all([
+        supabase
+          .from('company_settings')
+          .select('entity_type, vat_registered')
+          .eq('company_id', companyId)
+          .maybeSingle(),
+        supabase
+          .from('employees')
+          .select('id', { count: 'exact', head: true })
+          .eq('company_id', companyId)
+          .eq('is_active', true),
+      ])
+      const entityType = (settings.data?.entity_type as string | undefined) ?? null
+      const vatRegistered = Boolean(settings.data?.vat_registered)
+      const hasEmployees = (employeeCount.count ?? 0) > 0
+
+      const all = await loadAllSkills(supabase)
+
+      // First pass: tier + tag filter (unchanged).
+      const tagFiltered = all.filter((s) => {
+        if (tier && s.tier !== tier) return false
+        if (tag && !s.tags.some((t) => t.toLowerCase() === tag)) return false
+        return true
+      })
+
+      // Second pass: applicability filter — skipped when include_all=true so
+      // agents can always escape to the full list. Skills without an
+      // applicability declaration are always shown (universal).
+      const applicable = includeAll
+        ? tagFiltered
+        : tagFiltered.filter((s) => {
+            if (!s.applicability) return true
+            const a = s.applicability
+            if (a.entity_type && a.entity_type !== 'both' && entityType && entityType !== a.entity_type) return false
+            if (a.requires?.includes('employees') && !hasEmployees) return false
+            if (a.requires?.includes('vat_registered') && !vatRegistered) return false
+            return true
+          })
+
       return {
-        skills: filtered.map((s) => ({
+        skills: applicable.map((s) => ({
           slug: s.slug,
           name: s.name,
           summary: s.summary,
           tags: s.tags,
+          tier: s.tier,
         })),
-        count: filtered.length,
+        count: applicable.length,
+        hidden_count: tagFiltered.length - applicable.length,
+        company_context: {
+          entity_type: entityType,
+          has_employees: hasEmployees,
+          vat_registered: vatRegistered,
+        },
       }
     },
   },
 
   {
     name: 'gnubok_load_skill',
-    description: 'Load a domain-knowledge skill by slug. Returns the full Markdown body — call gnubok_list_skills first to find slugs.',
+    description: 'Load a skill body by slug. Workflow slugs are flat (e.g. "month-end-close"); atom slugs match registry ids (e.g. "vertical/konsult-it", "modifier/holding-ab"). Call gnubok_list_skills to find slugs.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        slug: { type: 'string', description: 'Skill slug (e.g. "month-end-close", "quarterly-vat-review", "year-end-close", "invoicing-rules", "payroll-monthly")' },
+        slug: { type: 'string', description: 'Skill slug — workflow slug ("month-end-close", "quarterly-vat-review", "year-end-close", "invoicing-rules", "payroll-monthly") or atom id ("vertical/konsult-it", "modifier/holding-ab", "horizontal/swedish-vat", …).' },
       },
       required: ['slug'],
     },
@@ -1431,9 +1649,10 @@ export const tools: McpTool[] = [
         name: { type: 'string' },
         summary: { type: 'string' },
         tags: { type: 'array', items: { type: 'string' } },
+        tier: { type: 'string', enum: ['workflow', 'horizontal', 'vertical', 'modifier'] },
         body: { type: 'string', description: 'Full skill content as Markdown' },
       },
-      required: ['slug', 'name', 'body'],
+      required: ['slug', 'name', 'body', 'tier'],
     },
     annotations: {
       readOnlyHint: true,
@@ -1441,20 +1660,413 @@ export const tools: McpTool[] = [
       idempotentHint: true,
       openWorldHint: false,
     },
-    async execute(args) {
+    async execute(args, companyId, userId, supabase, actor) {
       const slug = (args.slug as string | undefined)?.trim()
       if (!slug) throw new Error('slug is required')
-      const skill = findSkill(slug)
+      const skill = await findSkill(slug, supabase)
       if (!skill) {
-        const available = skills.map((s) => s.slug).join(', ')
+        const all = await loadAllSkills(supabase)
+        const available = all.map((s) => s.slug).join(', ')
         throw new Error(`Skill not found: "${slug}". Available skills: ${available}`)
+      }
+      // Workflow-tier skills are the closed-form processes (month-end-close,
+      // year-end-close, payroll-monthly). Loading one is a strong signal the
+      // agent is starting that workflow — emit so we can track completion
+      // rates. Atom skills are reference material and don't trigger this.
+      if (skill.tier === 'workflow' && actor) {
+        emitWorkflowStarted({ slug: skill.slug, actor, userId, companyId })
       }
       return {
         slug: skill.slug,
         name: skill.name,
         summary: skill.summary,
         tags: skill.tags,
+        tier: skill.tier,
         body: skill.body,
+      }
+    },
+  },
+
+  {
+    name: 'gnubok_remember_fact',
+    description: 'Capture a durable fact, preference, pattern, or correction about the company. Use mid-conversation when the user says something the agent should remember next time. Writes immediately — does not stage. Use sparingly for foundational signal, not for one-off context.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        content: {
+          type: 'string',
+          description: 'The full fact text in the user\'s language. Self-contained — readable without prior context. Example: "Företaget hyr lagerplats av AB Foo, hyresfaktura kommer 25:e varje månad."',
+        },
+        kind: {
+          type: 'string',
+          enum: ['fact', 'preference', 'pattern', 'correction'],
+          description: 'fact = verifiable statement, preference = user-stated choice, pattern = observed regularity, correction = agent learned from a user fix. Default fact.',
+        },
+        source_ref: {
+          type: 'string',
+          description: 'Optional pointer to where this fact came from (e.g. "conversation:<uuid>:turn-3").',
+        },
+        relevance_score: {
+          type: 'number',
+          description: 'How important this memory is for future prompts. 0.0–1.0. Default 0.8 for agent-captured facts.',
+        },
+      },
+      required: ['content'],
+    },
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string' },
+        kind: { type: 'string' },
+        content: { type: 'string' },
+        created_at: { type: 'string' },
+      },
+      required: ['id', 'kind', 'content', 'created_at'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, supabase) {
+      const content = (args.content as string | undefined)?.trim()
+      if (!content || content.length < 2) throw new Error('content is required (min 2 chars)')
+      const kind = (args.kind as string | undefined) ?? 'fact'
+      if (!['fact', 'preference', 'pattern', 'correction'].includes(kind)) {
+        throw new Error(`invalid kind: ${kind}`)
+      }
+      const rawScore = args.relevance_score
+      const score =
+        typeof rawScore === 'number' && rawScore >= 0 && rawScore <= 1 ? rawScore : 0.8
+
+      // Dedup guard: the agent re-remembers the same fact constantly (e.g.
+      // "Vercel = omvänd skattskyldighet" on every Vercel categorization).
+      // Before inserting, compare against existing active memories by
+      // word-set Jaccard similarity. A near-duplicate (≥0.82) is treated as
+      // already-known: we touch its updated_at + nudge relevance instead of
+      // writing a new row, so agent_memory doesn't fill with paraphrases.
+      // Bounded to the 300 most-recent active rows — dedup-on-write keeps
+      // the working set small enough that this stays cheap.
+      const { data: existing } = await supabase
+        .from('agent_memory')
+        .select('id, kind, content, created_at, relevance_score')
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(300)
+
+      const incomingTokens = tokenizeForDedup(content)
+      const dupe = (existing ?? []).find(
+        (m: { content: string }) =>
+          jaccardSimilarity(incomingTokens, tokenizeForDedup(m.content)) >= 0.82,
+      ) as { id: string; kind: string; content: string; created_at: string; relevance_score: number } | undefined
+
+      if (dupe) {
+        // Already known. Bump relevance toward the new score (max) and
+        // refresh updated_at so recency-ordered recall still surfaces it.
+        await supabase
+          .from('agent_memory')
+          .update({
+            relevance_score: Math.max(dupe.relevance_score ?? 0, score),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', dupe.id)
+        return {
+          id: dupe.id,
+          kind: dupe.kind,
+          content: dupe.content,
+          created_at: dupe.created_at,
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('agent_memory')
+        .insert({
+          company_id: companyId,
+          kind,
+          content,
+          source: 'agent_learned',
+          source_ref: (args.source_ref as string | undefined) ?? null,
+          relevance_score: score,
+          is_active: true,
+          created_by_user_id: userId,
+        })
+        .select('id, kind, content, created_at')
+        .single()
+      if (error) throw new Error(`Failed to remember fact: ${error.message}`)
+      return data
+    },
+  },
+
+  {
+    name: 'gnubok_forget_fact',
+    description: 'Deactivate a memory entry by id. Use when the user explicitly asks to forget something or supersedes it. The row is kept for audit (is_active=false) but no longer surfaces in prompts.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The memory entry id from a prior gnubok_remember_fact call.' },
+        reason: { type: 'string', description: 'Optional short note about why this is being forgotten (for audit).' },
+      },
+      required: ['id'],
+    },
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string' },
+        is_active: { type: 'boolean' },
+      },
+      required: ['id', 'is_active'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, _userId, supabase) {
+      const id = (args.id as string | undefined)?.trim()
+      if (!id) throw new Error('id is required')
+      const { data, error } = await supabase
+        .from('agent_memory')
+        .update({ is_active: false })
+        .eq('id', id)
+        .eq('company_id', companyId)
+        .select('id, is_active')
+        .single()
+      if (error) throw new Error(`Failed to forget fact: ${error.message}`)
+      return data
+    },
+  },
+
+  {
+    name: 'gnubok_feedback',
+    description: 'Report agent-side feedback: missing tool, wrong description, skill gap, or a positive signal. Goes to event_log for product-team triage. Rate-limited 1/min/key.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        context: {
+          type: 'string',
+          description: 'What you were trying to do and what blocked you — or what worked well. Free text, max 2000 chars.',
+        },
+        sentiment: {
+          type: 'string',
+          enum: ['positive', 'negative', 'neutral'],
+          description: 'Direction of the feedback. Default: negative.',
+        },
+        suggestion: {
+          type: 'string',
+          description: 'Optional concrete suggestion (e.g. "add a tool for X", "rename Y arg").',
+        },
+        tool_name: {
+          type: 'string',
+          description: 'Optional specific tool the feedback concerns.',
+        },
+        skill_slug: {
+          type: 'string',
+          description: 'Optional specific skill the feedback concerns.',
+        },
+      },
+      required: ['context'],
+    },
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        recorded: { type: 'boolean' },
+        message: { type: 'string' },
+      },
+      required: ['recorded', 'message'],
+    },
+    annotations: {
+      // Not read-only: this writes a telemetry event to the bus and mutates the
+      // in-process rate-limit map. readOnlyHint is about side effects, not whether
+      // business state changes — so it must be false even though no ledger is touched.
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, userId, _supabase, actor) {
+      const context = (args.context as string | undefined)?.trim()
+      if (!context) throw new Error('context is required')
+      if (context.length > 2000) throw new Error('context is too long (max 2000 chars)')
+
+      const sentiment = ((args.sentiment as string | undefined) ?? 'negative') as 'positive' | 'negative' | 'neutral'
+      const suggestion = (args.suggestion as string | undefined)?.trim() || null
+      const toolName = (args.tool_name as string | undefined)?.trim() || null
+      const skillSlug = (args.skill_slug as string | undefined)?.trim() || null
+
+      // Rate-limit per API key (or per user when no key id). 1 per 60 s.
+      // In-memory + single-process — leaky bucket would be cleaner but the
+      // signal here is product-team triage, not security; over-counting is
+      // fine, occasional under-counting is fine.
+      const rateKey = actor?.id ?? userId
+      const now = Date.now()
+      const last = feedbackRateLimit.get(rateKey)
+      if (last && now - last < FEEDBACK_RATE_LIMIT_MS) {
+        const waitSec = Math.ceil((FEEDBACK_RATE_LIMIT_MS - (now - last)) / 1000)
+        throw new Error(`gnubok_feedback is rate-limited. Try again in ${waitSec}s.`)
+      }
+      feedbackRateLimit.set(rateKey, now)
+
+      void eventBus
+        .emit({
+          type: 'agent.feedback',
+          payload: {
+            context,
+            sentiment,
+            suggestion,
+            toolName,
+            skillSlug,
+            sessionId: actor?.sessionId ?? null,
+            actorType: actor?.type ?? 'api_key',
+            actorId: actor?.id ?? null,
+            actorLabel: actor?.label ?? null,
+            userId,
+            companyId,
+          },
+        })
+        .catch((err) => console.error('[mcp] agent.feedback emit failed:', err))
+
+      return {
+        recorded: true,
+        message: 'Thanks — feedback queued for product-team review. We aggregate signal weekly.',
+      }
+    },
+  },
+
+  {
+    name: 'gnubok_get_agent_briefing',
+    description: 'Bootstrap this company\'s specialized accountant context in one call: profile_summary, the atoms loaded for the company (metadata only — call gnubok_load_skill for bodies), and the top-30 active memories. Call once at session start.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    outputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        profile_summary: {
+          type: ['string', 'null'],
+          description: 'Composer-generated one-paragraph summary of the company. Null if no agent profile exists yet (composer has not run).',
+        },
+        atoms: {
+          type: 'array',
+          description: 'Atoms (horizontal/vertical/modifier skills) loaded for this company. Metadata only — call gnubok_load_skill(id) for the body.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string', description: 'Atom id (e.g. "horizontal/swedish-vat", "vertical/konsult-it", "modifier/holding-ab"). Use as gnubok_load_skill slug.' },
+              tier: { type: 'string', enum: ['horizontal', 'vertical', 'modifier'] },
+              title: { type: 'string' },
+              description: { type: 'string' },
+            },
+            required: ['id', 'tier', 'title', 'description'],
+          },
+        },
+        memory: {
+          type: 'array',
+          description: 'Top-30 active memories (facts, preferences, patterns, corrections) ranked by relevance and recency.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string' },
+              kind: { type: 'string', enum: ['fact', 'preference', 'pattern', 'correction'] },
+              content: { type: 'string' },
+              relevance_score: { type: ['number', 'null'] },
+            },
+            required: ['id', 'kind', 'content'],
+          },
+        },
+      },
+      required: ['profile_summary', 'atoms', 'memory'],
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(_args, companyId, _userId, supabase) {
+      const [profileRes, memoryRes] = await Promise.all([
+        supabase
+          .from('agent_profiles')
+          .select('profile_summary, horizontal_atoms, vertical_atoms, modifier_atoms')
+          .eq('company_id', companyId)
+          .maybeSingle(),
+        supabase
+          .from('agent_memory')
+          .select('id, kind, content, relevance_score')
+          .eq('company_id', companyId)
+          .eq('is_active', true)
+          .order('relevance_score', { ascending: false, nullsFirst: false })
+          .order('last_accessed_at', { ascending: false, nullsFirst: false })
+          .limit(30),
+      ])
+
+      if (profileRes.error) throw new Error(`Failed to load agent profile: ${profileRes.error.message}`)
+      if (memoryRes.error) throw new Error(`Failed to load agent memory: ${memoryRes.error.message}`)
+
+      const profile = profileRes.data as
+        | {
+            profile_summary: string | null
+            horizontal_atoms: string[] | null
+            vertical_atoms: string[] | null
+            modifier_atoms: string[] | null
+          }
+        | null
+      const memoryRows = (memoryRes.data ?? []) as Array<{
+        id: string
+        kind: string
+        content: string
+        relevance_score: number | null
+      }>
+
+      const atomIds = [
+        ...(profile?.horizontal_atoms ?? []),
+        ...(profile?.vertical_atoms ?? []),
+        ...(profile?.modifier_atoms ?? []),
+      ]
+
+      let atoms: Array<{ id: string; tier: string; title: string; description: string }> = []
+      if (atomIds.length > 0) {
+        const { data: atomRows, error: atomErr } = await supabase
+          .from('agent_atom_registry')
+          .select('id, tier, title, description')
+          .in('id', atomIds)
+          .eq('is_active', true)
+        if (atomErr) throw new Error(`Failed to load atom metadata: ${atomErr.message}`)
+        atoms = ((atomRows ?? []) as Array<{
+          id: string
+          tier: string
+          title: string | null
+          description: string
+        }>).map((r) => ({
+          id: r.id,
+          tier: r.tier,
+          title: r.title ?? r.id,
+          description: r.description,
+        }))
+      }
+
+      return {
+        profile_summary: profile?.profile_summary ?? null,
+        atoms,
+        memory: memoryRows.map((m) => ({
+          id: m.id,
+          kind: m.kind,
+          content: m.content,
+          relevance_score: m.relevance_score,
+        })),
       }
     },
   },
@@ -1643,7 +2255,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_list_transactions_without_documents',
-    description: 'List bank transactions that have a journal entry but no attached receipt/invoice document. Use to find verifikationer that need their kvitto attached for BFL compliance. Newest first, paginated.',
+    description: 'List BANK TRANSACTIONS booked without an attached underlag. For imported/manual verifikat (no bank tx row) call gnubok_list_verifikat_without_documents — this tool only covers bank-driven entries.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1721,15 +2333,113 @@ export const tools: McpTool[] = [
   },
 
   {
+    name: 'gnubok_list_verifikat_without_documents',
+    description: 'List POSTED journal entries (verifikat) that have no document_attachments row. Covers SIE-imported, manual and salary vouchers that the transactions-based tool misses. Newest first, paginated.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        limit: { type: 'number', description: 'Max results to return, 1–100 (default 20)' },
+        offset: { type: 'number', description: 'Number of results to skip for pagination (default 0)' },
+        since: { type: 'string', description: 'Optional ISO date (YYYY-MM-DD). Only return entries on or after this date.' },
+        min_amount: { type: 'number', description: 'Optional minimum gross amount (sum of debits) to filter low-value entries. Default 0.' },
+      },
+    },
+    outputSchema: paginatedSchema('verifikat', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        journal_entry_id: { type: 'string' },
+        voucher_series: { type: 'string' },
+        voucher_number: { type: 'number' },
+        entry_date: { type: 'string' },
+        description: { type: 'string' },
+        source_type: { type: 'string' },
+        gross_amount: { type: 'number' },
+      },
+    }),
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, _userId, supabase) {
+      const limit = Math.min(Math.max(1, Number(args.limit) || 20), 100)
+      const offset = Math.max(0, Number(args.offset) || 0)
+      const since = typeof args.since === 'string' ? args.since : null
+      const minAmount = typeof args.min_amount === 'number' && Number.isFinite(args.min_amount)
+        ? args.min_amount
+        : 0
+
+      // PostgREST left-join filter: journal_entries left-joined to
+      // document_attachments and filtered to rows where the join produced
+      // no document. The filter syntax `document_attachments.id=is.null`
+      // applies the predicate post-join (Supabase: foreign-table is-null).
+      let query = supabase
+        .from('journal_entries')
+        .select(
+          'id, voucher_series, voucher_number, entry_date, description, source_type, document_attachments!left(id), journal_entry_lines(debit_amount)',
+          { count: 'exact' },
+        )
+        .eq('company_id', companyId)
+        .eq('status', 'posted')
+        .is('document_attachments.id', null)
+      if (since) query = query.gte('entry_date', since)
+
+      const { data, error, count } = await query
+        .order('entry_date', { ascending: false })
+        .order('voucher_number', { ascending: false })
+        .range(offset, offset + limit - 1)
+      if (error) throw new Error(`Database error: ${error.message}`)
+
+      const rows = ((data ?? []) as Array<{
+        id: string
+        voucher_series: string
+        voucher_number: number
+        entry_date: string
+        description: string
+        source_type: string
+        journal_entry_lines: { debit_amount: number | string }[] | null
+      }>).map((e) => {
+        const lines = e.journal_entry_lines ?? []
+        const gross = lines.reduce((sum, l) => sum + (Number(l.debit_amount) || 0), 0)
+        return {
+          journal_entry_id: e.id,
+          voucher_series: e.voucher_series,
+          voucher_number: e.voucher_number,
+          entry_date: e.entry_date,
+          description: e.description,
+          source_type: e.source_type,
+          gross_amount: Math.round(gross * 100) / 100,
+        }
+      })
+
+      const filtered = minAmount > 0 ? rows.filter((r) => r.gross_amount >= minAmount) : rows
+
+      const total = count ?? 0
+      const hasMore = total > offset + filtered.length
+      return {
+        verifikat: filtered,
+        count: filtered.length,
+        total_count: total,
+        has_more: hasMore,
+        ...(hasMore ? { next_offset: offset + filtered.length } : {}),
+      }
+    },
+  },
+
+  {
     name: 'gnubok_categorize_transaction',
-    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation when the user authorises — no DB write until approval.',
+    description: 'Categorize a bank transaction. Stages the journal entry; commit via gnubok_approve_pending_operation when the user authorises. If the row has an attached underlag, the tool reads its extracted_data and rejects vat_treatment="reverse_charge" when the seller already charged VAT.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         transaction_id: { type: 'string', description: 'UUID of the transaction to categorize' },
         category: { type: 'string', description: 'Transaction category', enum: [...VALID_CATEGORIES] },
-        vat_treatment: { type: 'string', description: 'VAT treatment override (defaults to standard_25 for business expenses)', enum: [...VALID_VAT_TREATMENTS] },
+        vat_treatment: { type: 'string', description: 'VAT treatment override. Defaults to standard_25 for business expenses. Set reverse_charge ONLY when the underlag confirms the seller did NOT charge VAT (omvänd skattskyldighet). An invoice with foreign VAT already debited is NOT reverse charge.', enum: [...VALID_VAT_TREATMENTS] },
+        notes: { type: 'string', description: 'Audit-trail context appended to the verifikation description. For category=representation use this to record deltagare + syfte ("Anna Andersson (Acme AB), kundmöte om Y"). For project work, include the project ref. Keep under 200 chars; pure metadata, not a re-description of the transaction.' },
       },
       required: ['transaction_id', 'category'],
     },
@@ -1777,6 +2487,9 @@ export const tools: McpTool[] = [
           transaction_id: args.transaction_id,
           category: args.category,
           vat_treatment: args.vat_treatment || null,
+          notes: typeof args.notes === 'string' && args.notes.trim().length > 0
+            ? (args.notes as string).trim()
+            : null,
         },
         {
           debit_account: result.debit_account,
@@ -1785,9 +2498,13 @@ export const tools: McpTool[] = [
           currency: result.currency,
           vat_lines: result.vat_lines || [],
           category: result.category,
+          underlag: result.underlag ?? null,
         },
         actor,
-        undefined,
+        {
+          description: 'Once approved, the journal entry is posted. Continue with gnubok_list_uncategorized_transactions to keep clearing the backlog, or lock the period once it is empty.',
+          tool: 'gnubok_list_uncategorized_transactions',
+        },
         tx?.date ? { dateForPeriodCheck: tx.date } : {},
       )
     },
@@ -2284,7 +3001,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_get_vat_report',
-    description: 'VAT declaration (momsdeklaration, SKV 4700) for a period. Returns all rutor; ruta49 = VAT to pay (positive) or refund (negative).',
+    description: 'VAT declaration (momsdeklaration, SKV 4700) for a period. Returns all rutor; ruta49 = VAT to pay (positive) or refund (negative). Pass render_ui=true to also open the review widget (claude.ai / Desktop).',
     outputSchema: VAT_REPORT_OUTPUT_SCHEMA,
     inputSchema: {
       type: 'object',
@@ -2297,6 +3014,10 @@ export const tools: McpTool[] = [
         },
         year: { type: 'number', description: 'Year (e.g. 2025)' },
         period: { type: 'number', description: '1–12 for monthly, 1–4 for quarterly, 1 for yearly' },
+        render_ui: {
+          type: 'boolean',
+          description: 'When true, also render the interactive momsdeklaration review widget (claude.ai / Claude Desktop). The structured rutor are returned either way. Default false.',
+        },
       },
       required: ['period_type', 'year', 'period'],
     },
@@ -2306,6 +3027,10 @@ export const tools: McpTool[] = [
       idempotentHint: true,
       openWorldHint: false,
     },
+    // Renders the VAT widget only when the caller passes render_ui=true (the
+    // dispatcher emits result-level _meta in that case). This is the merged
+    // report+widget surface; gnubok_vat_review_widget remains as an alias.
+    uiResourceUri: 'ui://vat-review/app.html',
     async execute(args, companyId, _userId, supabase) {
       return computeVatReport(args, companyId, supabase)
     },
@@ -2313,7 +3038,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_vat_review_widget',
-    description: 'Open the interactive VAT review widget for a period. Same data as gnubok_get_vat_report, rendered as a tabular UI for pre-filing review.',
+    description: 'Open the interactive VAT review widget for a period. Equivalent to gnubok_get_vat_report(render_ui=true); kept as an alias for clients pinned to this tool name.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2593,7 +3318,10 @@ export const tools: McpTool[] = [
           payment_date: paymentDate,
         },
         actor,
-        undefined,
+        {
+          description: 'Once approved, the payment is booked (15xx → 19xx). Use gnubok_get_ar_ledger to confirm the customer balance reflects it.',
+          tool: 'gnubok_get_ar_ledger',
+        },
         { dateForPeriodCheck: paymentDate },
       )
     },
@@ -2648,7 +3376,12 @@ export const tools: McpTool[] = [
           total: invoice.total,
           currency: invoice.currency,
         },
-        actor
+        actor,
+        {
+          description: 'After the customer pays, mark the invoice paid via gnubok_mark_invoice_as_paid (or match it to the inbound bank transaction with gnubok_match_transaction_to_invoice).',
+          tool: 'gnubok_mark_invoice_as_paid',
+          args: { invoice_id: invoiceId },
+        }
       )
     },
   },
@@ -2694,7 +3427,12 @@ export const tools: McpTool[] = [
           total: invoice.total,
           currency: invoice.currency,
         },
-        actor
+        actor,
+        {
+          description: 'Once approved, the invoice moves to "sent". Track its payment via gnubok_mark_invoice_as_paid when the customer pays.',
+          tool: 'gnubok_mark_invoice_as_paid',
+          args: { invoice_id: invoiceId },
+        }
       )
     },
   },
@@ -3178,7 +3916,7 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_get_general_ledger',
-    description: 'General ledger (huvudbok) for a fiscal period: per-account opening balance, entries, closing balance. Optional account range filter.',
+    description: 'General ledger (huvudbok) for a fiscal period: per-account opening balance, entries, closing balance. Optional account range filter. For ad-hoc cross-account, amount, or free-text line queries use gnubok_query_journal.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -3572,7 +4310,11 @@ export const tools: McpTool[] = [
           invoice_date: invoice.invoice_date,
           customer_name: (invoice.customer as Record<string, unknown>)?.name as string,
         },
-        actor
+        actor,
+        {
+          description: 'After approval the transaction is linked and the invoice is marked paid. Use gnubok_get_ar_ledger to verify the customer balance.',
+          tool: 'gnubok_get_ar_ledger',
+        }
       )
     },
   },
@@ -3951,12 +4693,13 @@ export const tools: McpTool[] = [
 
   {
     name: 'gnubok_list_inbox_items',
-    description: 'List document inbox items (received supplier-invoice documents). Optional status filter.',
+    description: 'List document inbox items. Each has a `processed` flag covering all terminal links (transaction match, supplier invoice, or journal entry), so a booked receipt counts as done. unprocessed_only=true returns only docs still needing handling.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         status: { type: 'string', enum: ['received', 'error'], description: 'Filter by status' },
+        unprocessed_only: { type: 'boolean', description: 'When true, only return items with no terminal link yet (not matched to a transaction, supplier invoice, or journal entry) — i.e. documents that still need handling. Default false.' },
         limit: { type: 'number', description: 'Max results (default 20, max 50)' },
       },
     },
@@ -3978,20 +4721,23 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase) {
       const limit = Math.min(Math.max(1, Number(args.limit) || 20), 50)
       const status = args.status as string | undefined
+      const unprocessedOnly = args.unprocessed_only === true
 
       let query = supabase
         .from('invoice_inbox_items')
-        .select('id, status, source, created_at, extracted_data, matched_supplier_id, created_supplier_invoice_id, email_from, email_subject, error_message')
+        .select('id, status, source, created_at, extracted_data, matched_supplier_id, matched_transaction_id, created_supplier_invoice_id, created_journal_entry_id, email_from, email_subject, error_message')
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
-        .limit(limit)
+        // Fetch a wider window when filtering client-side so the limit
+        // applies to the post-filter set rather than truncating before it.
+        .limit(unprocessedOnly ? 200 : limit)
 
       if (status) query = query.eq('status', status)
 
       const { data, error } = await query
       if (error) throw new Error(`Database error: ${error.message}`)
 
-      const items = (data || []).map((item) => {
+      const mapped = (data || []).map((item) => {
         const extracted = item.extracted_data as Record<string, unknown> | null
         let vendorName: string | null = null
         let amount: number | null = null
@@ -4006,6 +4752,17 @@ export const tools: McpTool[] = [
           invoiceDate = (invoice?.invoiceDate as string) || null
         }
 
+        // An item is "processed" once it has ANY terminal link: matched to a
+        // bank transaction, converted to a supplier invoice, or booked
+        // directly to a journal entry. Surfacing only the supplier fields
+        // (as before) made receipts booked against bank transactions look
+        // loose — and risked the agent flagging them as duplicates.
+        const processed = !!(
+          item.matched_transaction_id ||
+          item.created_supplier_invoice_id ||
+          item.created_journal_entry_id
+        )
+
         return {
           id: item.id,
           status: item.status,
@@ -4014,13 +4771,19 @@ export const tools: McpTool[] = [
           vendor_name: vendorName,
           amount,
           invoice_date: invoiceDate,
+          processed,
           matched_supplier_id: item.matched_supplier_id,
+          matched_transaction_id: item.matched_transaction_id,
           created_supplier_invoice_id: item.created_supplier_invoice_id,
+          created_journal_entry_id: item.created_journal_entry_id,
           email_from: item.email_from,
           email_subject: item.email_subject,
           error_message: item.error_message,
         }
       })
+
+      const filtered = unprocessedOnly ? mapped.filter((i) => !i.processed) : mapped
+      const items = filtered.slice(0, limit)
 
       return { items, count: items.length }
     },
@@ -4582,10 +5345,20 @@ export const tools: McpTool[] = [
           existing_document_is_rakenskapsinformation: existingDoc?.journal_entry_id != null,
         },
         actor,
-        undefined,
+        {
+          description: 'Once approved, the receipt is linked to the transaction. If the transaction is still uncategorized, follow up with gnubok_categorize_transaction.',
+          tool: 'gnubok_categorize_transaction',
+          args: { transaction_id: transactionId },
+        },
         {
           idempotencyKey: typeof args.idempotency_key === 'string' ? args.idempotency_key : undefined,
           dryRun: args.dry_run === true,
+          // Pin the period-status envelope to the transaction date so the
+          // approver sees locked/closed periods on the same row that
+          // categorize_transaction surfaces them — the attach silently
+          // becomes part of the verifikation underlag once categorize
+          // propagates it (BFL 5 kap 6 § rättelse-räkenskapsinformation).
+          dateForPeriodCheck: typeof tx.date === 'string' ? tx.date : undefined,
         }
       )
     },
@@ -4673,7 +5446,7 @@ export const tools: McpTool[] = [
   },
   {
     name: 'gnubok_create_salary_run',
-    description: 'Create a draft salary run for a period and add all active employees with base lines. Use gnubok_calculate_salary_run next; final approval/booking happens in the web UI.',
+    description: 'Stage creation of a draft salary run for a period + base lines for all active employees. Commit via gnubok_approve_pending_operation; then run gnubok_calculate_salary_run. Final booking happens in the web UI.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -4684,40 +5457,46 @@ export const tools: McpTool[] = [
       },
       required: ['period_year', 'period_month', 'payment_date'],
     },
-    outputSchema: { type: 'object' },
+    outputSchema: STAGED_OPERATION_SCHEMA,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    async execute(args, companyId, userId, supabase) {
+    async execute(args, companyId, userId, supabase, actor) {
       const { period_year, period_month, payment_date } = args as { period_year: number; period_month: number; payment_date: string }
-      // Create run
-      const { data: run, error: runError } = await supabase
-        .from('salary_runs')
-        .insert({ company_id: companyId, user_id: userId, period_year, period_month, payment_date })
-        .select()
-        .single()
-      if (runError) throw new Error(runError.code === '23505' ? 'Salary run already exists for this period' : runError.message)
-      // Add all active employees
-      const { data: employees } = await supabase.from('employees').select('*').eq('company_id', companyId).eq('is_active', true)
-      for (const emp of employees || []) {
-        const baseAmount = emp.salary_type === 'monthly'
-          ? Math.round((emp.monthly_salary || 0) * (emp.employment_degree / 100) * 100) / 100
-          : 0
-        const { data: sre } = await supabase.from('salary_run_employees').insert({
-          salary_run_id: run.id, employee_id: emp.id, company_id: companyId,
-          employment_degree: emp.employment_degree, monthly_salary: emp.monthly_salary || 0,
-          salary_type: emp.salary_type, tax_table_number: emp.tax_table_number, tax_column: emp.tax_column,
-        }).select().single()
-        if (sre) {
-          const { getLineItemAccount } = await import('@/lib/salary/account-mapping')
-          const itemType = emp.salary_type === 'monthly' ? 'monthly_salary' : 'hourly_salary'
-          await supabase.from('salary_line_items').insert({
-            salary_run_employee_id: sre.id, company_id: companyId,
-            item_type: itemType, description: emp.salary_type === 'monthly' ? 'Grundlön' : 'Timlön',
-            amount: baseAmount, is_taxable: true, is_avgift_basis: true, is_vacation_basis: true,
-            account_number: getLineItemAccount(itemType as never, emp.employment_type), sort_order: 0,
-          })
-        }
+      if (!Number.isInteger(period_year) || period_year < 1900 || period_year > 9999) {
+        throw new Error('period_year must be a 4-digit year')
       }
-      return { ...run, employee_count: (employees || []).length, message: `Salary run created with ${(employees || []).length} employees. Use the web UI to calculate, review, and book.` }
+      if (!Number.isInteger(period_month) || period_month < 1 || period_month > 12) {
+        throw new Error('period_month must be 1-12')
+      }
+      if (typeof payment_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(payment_date)) {
+        throw new Error('payment_date must be YYYY-MM-DD')
+      }
+
+      // Preview: count active employees and surface base monthly salaries so
+      // the approver knows what would be seeded. No writes here — the commit
+      // path re-runs createSalaryRunWithEmployees atomically.
+      const { count: employeeCount } = await supabase
+        .from('employees')
+        .select('id', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .eq('is_active', true)
+
+      const period = `${period_year}-${String(period_month).padStart(2, '0')}`
+      return stagePendingOperation(
+        supabase, companyId, userId, 'create_salary_run',
+        `Skapa löneutbetalning: ${period} (${employeeCount ?? 0} anställda)`,
+        { period_year, period_month, payment_date },
+        {
+          period,
+          payment_date,
+          employee_count: employeeCount ?? 0,
+        },
+        actor,
+        {
+          description: 'After approval, calculate tax, avgifter and totals.',
+          tool: 'gnubok_calculate_salary_run',
+        },
+        { dateForPeriodCheck: payment_date },
+      )
     },
   },
   {
@@ -4733,25 +5512,41 @@ export const tools: McpTool[] = [
     },
     outputSchema: { type: 'object' },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    async execute(args, companyId, userId, supabase) {
-      // Delegate to the calculate API endpoint logic
+    async execute(args, companyId, _userId, supabase) {
       const id = args.salary_run_id as string
-      const { data: run } = await supabase.from('salary_runs').select('*').eq('id', id).eq('company_id', companyId).single()
-      if (!run) throw new Error('Salary run not found')
-      if (run.status !== 'draft') throw new Error('Can only calculate draft runs')
-      // Trigger via internal fetch
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
-      const res = await fetch(`${appUrl}/api/salary/runs/${id}/calculate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Cookie': `gnubok-company-id=${companyId}` },
+      if (!id) throw new Error('salary_run_id is required')
+      // Call the extracted calculation lib directly — no self-fetch / forged
+      // cookie, no NEXT_PUBLIC_APP_URL dependency. The lib enforces draft status
+      // and owner-by-company itself.
+      const { runSalaryCalculation } = await import('@/lib/salary/run-calculation')
+      const { createLogger } = await import('@/lib/logger')
+      const { randomUUID } = await import('node:crypto')
+      const result = await runSalaryCalculation({
+        supabase,
+        companyId,
+        salaryRunId: id,
+        log: createLogger('mcp/calculate_salary_run'),
+        requestId: randomUUID(),
       })
-      if (!res.ok) throw new Error('Calculation failed — use the web UI to calculate')
-      return { message: 'Calculation complete. Review results in the web UI.', salary_run_id: id }
+      if (!result.ok) {
+        throw new Error(`Salary calculation failed: ${result.code}`)
+      }
+      return {
+        salary_run_id: id,
+        status: (result.run as { status?: string }).status ?? 'draft',
+        warnings: result.warnings,
+        message: 'Calculation complete. Review and book the run in the web UI.',
+        next: {
+          description: 'Review the calculated run; approval and booking happen in the web UI.',
+          tool: 'gnubok_get_salary_run',
+          args: { salary_run_id: id },
+        },
+      }
     },
   },
   {
     name: 'gnubok_generate_agi',
-    description: 'Generate AGI XML (Arbetsgivardeklaration) for a salary run. Run must be past draft. Stored 7 years per BFL; download URL returned.',
+    description: 'Stage AGI XML generation (Arbetsgivardeklaration) for a salary run. High-risk: produces statutory Skatteverket underlag (BFL 7-year retention). Commit via gnubok_approve_pending_operation.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -4760,29 +5555,38 @@ export const tools: McpTool[] = [
       },
       required: ['salary_run_id'],
     },
-    outputSchema: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        message: { type: 'string' },
-        period: { type: 'string' },
-        employee_count: { type: 'number' },
-        download_url: { type: 'string' },
-      },
-    },
+    outputSchema: STAGED_OPERATION_SCHEMA,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    async execute(args, companyId, _userId, supabase) {
+    async execute(args, companyId, userId, supabase, actor) {
       const id = args.salary_run_id as string
-      const { data: run } = await supabase.from('salary_runs').select('period_year, period_month, status').eq('id', id).eq('company_id', companyId).single()
+      if (!id) throw new Error('salary_run_id is required')
+
+      const { data: run } = await supabase
+        .from('salary_runs')
+        .select('id, status, period_year, period_month, payment_date')
+        .eq('id', id)
+        .eq('company_id', companyId)
+        .maybeSingle()
       if (!run) throw new Error('Salary run not found')
-      if (!['review', 'approved', 'paid', 'booked'].includes(run.status)) throw new Error('Run must be past draft status to generate AGI')
-      const { data: emps } = await supabase.from('salary_run_employees').select('id').eq('salary_run_id', id)
-      return {
-        message: `AGI ready for ${run.period_year}-${String(run.period_month).padStart(2, '0')}. Download XML from /api/salary/runs/${id}/agi/xml`,
-        period: `${run.period_year}-${String(run.period_month).padStart(2, '0')}`,
-        employee_count: (emps || []).length,
-        download_url: `/api/salary/runs/${id}/agi/xml`,
+      if (run.status === 'draft') {
+        throw new Error('Salary run must be past draft before AGI can be generated')
       }
+
+      const period = `${run.period_year}-${String(run.period_month).padStart(2, '0')}`
+      return stagePendingOperation(
+        supabase, companyId, userId, 'generate_agi',
+        `Generera AGI: ${period}`,
+        { salary_run_id: id },
+        {
+          period,
+          status: run.status,
+          payment_date: run.payment_date,
+          retention_years: 7,
+        },
+        actor,
+        undefined,
+        run.payment_date ? { dateForPeriodCheck: run.payment_date } : {},
+      )
     },
   },
 
@@ -4965,7 +5769,12 @@ export const tools: McpTool[] = [
           will_reverse_voucher: `${entry.voucher_series}${entry.voucher_number}`,
           method: 'storno (reversal entry, never deletes)',
         },
-        actor
+        actor,
+        {
+          description: 'After approval the transaction is uncategorized again — book it with the correct category via gnubok_categorize_transaction.',
+          tool: 'gnubok_categorize_transaction',
+          args: { transaction_id: transactionId },
+        }
       )
     },
   },
@@ -5340,11 +6149,32 @@ export const tools: McpTool[] = [
       const nextId = args.next_period_id as string
       if (!closedId || !nextId) throw new Error('closed_period_id and next_period_id are required')
 
+      // Resolve human-readable period names so the approver doesn't see two raw
+      // UUIDs in the staged-ops list. Both lookups are scoped to the company so
+      // a mis-typed UUID from another tenant just yields a thin (but safe) title.
+      const [{ data: closed }, { data: next }] = await Promise.all([
+        supabase.from('fiscal_periods').select('name, period_end').eq('id', closedId).eq('company_id', companyId).maybeSingle(),
+        supabase.from('fiscal_periods').select('name, period_start').eq('id', nextId).eq('company_id', companyId).maybeSingle(),
+      ])
+      const closedLabel = closed?.name ?? closedId
+      const nextLabel = next?.name ?? nextId
+
       return stagePendingOperation(supabase, companyId, userId, 'set_opening_balances',
-        `Ingående balans: ${nextId}`,
+        `Ingående balans: ${closedLabel} → ${nextLabel}`,
         { closed_period_id: closedId, next_period_id: nextId },
-        { closed_period_id: closedId, next_period_id: nextId, will: 'create opening balance entry from closed-period trial balance' },
-        actor
+        {
+          closed_period_id: closedId,
+          closed_period_name: closed?.name ?? null,
+          next_period_id: nextId,
+          next_period_name: next?.name ?? null,
+          will: 'create opening balance entry from closed-period trial balance',
+        },
+        actor,
+        {
+          description: 'After approval, verify the opening balance matches the closed period\'s UB via gnubok_get_trial_balance on the next period.',
+          tool: 'gnubok_get_trial_balance',
+          args: { fiscal_period_id: nextId },
+        }
       )
     },
   },
@@ -5372,7 +6202,12 @@ export const tools: McpTool[] = [
         `Valutaomvärdering ${closingDate}`,
         { fiscal_period_id: fiscalPeriodId, closing_date: closingDate },
         { fiscal_period_id: fiscalPeriodId, closing_date: closingDate, posts_to: ['3960', '7960'] },
-        actor
+        actor,
+        {
+          description: 'After approval, confirm the new FX-adjusted balances via gnubok_get_balance_sheet.',
+          tool: 'gnubok_get_balance_sheet',
+          args: { fiscal_period_id: fiscalPeriodId },
+        }
       )
     },
   },
@@ -5485,7 +6320,12 @@ export const tools: McpTool[] = [
           gap_end: args.gap_end,
           explanation: explanation.trim(),
         },
-        actor
+        actor,
+        {
+          description: 'After approval, run gnubok_list_voucher_gaps again to confirm all gaps in the period now have explanations (BFNAR 2013:2).',
+          tool: 'gnubok_list_voucher_gaps',
+          args: { fiscal_period_id: args.fiscal_period_id },
+        }
       )
     },
   },
@@ -5523,7 +6363,10 @@ export const tools: McpTool[] = [
           invoice_date: inv.invoice_date,
         },
         actor,
-        undefined,
+        {
+          description: 'After approval the invoice is attested and ready for payment. When paid, match the outbound bank transaction via gnubok_match_transaction_to_invoice.',
+          tool: 'gnubok_get_supplier_ledger',
+        },
         inv.invoice_date ? { dateForPeriodCheck: inv.invoice_date } : {},
       )
     },
@@ -5561,7 +6404,11 @@ export const tools: McpTool[] = [
           currency: inv.currency,
           method: 'creates KREDIT- mirror invoice + reverses registration JE (accrual)',
         },
-        actor
+        actor,
+        {
+          description: 'After approval the credit note is posted and the leverantörsskuld cleared. Verify with gnubok_get_supplier_ledger.',
+          tool: 'gnubok_get_supplier_ledger',
+        }
       )
     },
   },
@@ -5589,8 +6436,9 @@ export const tools: McpTool[] = [
       if (inv.document_type !== 'proforma') throw new Error('Endast proformafakturor kan konverteras')
       if (inv.status === 'cancelled') throw new Error('Denna proformafaktura har redan makuleras')
 
+      const customerName = (inv.customer as { name?: string } | null)?.name ?? 'okänd kund'
       return stagePendingOperation(supabase, companyId, userId, 'convert_invoice',
-        `Konvertera proforma → faktura`,
+        `Konvertera proforma → faktura: ${customerName} ${Math.round(Number(inv.total) * 100) / 100} ${inv.currency}`,
         { invoice_id: id },
         {
           customer_name: (inv.customer as { name?: string } | null)?.name,
@@ -5645,7 +6493,12 @@ export const tools: McpTool[] = [
           locked_at: period.locked_at,
           will: 'clear locked_at — new entries can be posted into the period again',
         },
-        actor
+        actor,
+        {
+          description: 'After approval, post the rättelse via gnubok_correct_entry or new entries via gnubok_create_voucher, then re-lock with gnubok_lock_period.',
+          tool: 'gnubok_lock_period',
+          args: { fiscal_period_id: fiscalPeriodId },
+        }
       )
     },
   },
@@ -5694,7 +6547,11 @@ export const tools: McpTool[] = [
           reason: reason || null,
           method: 'creates KR- mirror invoice + reverses original JE (accrual)',
         },
-        actor
+        actor,
+        {
+          description: 'After approval the credit note posts and the kundfordring is cleared. If a refund is owed to the customer, book the outbound payment when it leaves the bank.',
+          tool: 'gnubok_get_ar_ledger',
+        }
       )
     },
   },
@@ -5731,6 +6588,25 @@ export const tools: McpTool[] = [
         throw new Error('file_content, filename, and mappings are required')
       }
 
+      // Parse + validate at stage time so the approver sees real content (which
+      // entries, what balances) and a broken/unbalanced file is rejected HERE,
+      // not after they approve a blind byte count. commitImportSie re-parses on
+      // commit (defense-in-depth — the staged string could be tampered).
+      const { parseSIEFile, validateSIEFile } = await import('@/lib/import/sie-parser')
+      let parsed
+      try {
+        parsed = parseSIEFile(fileContent)
+      } catch (e) {
+        throw new Error(`SIE-filen kunde inte tolkas: ${e instanceof Error ? e.message : 'okänt fel'}`)
+      }
+      const validation = validateSIEFile(parsed)
+      if (!validation.valid) {
+        throw new Error(`SIE-filen är ogiltig och importeras inte: ${validation.errors.join('; ')}`)
+      }
+
+      const ibCurrent = parsed.openingBalances.filter((b) => b.yearIndex === 0)
+      const ibTotal = Math.round(ibCurrent.reduce((s, b) => s + b.amount, 0) * 100) / 100
+
       return stagePendingOperation(supabase, companyId, userId, 'import_sie',
         `SIE-import: ${filename}`,
         {
@@ -5746,12 +6622,24 @@ export const tools: McpTool[] = [
           filename,
           file_size_bytes: fileContent.length,
           mappings_count: mappings.length,
+          company_name: parsed.header.companyName,
+          org_number: parsed.header.orgNumber,
+          fiscal_year: { start: parsed.stats.fiscalYearStart, end: parsed.stats.fiscalYearEnd },
+          account_count: parsed.stats.totalAccounts,
+          voucher_count: parsed.stats.totalVouchers,
+          transaction_line_count: parsed.stats.totalTransactionLines,
+          opening_balance: { total: ibTotal, is_balanced: ibTotal === 0 },
+          warnings: validation.warnings,
           create_fiscal_period: Boolean(args.create_fiscal_period),
           import_opening_balances: Boolean(args.import_opening_balances),
           import_transactions: Boolean(args.import_transactions),
-          will: 'parse SIE on commit, create fiscal period + opening balances + journal entries',
+          will: 'create fiscal period + opening balances + journal entries from the parsed SIE',
         },
-        actor
+        actor,
+        {
+          description: 'After commit, verify the imported balances with gnubok_get_trial_balance and check continuity via the IB/UB of adjacent periods.',
+          tool: 'gnubok_get_trial_balance',
+        }
       )
     },
   },
@@ -5976,7 +6864,10 @@ export const tools: McpTool[] = [
             : 'create a posted journal entry with a fresh sequential voucher number',
         },
         actor,
-        undefined,
+        {
+          description: 'After commit, confirm the new verifikation lands on the right accounts with gnubok_get_general_ledger or gnubok_query_journal.',
+          tool: 'gnubok_query_journal',
+        },
         { dateForPeriodCheck: entryDate },
       )
     },
@@ -6134,7 +7025,10 @@ export const tools: McpTool[] = [
           will: 'post a storno that mirrors the original, then post a new corrected entry, then mark the original as reversed (BFL 5 kap 5§)',
         },
         actor,
-        undefined,
+        {
+          description: 'After commit, the original is marked reversed and a corrected verifikation lands in its place. Confirm both with gnubok_query_journal.',
+          tool: 'gnubok_query_journal',
+        },
         { dateForPeriodCheck: original.entry_date },
       )
     },
@@ -6281,7 +7175,10 @@ export const tools: McpTool[] = [
           will: 'post a storno that mirrors the original with debits and credits swapped, link via reverses_id, and leave the original visible (BFL 5 kap, makulering)',
         },
         actor,
-        undefined,
+        {
+          description: 'After commit, the storno is posted and the original stays visible. Confirm with gnubok_query_journal.',
+          tool: 'gnubok_query_journal',
+        },
         { dateForPeriodCheck: original.entry_date },
       )
     },
@@ -6414,14 +7311,15 @@ export const tools: McpTool[] = [
         : proposal.items
       const pending = filtered.filter((i) => !i.existingJournalEntryId)
 
+      const totalAmount = pending.reduce((s, i) => s + i.amount, 0)
       return stagePendingOperation(
         supabase, companyId, userId, 'post_annual_depreciation',
-        `Planenlig avskrivning: ${period.name}`,
+        `Planenlig avskrivning: ${period.name} — ${pending.length} tillgång(ar), ${Math.round(totalAmount * 100) / 100} SEK`,
         { fiscal_period_id: fiscalPeriodId, asset_ids: assetIds },
         {
           period_name: period.name,
           item_count: pending.length,
-          total_amount: pending.reduce((s, i) => s + i.amount, 0),
+          total_amount: totalAmount,
           will: `book ${pending.length} planenlig avskrivning(ar) — one journal entry per asset`,
           items: pending.map((i) => ({
             asset_id: i.asset.id,
@@ -6431,7 +7329,11 @@ export const tools: McpTool[] = [
           })),
         },
         actor,
-        undefined,
+        {
+          description: 'After approval, depreciation entries are posted. Continue the year-end flow via gnubok_year_end_readiness, then gnubok_run_year_end.',
+          tool: 'gnubok_year_end_readiness',
+          args: { fiscal_period_id: fiscalPeriodId },
+        },
         { dateForPeriodCheck: period.period_end },
       )
     },
@@ -6954,6 +7856,7 @@ function emitToolCallTelemetry(payload: {
         requestId: payload.requestId,
         userId: payload.userId,
         companyId: payload.companyId,
+        sessionId: payload.actor.sessionId ?? null,
       },
     })
     .catch((err) => {
@@ -6984,6 +7887,7 @@ function emitToolsListTelemetry(payload: {
         requestId: payload.requestId,
         userId: payload.userId,
         companyId: payload.companyId,
+        sessionId: payload.actor.sessionId ?? null,
       },
     })
     .catch((err) => {
@@ -7018,11 +7922,97 @@ function emitResourceReadTelemetry(payload: {
         requestId: payload.requestId,
         userId: payload.userId,
         companyId: payload.companyId,
+        sessionId: payload.actor.sessionId ?? null,
       },
     })
     .catch((err) => {
       console.error('[mcp] resource_read telemetry emit failed:', err)
     })
+}
+
+/**
+ * Per-session ring of "what was the most recent tool call, and what did its
+ * response suggest as the `next` tool?" Used to detect `mcp.next_hint_followed`
+ * when the agent's next call matches the previous nextHint.tool.
+ *
+ * In-memory only. Single-process visibility is acceptable for telemetry — a
+ * miss in a multi-instance deploy only loses signal, never blocks a tool call.
+ * Entries auto-expire after NEXT_HINT_TTL_MS to keep the map bounded.
+ */
+const NEXT_HINT_TTL_MS = 10 * 60 * 1000
+const lastResponseHintBySession = new Map<string, { fromTool: string; suggestedTool: string; expiresAt: number }>()
+
+function rememberNextHint(sessionId: string | null | undefined, fromTool: string, suggestedTool: string | undefined): void {
+  if (!sessionId || !suggestedTool) return
+  // Opportunistic eviction: drop a few expired entries on each write so the
+  // map can't grow without bound under steady load.
+  if (lastResponseHintBySession.size > 200) {
+    const now = Date.now()
+    for (const [k, v] of lastResponseHintBySession) {
+      if (v.expiresAt < now) {
+        lastResponseHintBySession.delete(k)
+        if (lastResponseHintBySession.size < 100) break
+      }
+    }
+  }
+  lastResponseHintBySession.set(sessionId, {
+    fromTool,
+    suggestedTool,
+    expiresAt: Date.now() + NEXT_HINT_TTL_MS,
+  })
+}
+
+function checkAndEmitNextHintFollowed(
+  sessionId: string | null | undefined,
+  toolName: string,
+  actor: ActorContext,
+  userId: string,
+  companyId: string,
+): void {
+  if (!sessionId) return
+  const prev = lastResponseHintBySession.get(sessionId)
+  if (!prev || prev.expiresAt < Date.now() || prev.suggestedTool !== toolName) return
+  // Consume the hint so we don't double-count if the agent calls the same
+  // tool twice in a row (idempotent retries shouldn't inflate the metric).
+  lastResponseHintBySession.delete(sessionId)
+  void eventBus
+    .emit({
+      type: 'mcp.next_hint_followed',
+      payload: {
+        fromTool: prev.fromTool,
+        toTool: toolName,
+        sessionId,
+        actorType: actor.type,
+        actorId: actor.id ?? null,
+        actorLabel: actor.label ?? null,
+        userId,
+        companyId,
+      },
+    })
+    .catch((err) => console.error('[mcp] next_hint_followed emit failed:', err))
+}
+
+/** Fire-and-forget telemetry for workflow lifecycle. */
+function emitWorkflowStarted(payload: {
+  slug: string
+  actor: ActorContext
+  userId: string
+  companyId: string
+}): void {
+  void eventBus
+    .emit({
+      type: 'mcp.workflow_started',
+      payload: {
+        slug: payload.slug,
+        sessionId: payload.actor.sessionId ?? null,
+        actorType: payload.actor.type,
+        actorId: payload.actor.id ?? null,
+        actorLabel: payload.actor.label ?? null,
+        userId: payload.userId,
+        companyId: payload.companyId,
+      },
+    })
+    .catch((err) => console.error('[mcp] workflow_started emit failed:', err))
 }
 
 /**
@@ -7072,10 +8062,17 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 
   const { userId, companyId, scopes: keyScopes, apiKeyId, apiKeyName } = authResult
   const supabase = createServiceClientNoCookies()
+  // The Mcp-Session-Id header (introduced in spec 2025-06-18) is the canonical
+  // way for an agent to keep a stable identifier across tools/call invocations
+  // in one conversation. We use it to correlate telemetry + drive the next-hint
+  // followed metric. It is NOT used for auth.
+  const rawSessionId = request.headers.get('mcp-session-id')
+  const sessionId = rawSessionId && /^[A-Za-z0-9_-]{1,128}$/.test(rawSessionId) ? rawSessionId : null
   const actor: ActorContext = {
     type: 'api_key',
     id: apiKeyId,
     label: apiKeyName ?? 'Unnamed API key',
+    sessionId,
   }
 
   // ── Parse JSON-RPC ──
@@ -7118,15 +8115,17 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
             'gnubok — Swedish double-entry bookkeeping via conversation.',
             '',
             'Discovery:',
-            '• Call gnubok_search_tools first (e.g. query="vat") to load only the schemas you need. tools/list returns names + 1-line summaries; pull full schemas via gnubok_search_tools(detail="full") when invoking.',
+            '• tools/list returns the full schema for every tool. To narrow a large catalog, call gnubok_search_tools(query="…") — it ranks tools by relevance; pass detail="name"|"summary"|"full" to control payload size.',
             '• When the user asks "how do I do X" or you\'re unsure of the correct sequence (month-end close, VAT review, year-end, invoicing, payroll), call gnubok_list_skills first — domain workflows are documented as loadable skills with tool references.',
             '',
             'Common workflows:',
-            '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → gnubok_approve_pending_operation (after user confirms in chat). Use gnubok_match_transaction_to_invoice to apply income to a specific invoice.',
+            '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → gnubok_approve_pending_operation (after user confirms in chat).',
+            '• Applying income to invoices — pick by what you have: a specific bank transaction + a known invoice → gnubok_match_transaction_to_invoice; an invoice you know is paid but no specific bank line → gnubok_mark_invoice_as_paid; a whole period of unmatched income to reconcile → gnubok_auto_match_period (dry_run first). All stage for approval.',
             '• Invoicing: gnubok_list_customers (or gnubok_create_customer) → gnubok_create_invoice → gnubok_send_invoice or gnubok_mark_invoice_as_sent → gnubok_mark_invoice_as_paid. Refund via gnubok_credit_invoice.',
             '• Suppliers: gnubok_list_suppliers (or gnubok_create_supplier) → gnubok_create_supplier_invoice_from_inbox → gnubok_approve_supplier_invoice. Refund via gnubok_credit_supplier_invoice.',
-            '• VAT: gnubok_get_vat_report(period_type, year, period). Ruta49 = VAT to pay (positive) or refund (negative).',
-            '• Reporting: gnubok_get_trial_balance / _income_statement / _balance_sheet / _kpi_report / _ar_ledger / _supplier_ledger — all default to the most recent fiscal period.',
+            '• VAT: gnubok_get_vat_report(period_type, year, period). Ruta49 = VAT to pay (positive) or refund (negative). Pass render_ui=true to open the momsdeklaration review widget (claude.ai / Desktop). gnubok_vat_close_check reports filing-readiness blockers.',
+            '• Reporting: gnubok_get_trial_balance / _income_statement / _balance_sheet / _kpi_report / _ar_ledger / _supplier_ledger — all default to the most recent fiscal period. For account roll-ups use gnubok_get_general_ledger; for ad-hoc line queries (free-text, amount/date/source filters) use gnubok_query_journal.',
+            '• Interactive review UIs (claude.ai / Claude Desktop only): gnubok_get_vat_report(render_ui=true) renders the VAT widget and gnubok_receipt_matcher opens the receipt↔transaction matcher. Both also return structured data; other clients ignore the UI and use the data.',
             '• Year-end: gnubok_lock_period → gnubok_run_year_end → gnubok_set_opening_balances → gnubok_close_period. Each stages for human approval; closing is irreversible per BFL.',
             '• Payroll: gnubok_create_salary_run → gnubok_calculate_salary_run → review/approve in web UI → gnubok_generate_agi.',
             '• Reviewing & approving staged operations: gnubok_list_pending_operations shows the queue. When the user explicitly authorises a specific operation_id in chat, call gnubok_approve_pending_operation to commit. Use gnubok_reject_pending_operation to discard.',
@@ -7231,6 +8230,11 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
         )
       }
 
+      // Detect if THIS call follows the previous call's `next` hint — must
+      // run before execute() so we don't double-store on this call. Emits
+      // mcp.next_hint_followed when the agent's behaviour matches the hint.
+      checkAndEmitNextHintFollowed(sessionId, toolName, actor, userId, companyId)
+
       const callStartedAt = Date.now()
       try {
         // gnubok_search_tools needs the caller's scopes to filter results to
@@ -7249,6 +8253,23 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
         if (result !== null && result !== undefined) {
           response.structuredContent =
             typeof result === 'object' && !Array.isArray(result) ? result : { value: result }
+        }
+        // Result-level UI hint: render the widget only when the caller opted in
+        // via render_ui=true. This keeps the merged report+widget tool data-only
+        // by default and never sends a render directive a plain-data call didn't ask for.
+        if (tool.uiResourceUri && (toolArgs as Record<string, unknown>).render_ui === true) {
+          response._meta = { ui: { resourceUri: tool.uiResourceUri } }
+        }
+        // Record the response's `next.tool` (when present) so the next call
+        // from the same session can be matched against it.
+        if (result && typeof result === 'object' && !Array.isArray(result)) {
+          const next = (result as Record<string, unknown>).next
+          if (next && typeof next === 'object') {
+            const suggestedTool = (next as Record<string, unknown>).tool
+            if (typeof suggestedTool === 'string') {
+              rememberNextHint(sessionId, toolName, suggestedTool)
+            }
+          }
         }
         emitToolCallTelemetry({
           tool: toolName,
@@ -7289,7 +8310,8 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
       }
     }
 
-    case 'resources/list':
+    case 'resources/list': {
+      const allSkills = await loadAllSkills(supabase)
       return NextResponse.json(
         jsonRpc(id ?? null, {
           resources: [
@@ -7299,7 +8321,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
               description: w.description,
               mimeType: WIDGET_MIME_TYPE,
             })),
-            ...skills.map((s) => ({
+            ...allSkills.map((s) => ({
               uri: skillUri(s.slug),
               name: s.name,
               description: s.summary,
@@ -7314,6 +8336,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           ],
         })
       )
+    }
 
     case 'resources/read': {
       const uri = (params as Record<string, unknown>)?.uri as string
@@ -7346,10 +8369,11 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
       }
 
       // Skills exposed at gnubok://skill/<slug> — Markdown bodies, forward-compatible
-      // with a future native MCP skills/list primitive.
+      // with a future native MCP skills/list primitive. Atom slugs (slash-bearing
+      // registry ids) are URL-encoded in the URI; skillSlugFromUri decodes.
       if (uri.startsWith(SKILL_URI_PREFIX)) {
         const slug = skillSlugFromUri(uri)
-        const skill = slug ? findSkill(slug) : null
+        const skill = slug ? await findSkill(slug, supabase) : null
         if (skill) {
           emitResourceReadTelemetry({
             uri,

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { Card, CardContent } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { cn, formatCurrency } from '@/lib/utils'
 import { UpcomingDeadlinesWidget } from '@/components/deadlines/UpcomingDeadlinesWidget'
 import { TaxTodoWidget } from '@/components/deadlines/TaxTodoWidget'
@@ -17,8 +18,11 @@ import {
   CheckCircle2,
   FileWarning,
   Clock,
+  ArrowRight,
+  MessageCircle,
 } from 'lucide-react'
 import type { Deadline, ReceiptQueueSummary, OnboardingProgress } from '@/types'
+import { getBranding } from '@/lib/branding/service'
 
 const setupFreshStartKey = (companyId: string) => `erp_setup_fresh_start:${companyId}`
 
@@ -42,9 +46,16 @@ interface DashboardContentProps {
     staleUncategorizedCount: number
   }
   onboardingProgress?: OnboardingProgress
+  /**
+   * False until the company has a verified agent_profile. When false the hero
+   * slot shows a build-assistant prompt instead of the next-best-action card,
+   * so existing/migrated users are nudged to build the assistant without a
+   * full-screen onboarding takeover.
+   */
+  agentBuilt?: boolean
 }
 
-export default function DashboardContent({ companyId, summary, onboardingProgress }: DashboardContentProps) {
+export default function DashboardContent({ companyId, summary, onboardingProgress, agentBuilt = true }: DashboardContentProps) {
   const [showAllAlerts, setShowAllAlerts] = useState(false)
   const t = useTranslations('dashboard')
 
@@ -226,8 +237,125 @@ export default function DashboardContent({ companyId, summary, onboardingProgres
     : 0
   const todoCount = summary.uncategorizedCount + summary.overdueInvoicesCount + pendingReceiptsCount + passedDeadlinesCount
 
+  const slim = getBranding().navDensity === 'slim'
+
+  // Pick the single most-urgent next action so the launchpad surfaces one
+  // unambiguous CTA. Order matches the friction we actually want to remove
+  // first: stale → overdue → uncategorized → unpaid → all clear.
+  const nextBestAction = (() => {
+    if (summary.staleUncategorizedCount > 0) {
+      return {
+        href: '/transactions',
+        title: 'Gamla transaktioner väntar',
+        body: `${summary.staleUncategorizedCount} transaktion${summary.staleUncategorizedCount === 1 ? '' : 'er'} äldre än 14 dagar saknar bokföring.`,
+        cta: 'Bokför nu',
+        tone: 'destructive' as const,
+        icon: Clock,
+      }
+    }
+    if (summary.overdueInvoicesCount > 0) {
+      return {
+        href: '/invoices?status=unpaid',
+        title: 'Förfallna fakturor',
+        body: `${summary.overdueInvoicesCount} st · ${formatCurrency(summary.unpaidInvoicesTotal)}`,
+        cta: 'Gå till fakturor',
+        tone: 'destructive' as const,
+        icon: Receipt,
+      }
+    }
+    if (summary.uncategorizedCount > 0) {
+      return {
+        href: '/transactions',
+        title: 'Transaktioner att bokföra',
+        body: `${summary.uncategorizedCount} obokförd${summary.uncategorizedCount === 1 ? '' : 'a'} transaktion${summary.uncategorizedCount === 1 ? '' : 'er'}.`,
+        cta: 'Bokför nu',
+        tone: 'primary' as const,
+        icon: ArrowLeftRight,
+      }
+    }
+    if (summary.unpaidInvoicesCount > 0) {
+      return {
+        href: '/invoices?status=unpaid',
+        title: 'Obetalda fakturor',
+        body: `${summary.unpaidInvoicesCount} st · ${formatCurrency(summary.unpaidInvoicesTotal)}`,
+        cta: 'Visa fakturor',
+        tone: 'primary' as const,
+        icon: Receipt,
+      }
+    }
+    return {
+      href: '/invoices/new',
+      title: 'Allt är ikapp',
+      body: 'Inga obokförda transaktioner och inga obetalda fakturor. Skicka nästa faktura?',
+      cta: 'Skapa faktura',
+      tone: 'neutral' as const,
+      icon: CheckCircle2,
+    }
+  })()
+
   return (
     <div className="stagger-enter space-y-8">
+      {!agentBuilt ? (
+        /* Build-assistant hero — shown until the company has a verified
+           agent_profile. Takes the hero slot so existing/migrated users get a
+           clear prompt instead of a full-screen onboarding takeover. */
+        <section>
+          <Link href="/onboarding/agent" className="block group">
+            <Card className="transition-colors hover:border-primary/50">
+              <CardContent className="p-6 flex items-center gap-5">
+                <div className="flex-shrink-0 h-10 w-10 rounded-lg flex items-center justify-center bg-foreground text-background">
+                  <MessageCircle className="h-5 w-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-display text-xl leading-tight">Bygg din bokföringsassistent</p>
+                    <Badge variant="secondary" className="uppercase tracking-wider">Beta</Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Några frågor om din verksamhet kalibrerar en assistent som föreslår bokföring åt dig.
+                  </p>
+                </div>
+                <div className="hidden sm:flex items-center gap-1.5 text-sm font-medium text-foreground group-hover:translate-x-0.5 transition-transform">
+                  <span>Kom igång</span>
+                  <ArrowRight className="h-4 w-4" />
+                </div>
+              </CardContent>
+            </Card>
+          </Link>
+        </section>
+      ) : slim ? (
+        /* Next best action — single hero card */
+        <section>
+          <Link href={nextBestAction.href} className="block group">
+            <Card className={cn(
+              'transition-colors',
+              nextBestAction.tone === 'destructive' && 'border-destructive/30 hover:bg-destructive/[0.03]',
+              nextBestAction.tone === 'primary' && 'hover:border-primary/50',
+              nextBestAction.tone === 'neutral' && 'hover:border-primary/30',
+            )}>
+              <CardContent className="p-6 flex items-center gap-5">
+                <div className={cn(
+                  'flex-shrink-0 h-10 w-10 rounded-lg flex items-center justify-center',
+                  nextBestAction.tone === 'destructive' && 'bg-destructive/10 text-destructive',
+                  nextBestAction.tone === 'primary' && 'bg-secondary text-foreground',
+                  nextBestAction.tone === 'neutral' && 'bg-secondary text-foreground',
+                )}>
+                  <nextBestAction.icon className="h-5 w-5" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-display text-xl leading-tight">{nextBestAction.title}</p>
+                  <p className="text-sm text-muted-foreground mt-1">{nextBestAction.body}</p>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-foreground group-hover:translate-x-0.5 transition-transform">
+                  <span>{nextBestAction.cta}</span>
+                  <ArrowRight className="h-4 w-4" />
+                </div>
+              </CardContent>
+            </Card>
+          </Link>
+        </section>
+      ) : null}
+
       {/* Key metrics — 4 compact cards */}
       <section>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -345,8 +473,8 @@ export default function DashboardContent({ companyId, summary, onboardingProgres
         </div>
       </section>
 
-      {/* Alerts */}
-      {alertItems.length > 0 && (
+      {/* Att hantera — hidden in slim mode; the hero card already surfaces the top action */}
+      {!slim && alertItems.length > 0 && (
         <section id="alerts-section">
           <h2 className="font-display text-lg font-medium mb-4">{t('alerts_title')}</h2>
           <div id="alerts-list" className="grid gap-4 md:grid-cols-2">

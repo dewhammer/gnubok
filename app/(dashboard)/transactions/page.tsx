@@ -437,9 +437,13 @@ export default function TransactionsPage() {
     return () => { cancelled = true }
   }, [])
 
-  // Auto-open categorize panel when arriving via /transactions?highlight=<id>
-  // (used by the inbox "Bokför transaktionen" link). Runs once per distinct
-  // highlight id so closing the panel doesn't re-trigger it.
+  // Scroll the targeted row into view when arriving via
+  // /transactions?highlight=<id>. Callers are inbox "Öppna transaktionen",
+  // payment-booking dialog, and supplier-invoice cross-link — all "go look
+  // at this row", not "start booking". The legacy auto-open-template-picker
+  // behavior was removed in v5: booking happens in the inbox workspace now.
+  // Runs once per distinct highlight id so closing/scrolling away doesn't
+  // re-trigger it.
   useEffect(() => {
     if (!highlightId) return
     if (handledHighlightRef.current === highlightId) return
@@ -459,11 +463,6 @@ export default function TransactionsPage() {
         }
       })
     })
-
-    if (tx.is_business === null && !tx.journal_entry_id) {
-      setTemplatePickerTransaction(tx)
-      setTemplatePickerOpen(true)
-    }
   }, [highlightId, transactions])
 
   // Auto-fetch suggestions when transactions load
@@ -1995,6 +1994,7 @@ export default function TransactionsPage() {
           </div>
         </DialogContent>
       </Dialog>
+
     </div>
   )
 }

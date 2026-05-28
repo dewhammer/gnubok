@@ -4,6 +4,9 @@ import { headers } from 'next/headers'
 import DashboardNav from '@/components/dashboard/DashboardNav'
 import { MainContainer } from '@/components/dashboard/MainContainer'
 import CompanyTabSync from '@/components/dashboard/CompanyTabSync'
+import { AgentSheetProvider } from '@/components/agent/AgentSheetProvider'
+import AgentTrigger from '@/components/agent/AgentTrigger'
+import CommandPalette from '@/components/common/CommandPalette'
 import { SandboxBanner } from '@/components/dashboard/SandboxBanner'
 import { getExtensionNavItems } from '@/lib/extensions/sectors'
 import { CompanyProvider } from '@/contexts/CompanyContext'
@@ -84,26 +87,28 @@ export default async function DashboardLayout({
           isSandbox: false,
         }}
       >
-        <CompanyTabSync />
-        <div className="min-h-screen bg-background">
-          <DashboardNav
-            companyName={getBranding().appName.toLowerCase()}
-            entityType="enskild_firma"
-            uncategorizedTransactionCount={0}
-            pendingOperationsCount={0}
-            isSandbox={false}
-            extensionNavItems={getExtensionNavItems()}
-          />
-          <main
-            id="main-content"
-            className="safe-area-main-padding md:!pb-0 md:pl-64"
-            role="main"
-          >
-            <div className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
-              {children}
-            </div>
-          </main>
-        </div>
+        <AgentSheetProvider>
+          <CompanyTabSync />
+          <div className="min-h-screen bg-background">
+            <DashboardNav
+              companyName={getBranding().appName.toLowerCase()}
+              entityType="enskild_firma"
+              uncategorizedTransactionCount={0}
+              pendingOperationsCount={0}
+              isSandbox={false}
+              extensionNavItems={getExtensionNavItems()}
+            />
+            <main
+              id="main-content"
+              className="safe-area-main-padding md:!pb-0 md:pl-64"
+              role="main"
+            >
+              <div className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
+                {children}
+              </div>
+            </main>
+          </div>
+        </AgentSheetProvider>
       </CompanyProvider>
     )
   }
@@ -136,27 +141,35 @@ export default async function DashboardLayout({
 
     return (
       <CompanyProvider value={companyContextValue}>
-        <CompanyTabSync />
-        <div className="min-h-screen bg-background">
-          <DashboardNav
-            companyName={getBranding().appName.toLowerCase()}
-            entityType="enskild_firma"
-            uncategorizedTransactionCount={0}
-            pendingOperationsCount={0}
-            isSandbox={false}
-            extensionNavItems={getExtensionNavItems()}
-          />
-          <main id="main-content" className="safe-area-main-padding md:!pb-0 md:pl-64" role="main">
-            <div className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
-              {children}
-            </div>
-          </main>
-        </div>
+        <AgentSheetProvider>
+          <CompanyTabSync />
+          <div className="min-h-screen bg-background">
+            <DashboardNav
+              companyName={getBranding().appName.toLowerCase()}
+              entityType="enskild_firma"
+              uncategorizedTransactionCount={0}
+              pendingOperationsCount={0}
+              isSandbox={false}
+              extensionNavItems={getExtensionNavItems()}
+            />
+            <main id="main-content" className="safe-area-main-padding md:!pb-0 md:pl-64" role="main">
+              <div className="max-w-5xl mx-auto px-5 py-8 md:px-8 md:py-10">
+                {children}
+              </div>
+            </main>
+          </div>
+        </AgentSheetProvider>
       </CompanyProvider>
     )
   }
 
-  const [{ data: settings }, { count: uncategorizedCount }, { count: pendingOpsCount }] = await Promise.all([
+  const [
+    { data: settings },
+    { count: uncategorizedCount },
+    { count: pendingOpsCount },
+    { data: agentProfileIdentity },
+    { data: userProfile },
+  ] = await Promise.all([
     supabase
       .from('company_settings')
       .select('company_name, onboarding_complete, entity_type, is_sandbox')
@@ -172,6 +185,17 @@ export default async function DashboardLayout({
       .select('*', { count: 'exact', head: true })
       .eq('company_id', companyId)
       .eq('status', 'pending'),
+    // Agent identity — name + avatar — surfaced on the FAB and chat
+    // surfaces. Null when no agent_profile exists yet (banner CTA path).
+    supabase
+      .from('agent_profiles')
+      .select('display_name, avatar_id, verified_at')
+      .eq('company_id', companyId)
+      .maybeSingle(),
+    // The signed-in user's profile — shown in the bottom-left account
+    // popover (full_name + initial) so it's clear which user is logged
+    // in, distinct from the active company shown at the top.
+    supabase.from('profiles').select('full_name').eq('id', user.id).maybeSingle(),
   ])
 
   // If onboarding incomplete, still render the dashboard — the page component
@@ -203,28 +227,40 @@ export default async function DashboardLayout({
 
   return (
     <CompanyProvider value={companyContextValue}>
-      <CompanyTabSync />
-      <div className="min-h-screen bg-background">
-        {/* Skip to content link for keyboard/screen reader users */}
-        <a
-          href="#main-content"
-          className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:bg-primary focus:text-primary-foreground focus:rounded-lg focus:text-sm focus:font-medium"
-        >
-          Hoppa till innehåll
-        </a>
-        {isSandbox && <SandboxBanner />}
-        <DashboardNav
-          companyName={settings?.company_name || 'Min verksamhet'}
-          entityType={entityType}
-          uncategorizedTransactionCount={uncategorizedCount ?? 0}
-          pendingOperationsCount={pendingOpsCount ?? 0}
-          isSandbox={isSandbox}
-          extensionNavItems={getExtensionNavItems()}
-        />
-        <main id="main-content" className="safe-area-main-padding md:!pb-0 md:pl-64" role="main">
-          <MainContainer companyId={companyId}>{children}</MainContainer>
-        </main>
-      </div>
+      <AgentSheetProvider
+        identity={{
+          displayName: agentProfileIdentity?.display_name ?? null,
+          avatarId: agentProfileIdentity?.avatar_id ?? null,
+          isVerified: Boolean(agentProfileIdentity?.verified_at),
+        }}
+      >
+        <CompanyTabSync />
+        <div className="min-h-screen bg-background">
+          {/* Skip to content link for keyboard/screen reader users */}
+          <a
+            href="#main-content"
+            className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:bg-primary focus:text-primary-foreground focus:rounded-lg focus:text-sm focus:font-medium"
+          >
+            Hoppa till innehåll
+          </a>
+          {isSandbox && <SandboxBanner />}
+          <DashboardNav
+            companyName={settings?.company_name || 'Min verksamhet'}
+            entityType={entityType}
+            uncategorizedTransactionCount={uncategorizedCount ?? 0}
+            pendingOperationsCount={pendingOpsCount ?? 0}
+            isSandbox={isSandbox}
+            extensionNavItems={getExtensionNavItems()}
+            userName={userProfile?.full_name ?? null}
+            userEmail={user.email ?? null}
+          />
+          <main id="main-content" className="safe-area-main-padding md:!pb-0 md:pl-64" role="main">
+            <MainContainer companyId={companyId}>{children}</MainContainer>
+          </main>
+          <AgentTrigger />
+          <CommandPalette />
+        </div>
+      </AgentSheetProvider>
     </CompanyProvider>
   )
 }

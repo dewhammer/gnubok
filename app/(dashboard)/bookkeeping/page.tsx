@@ -137,12 +137,14 @@ export default function BookkeepingPage() {
       <PageHeader
         title={t('title')}
         action={
-          <Button variant="outline" asChild className="w-full sm:w-auto">
+          <div className="flex gap-2 w-full sm:w-auto">
+            <Button variant="outline" asChild className="w-full sm:w-auto">
             <Link href="/bookkeeping/year-end">
               <Lock className="mr-2 h-4 w-4" />
               {t('year_end')}
             </Link>
           </Button>
+          </div>
         }
       />
 

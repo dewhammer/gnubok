@@ -27,6 +27,7 @@ export const API_KEY_SCOPES = {
   'documents:read':     { label: 'Dokument — läs',       description: 'Lista och hämta dokumentbilagor' },
   'documents:write':    { label: 'Dokument — skriv',     description: 'Ladda upp och koppla dokument till verifikationer' },
   'compliance:read':    { label: 'Compliance — läs',     description: 'Pre-flight-kontroller: momsstängning, bokslutsberedskap, voucher-gap, IB/UB-kontinuitet' },
+  'agent:read':         { label: 'Agent — läs',          description: 'Specialiserad bokföringsassistent: profil, laddade specialister/atomer, minnen (briefing + skill-katalog)' },
   'pending_operations:read':    { label: 'Stagade operationer — läs',     description: 'Lista pending_operations (staged writes awaiting approval)' },
   'pending_operations:approve': { label: 'Stagade operationer — godkänn', description: 'Godkänn eller avvisa stagade operationer via API/MCP — agenten ersätter web-UI:s granskning' },
 } as const
@@ -215,6 +216,11 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_create_voucher:                  'bookkeeping:write',
   gnubok_correct_entry:                   'bookkeeping:write',
   gnubok_reverse_journal_entry:           'bookkeeping:write',
+  // Agent surface (Phase 6 MCP parity): briefing tool exposes company-specific
+  // profile + memory so it's scoped; gnubok_list_skills / gnubok_load_skill
+  // stay unscoped (discovery + static Markdown bodies + globally-readable atom
+  // registry — no per-company data).
+  gnubok_get_agent_briefing:              'agent:read',
   // Pending operations approval (mirrors the /pending web UI)
   gnubok_list_pending_operations:         'pending_operations:read',
   gnubok_approve_pending_operation:       'pending_operations:approve',

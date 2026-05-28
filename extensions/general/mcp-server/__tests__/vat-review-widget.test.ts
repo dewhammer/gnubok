@@ -22,7 +22,24 @@ vi.mock('@/lib/auth/api-keys', async (importOriginal) => {
       companyId: 'company-1',
       scopes: ['reports:read'],
     }),
-    createServiceClientNoCookies: vi.fn(),
+    // Fully-chainable, awaitable proxy resolving to empty data — satisfies both
+    // loadAtomsAsSkills (select→eq→eq→order) and computeVatReport (select→eq→in→
+    // gte→lte→…) without hand-enumerating each chain.
+    createServiceClientNoCookies: vi.fn(() => {
+      const makeChain = (): unknown =>
+        new Proxy(
+          {},
+          {
+            get(_t, prop) {
+              if (prop === 'then') {
+                return (resolve: (v: unknown) => void) => resolve({ data: [], error: null, count: 0 })
+              }
+              return () => makeChain()
+            },
+          },
+        )
+      return { from: () => makeChain() }
+    }),
   }
 })
 
@@ -125,6 +142,39 @@ describe('VAT review widget', () => {
       )
       expect(widgetTool).toBeDefined()
       expect(widgetTool._meta).toEqual({ ui: { resourceUri: 'ui://vat-review/app.html' } })
+    })
+  })
+
+  describe('gnubok_get_vat_report — render_ui merge', () => {
+    it('declares render_ui and points at the vat-review widget', () => {
+      const tool = tools.find((t) => t.name === 'gnubok_get_vat_report')!
+      expect((tool as { uiResourceUri?: string }).uiResourceUri).toBe('ui://vat-review/app.html')
+      const props = (tool.inputSchema as { properties: Record<string, unknown> }).properties
+      expect(props.render_ui).toMatchObject({ type: 'boolean' })
+    })
+
+    it('emits result-level _meta only when render_ui=true', async () => {
+      const withUi = await (
+        await handleMcpRequest(
+          mcpRequest('tools/call', {
+            name: 'gnubok_get_vat_report',
+            arguments: { period_type: 'monthly', year: 2026, period: 3, render_ui: true },
+          }),
+        )
+      ).json()
+      expect(withUi.result.isError).toBeUndefined()
+      expect(withUi.result._meta).toEqual({ ui: { resourceUri: 'ui://vat-review/app.html' } })
+
+      const withoutUi = await (
+        await handleMcpRequest(
+          mcpRequest('tools/call', {
+            name: 'gnubok_get_vat_report',
+            arguments: { period_type: 'monthly', year: 2026, period: 3 },
+          }),
+        )
+      ).json()
+      expect(withoutUi.result.isError).toBeUndefined()
+      expect(withoutUi.result._meta).toBeUndefined()
     })
   })
 })

@@ -14,6 +14,8 @@ const TAB_TO_ROUTE: Record<string, string> = {
   team: '/settings/team',
   banking: '/settings/banking',
   templates: '/settings/templates',
+  'agent-memory': '/settings/assistant',
+  assistant: '/settings/assistant',
   account: '/settings/account',
   api: '/settings/api',
 }

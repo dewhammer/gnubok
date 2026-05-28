@@ -50,6 +50,42 @@ function logError(message: string, extra?: Record<string, unknown>) {
   }).catch(() => {})
 }
 
+// Parse TIC v2's `startMonthDay` ("MM-DD" — e.g. "07-01") into a month
+// number 1–12. Returns null on missing / malformed input so the caller
+// can fall through to the manual picker default.
+function parseStartMonthDay(value: string | null | undefined): number | null {
+  if (!value) return null
+  const match = /^(\d{1,2})-\d{1,2}$/.exec(value)
+  if (!match) return null
+  const month = Number(match[1])
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null
+  return month
+}
+
+// Derive the Step-3 first-year defaults from TIC's `registrationDate`.
+// A company is treated as "first year" when registered less than 12 months
+// ago — fits BFL's 6-18 month opening-period window comfortably. Returns
+// both the toggle state and a seeded `first_year_start` (always the 1st of
+// the registration month, the format Step 3's date inputs expect).
+function deriveFirstYearDefaults(registrationDate: number | null | undefined): {
+  isFirstFiscalYear: boolean
+  firstYearStart: string | undefined
+} {
+  if (!registrationDate || !Number.isFinite(registrationDate)) {
+    return { isFirstFiscalYear: false, firstYearStart: undefined }
+  }
+  const regDate = new Date(registrationDate)
+  if (Number.isNaN(regDate.getTime())) {
+    return { isFirstFiscalYear: false, firstYearStart: undefined }
+  }
+  const monthsAgo =
+    (Date.now() - regDate.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
+  if (monthsAgo >= 12) return { isFirstFiscalYear: false, firstYearStart: undefined }
+  const year = regDate.getUTCFullYear()
+  const month = String(regDate.getUTCMonth() + 1).padStart(2, '0')
+  return { isFirstFiscalYear: true, firstYearStart: `${year}-${month}-01` }
+}
+
 interface WelcomeOnboardingProps {
   firstName?: string | null
   teamId: string
@@ -57,6 +93,15 @@ interface WelcomeOnboardingProps {
   hasExistingCompanies?: boolean
   /** Pre-fill Step 2 org_number when the picker routed here via ?org_number=. */
   initialOrgNumber?: string
+  /** Mapped from a TIC `legalEntityType`. Pre-selects Step 1's radio. */
+  initialEntityType?: EntityType
+  /** Legal name from CompanyRoles. Pre-fills Step 2's company_name field. */
+  initialLegalName?: string
+  /** Set when the orgnr came from BankID CompanyRoles. Step 2 treats the
+   *  field as pre-verified — skips the client-side Lens `/lookup` since
+   *  CompanyRoles already confirms the company exists. Cleared the moment
+   *  the user edits the orgnr. */
+  preverifiedOrgNumber?: string
 }
 
 export default function WelcomeOnboarding({
@@ -65,6 +110,9 @@ export default function WelcomeOnboarding({
   skipWelcome,
   hasExistingCompanies,
   initialOrgNumber,
+  initialEntityType,
+  initialLegalName,
+  preverifiedOrgNumber,
 }: WelcomeOnboardingProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -74,9 +122,17 @@ export default function WelcomeOnboarding({
   const [started, setStarted] = useState(skipWelcome ?? false)
   const [isSaving, setIsSaving] = useState(false)
   const [currentStep, setCurrentStep] = useState(1)
-  const [settings, setSettings] = useState<Partial<CompanySettings>>(
-    initialOrgNumber ? { org_number: initialOrgNumber } : {},
-  )
+  // Seed settings with what BankID CompanyRoles already told us. address /
+  // F-skatt / VAT come later — user types address in Step 2 and confirms
+  // F-skatt/VAT in Step 4. We deliberately don't pre-fetch from Lens to
+  // preserve the 3000/mo budget for the manual-orgnr path.
+  const [settings, setSettings] = useState<Partial<CompanySettings>>(() => {
+    const seed: Partial<CompanySettings> = {}
+    if (initialOrgNumber) seed.org_number = initialOrgNumber
+    if (initialEntityType) seed.entity_type = initialEntityType
+    if (initialLegalName) seed.company_name = initialLegalName
+    return seed
+  })
   const ticEnabled = ENABLED_EXTENSION_IDS.has('tic')
   const [ticLookup, setTicLookup] = useState<CompanyLookupResult | null>(null)
 
@@ -144,6 +200,7 @@ export default function WelcomeOnboarding({
           endDate: periodResult.endStr,
           name: periodResult.periodName,
         },
+        ticLookup,
       })
 
       if (result.error || !result.companyId) {
@@ -299,24 +356,48 @@ export default function WelcomeOnboarding({
                   entityType={settings.entity_type as EntityType}
                   ticEnabled={ticEnabled}
                   onTicLookup={setTicLookup}
+                  preverifiedOrgNumber={preverifiedOrgNumber}
                   onNext={(data) => handleNext(data)}
                   onBack={handleBack}
                   isSaving={isSaving}
                 />
               )}
 
-              {currentStep === 3 && (
+              {currentStep === 3 && (() => {
+                // Derive both first-year defaults from TIC's registrationDate
+                // (null-safe — returns { false, undefined } for established
+                // companies and for missing registrationDate).
+                const firstYearDefaults = deriveFirstYearDefaults(
+                  ticLookup?.registrationDate,
+                )
+                return (
                 <Step3TaxRegistration
                   initialData={{
                     f_skatt: settings.f_skatt ?? (ticLookup ? ticLookup.registration.fTax : undefined),
-                    fiscal_year_start_month: settings.fiscal_year_start_month ?? undefined,
+                    // Prefer the user's previously-saved value, then fall back
+                    // to TIC's v2 `fiscalYear.startMonthDay` (e.g. "07-01" →
+                    // start month 7). Parsing the MM-DD lets us skip the
+                    // manual end-month picker for the ~95% of companies that
+                    // have a registered fiscal year in Bolagsverket.
+                    fiscal_year_start_month:
+                      settings.fiscal_year_start_month
+                      ?? parseStartMonthDay(ticLookup?.fiscalYear?.startMonthDay)
+                      ?? undefined,
+                    // Companies registered <12 months ago land in their first
+                    // fiscal year — pre-check the toggle and seed the start
+                    // date so the user only confirms the end date.
+                    is_first_fiscal_year:
+                      settings.is_first_fiscal_year ?? firstYearDefaults.isFirstFiscalYear,
+                    first_year_start:
+                      settings.first_year_start ?? firstYearDefaults.firstYearStart,
                   }}
                   entityType={settings.entity_type as EntityType}
                   onNext={(data) => handleNext(data)}
                   onBack={handleBack}
                   isSaving={isSaving}
                 />
-              )}
+                )
+              })()}
 
               {currentStep === 4 && (
                 <Step4VatAccounting

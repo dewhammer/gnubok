@@ -83,11 +83,13 @@ export default function KpiPage() {
     <div className="space-y-8">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="font-display text-2xl md:text-3xl font-medium tracking-tight">{t('title')}</h1>
-        <KPISettingsDialog
-          preferences={preferences}
-          onSave={handleSavePreferences}
-          saving={isSavingPrefs}
-        />
+        <div className="flex gap-2">
+          <KPISettingsDialog
+            preferences={preferences}
+            onSave={handleSavePreferences}
+            saving={isSavingPrefs}
+          />
+        </div>
       </div>
 
       <FiscalYearSelector

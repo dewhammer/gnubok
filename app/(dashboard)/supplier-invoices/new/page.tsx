@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import AiFilledIndicator from '@/components/ui/ai-filled-indicator'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -23,7 +24,7 @@ import { cn, formatCurrency } from '@/lib/utils'
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import BankTransactionPicker from '@/components/transactions/BankTransactionPicker'
-import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, Sparkles, Link2 } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, MessageCircle, Link2 } from 'lucide-react'
 import type { Supplier, BASAccount, VatTreatment, EntityType, InvoiceExtractionResult } from '@/types'
 
 interface LineItem {
@@ -274,6 +275,28 @@ export default function NewSupplierInvoicePage() {
   const watchedCurrency = watch('currency')
   const watchedPaidPrivately = watch('paid_with_private_funds')
   const watchedReverseCharge = watch('reverse_charge')
+  // Watched values used to decide whether the AI-filled indicator should
+  // still be visible. Once the user edits a field, its value no longer
+  // matches what the extractor wrote, and the dot fades out.
+  const watchedInvoiceNumber = watch('supplier_invoice_number')
+  const watchedInvoiceDate = watch('invoice_date')
+  const watchedDueDate = watch('due_date')
+  const watchedPaymentReference = watch('payment_reference')
+  // Returns true when the field currently matches whatever the AI wrote
+  // when the form first loaded. Edits diverge it, hiding the dot.
+  function stillFromAi(value: string | null | undefined, original: string | null | undefined): boolean {
+    if (!original) return false
+    return (value ?? '') === (original ?? '')
+  }
+  const aiFlags = {
+    invoiceNumber: stillFromAi(watchedInvoiceNumber, originalExtracted?.invoice?.invoiceNumber ?? null),
+    invoiceDate: stillFromAi(watchedInvoiceDate, originalExtracted?.invoice?.invoiceDate ?? null),
+    dueDate: stillFromAi(watchedDueDate, originalExtracted?.invoice?.dueDate ?? null),
+    paymentReference: stillFromAi(
+      watchedPaymentReference,
+      originalExtracted?.invoice?.paymentReference ?? null,
+    ),
+  }
 
   const isEF = entityType === 'enskild_firma'
 
@@ -414,8 +437,8 @@ export default function NewSupplierInvoicePage() {
 
   // Auto-fetch Riksbanken exchange rate when currency switches to non-SEK and
   // the user hasn't typed a custom rate yet. Re-fetches when the invoice
-  // date changes too. Never overwrites a user-entered rate.
-  const watchedInvoiceDate = watch('invoice_date')
+  // date changes too. Never overwrites a user-entered rate. Reuses the
+  // watchedInvoiceDate declared above for the AI-filled-indicator flag.
   // The "user has manually edited the rate" flag is scoped *per currency*.
   // Switching from EUR (rate 11.8 edited by hand) to USD must re-fetch — the
   // EUR rate is meaningless for a USD invoice. Tracking last-fetched currency
@@ -968,7 +991,7 @@ export default function NewSupplierInvoicePage() {
           <CardContent className="py-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-start gap-3">
-                <Sparkles className="h-5 w-5 text-primary shrink-0 mt-0.5" />
+                <MessageCircle className="h-5 w-5 text-primary shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium">
                     {t('ai_suggested_supplier', { name: extractedData?.supplier?.name ?? '' })}
@@ -1054,7 +1077,10 @@ export default function NewSupplierInvoicePage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>{t('supplier_invoice_number_label')}<RequiredMark /></Label>
+                <div className="flex items-center justify-between">
+                  <Label>{t('supplier_invoice_number_label')}<RequiredMark /></Label>
+                  <AiFilledIndicator active={aiFlags.invoiceNumber} label="AI-fyllt" />
+                </div>
                 {(() => {
                   const { ref: rhfRef, ...rest } = register('supplier_invoice_number')
                   return (
@@ -1075,17 +1101,29 @@ export default function NewSupplierInvoicePage() {
               watchedPaidPrivately ? 'sm:grid-cols-1' : 'sm:grid-cols-3',
             )}>
               <div className="space-y-2">
-                <Label>{t('invoice_date_label')}<RequiredMark /></Label>
+                <div className="flex items-center justify-between">
+                  <Label>{t('invoice_date_label')}<RequiredMark /></Label>
+                  <AiFilledIndicator active={aiFlags.invoiceDate} label="AI-fyllt" />
+                </div>
                 <Input type="date" {...register('invoice_date')} />
               </div>
               {!watchedPaidPrivately && (
                 <>
                   <div className="space-y-2">
-                    <Label>{t('due_date_label')}<RequiredMark /></Label>
+                    <div className="flex items-center justify-between">
+                      <Label>{t('due_date_label')}<RequiredMark /></Label>
+                      <AiFilledIndicator active={aiFlags.dueDate} label="AI-fyllt" />
+                    </div>
                     <Input type="date" {...register('due_date')} />
                   </div>
                   <div className="space-y-2">
-                    <Label>{t('payment_reference_label')}</Label>
+                    <div className="flex items-center justify-between">
+                      <Label>{t('payment_reference_label')}</Label>
+                      <AiFilledIndicator
+                        active={aiFlags.paymentReference}
+                        label="AI-fyllt"
+                      />
+                    </div>
                     <Input placeholder={t('payment_reference_placeholder')} {...register('payment_reference')} />
                   </div>
                 </>
