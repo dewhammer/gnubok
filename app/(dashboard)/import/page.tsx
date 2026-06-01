@@ -11,7 +11,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { ArrowLeftRight, ArrowRightLeft, FileText, ArrowLeft, Landmark, Loader2, Info, ChevronRight, FileSpreadsheet, Download, AlertTriangle } from 'lucide-react'
 import { motion } from 'framer-motion'
-import { cn } from '@/lib/utils'
+import { cn, formatDate } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { useCompany } from '@/contexts/CompanyContext'
 import { BankSelector, type Bank } from '@/extensions/general/enable-banking/components/BankSelector'
@@ -105,6 +105,7 @@ function BankFileImportWizard() {
   const [bankStep, setBankStep] = useState<BankFileStep>('upload')
   const [bankIsLoading, setBankIsLoading] = useState(false)
   const [bankError, setBankError] = useState<string | null>(null)
+  const [bankErrorTitle, setBankErrorTitle] = useState<string | null>(null)
 
   // Parse results
   const [parseResult, setParseResult] = useState<BankFileParseResult | null>(null)
@@ -145,6 +146,7 @@ function BankFileImportWizard() {
 
   const handleFileSelect = useCallback(async (file: File, formatOverride?: BankFileFormatId) => {
     setBankError(null)
+    setBankErrorTitle(null)
     setBankIsLoading(true)
 
     try {
@@ -162,10 +164,25 @@ function BankFileImportWizard() {
       const data = await res.json()
 
       if (!res.ok) {
-        if (data.error === 'duplicate') {
-          setBankError(data.message)
+        // Structured error envelope: { error: { code, message, message_en, details } }
+        const err = data?.error
+        if (err && typeof err === 'object') {
+          if (err.code === 'BANK_FILE_DUPLICATE') {
+            const importedAt = err.details?.importedAt ? formatDate(err.details.importedAt) : null
+            const count = typeof err.details?.importedCount === 'number' ? err.details.importedCount : null
+            const when = importedAt
+              ? ` ${importedAt}${count !== null ? ` (${count} transaktioner)` : ''}`
+              : ''
+            setBankErrorTitle('Filen är redan importerad')
+            setBankError(
+              `Den här filen är redan importerad${when}. Transaktionerna finns redan under Transaktioner. ` +
+                'Exportera en ny fil från banken om du vill lägga till fler transaktioner.'
+            )
+          } else {
+            setBankError(err.message || 'Kunde inte läsa filen')
+          }
         } else {
-          setBankError(data.error || 'Kunde inte läsa filen')
+          setBankError(typeof err === 'string' ? err : 'Kunde inte läsa filen')
         }
         return
       }
@@ -259,6 +276,7 @@ function BankFileImportWizard() {
     setFilename('')
     setIngestResult(null)
     setBankError(null)
+    setBankErrorTitle(null)
     setRawFileContent('')
   }
 
@@ -314,6 +332,7 @@ function BankFileImportWizard() {
           onFileSelect={handleFileSelect}
           isLoading={bankIsLoading}
           error={bankError}
+          errorTitle={bankErrorTitle}
           detectedFormat={detectedFormat}
           detectedFormatName={detectedFormatName}
         />

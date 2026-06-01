@@ -259,6 +259,13 @@ const TRANSACTIONS: Record<string, StructuredErrorEntry> = {
     message_sv: 'Transaktionen kunde inte hittas.',
     message_en: 'Transaction not found.',
   },
+  TRANSACTION_TITLE_LOCKED: {
+    httpStatus: 409,
+    message_sv:
+      'Det går inte att ändra titeln på en bokförd eller matchad transaktion. Bokförda verifikat rättas med storno.',
+    message_en:
+      'Cannot edit the title of a booked or matched transaction. Posted vouchers are corrected with storno.',
+  },
   TX_CATEGORIZE_INVALID_ACCOUNT: {
     httpStatus: 400,
     message_sv: 'Det valda kontot finns inte i kontoplanen.',
@@ -1415,6 +1422,13 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     httpStatus: 400,
     message_sv: 'Ogiltig kombination av fakturafält. Kontrollera formuläret och försök igen.',
     message_en: 'Invalid combination of supplier invoice fields.',
+  },
+  SI_CREATE_NO_FISCAL_PERIOD: {
+    httpStatus: 400,
+    message_sv:
+      'Det finns inget räkenskapsår som täcker fakturadatumet. Lägg upp räkenskapsåret först, eller ändra fakturadatumet.',
+    message_en:
+      'No fiscal year covers the invoice date. Create the fiscal year first, or change the invoice date.',
   },
   SI_PAID_ALREADY: {
     httpStatus: 409,

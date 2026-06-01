@@ -39,6 +39,7 @@ import MatchAllocationDialog from '@/components/transactions/MatchAllocationDial
 import BulkBookDialog from '@/components/transactions/BulkBookDialog'
 import TransactionBookingDialog from '@/components/transactions/TransactionBookingDialog'
 import QuickReviewDialog from '@/components/transactions/QuickReviewDialog'
+import EditTransactionTitleDialog from '@/components/transactions/EditTransactionTitleDialog'
 
 import TemplatePicker from '@/components/transactions/TemplatePicker'
 import { getDefaultAccountForCategory, getDefaultVatTreatmentForCategory } from '@/lib/bookkeeping/category-mapping'
@@ -196,6 +197,8 @@ export default function TransactionsPage() {
 
   const { toast } = useToast()
   const { dialogProps: deleteDialogProps, confirm: confirmDelete } = useDestructiveConfirm()
+  // Bank transaction whose title is being edited (null = dialog closed).
+  const [editTitleTarget, setEditTitleTarget] = useState<TransactionWithInvoice | null>(null)
   const supabase = createClient()
   const searchParams = useSearchParams()
   const highlightId = searchParams.get('highlight')
@@ -1236,6 +1239,46 @@ export default function TransactionsPage() {
     }
   }
 
+  function openEditTitleDialog(transaction: TransactionWithInvoice) {
+    setEditTitleTarget(transaction)
+  }
+
+  // Persist a new title via PATCH. Returns true on success so the dialog can
+  // close; updates the local list optimistically (description + edited tag).
+  async function handleSaveTitle(description: string): Promise<boolean> {
+    const target = editTitleTarget
+    if (!target) return false
+    try {
+      const response = await fetch(`/api/transactions/${target.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description }),
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        toast({
+          title: t('edit_title_failed'),
+          description: getErrorMessage(result, { context: 'transaction' }),
+          variant: 'destructive',
+        })
+        return false
+      }
+      const updated = result.data as { description: string; title_edited_at: string | null }
+      setTransactions((prev) =>
+        prev.map((tx) =>
+          tx.id === target.id
+            ? { ...tx, description: updated.description, title_edited_at: updated.title_edited_at }
+            : tx,
+        ),
+      )
+      toast({ title: t('edit_title_saved') })
+      return true
+    } catch {
+      toast({ title: t('edit_title_failed'), variant: 'destructive' })
+      return false
+    }
+  }
+
   async function handleSkvBokfor(row: StoredSkattekontoTransaction) {
     setSkvProcessingId(row.id)
     try {
@@ -1702,6 +1745,7 @@ export default function TransactionsPage() {
                     onOpenSplitMatch={openSplitMatchDialog}
                     onOpenCategoryDialog={openCategoryDialog}
                     onDelete={handleDeleteTransaction}
+                    onEditTitle={openEditTitleDialog}
                     onToggleSelect={toggleBatchSelect}
                   />
                 ) : (
@@ -1984,6 +2028,16 @@ export default function TransactionsPage() {
       </Dialog>
 
       <DestructiveConfirmDialog {...deleteDialogProps} />
+
+      <EditTransactionTitleDialog
+        open={editTitleTarget !== null}
+        onOpenChange={(v) => {
+          if (!v) setEditTitleTarget(null)
+        }}
+        currentTitle={editTitleTarget?.description ?? ''}
+        originalTitle={editTitleTarget?.original_description ?? null}
+        onSave={handleSaveTitle}
+      />
 
       <SkattekontoMatchDialog
         row={skvMatchTarget}

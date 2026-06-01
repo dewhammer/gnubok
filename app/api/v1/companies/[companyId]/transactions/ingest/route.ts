@@ -22,6 +22,7 @@ import { registerEndpoint } from '@/lib/api/v1/registry'
 import { withApiV1 } from '@/lib/api/v1/with-api-v1'
 import { v1ErrorResponse, v1ErrorResponseFromCode } from '@/lib/api/v1/errors'
 import { ingestTransactions } from '@/lib/transactions/ingest'
+import { contentDedupKey } from '@/lib/transactions/external-id'
 import type { RawTransaction } from '@/types'
 
 const RawTx = z.object({
@@ -152,27 +153,25 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
 
       const { data: bookedInRange } = await ctx.supabase
         .from('transactions')
-        .select('date, amount')
+        .select('date, amount, description')
         .eq('company_id', ctx.companyId!)
         .not('journal_entry_id', 'is', null)
         .gte('date', dateFrom)
         .lte('date', dateTo)
-      // Normalize the amount to a fixed-precision string before keying.
-      // Both JS number-to-string ("-349.5") and Postgres numeric round-trip
-      // ("-349.50") collapse to the same "-349.50" representation here, so
-      // a SIE amount with trailing-zero precision lines up with an already-
-      // booked row whose amount JSON-encodes without it.
-      const amountKey = (n: number): string => n.toFixed(2)
+      // Build the content-dedup key with the SAME helper the live pipeline uses
+      // (lib/transactions/ingest.ts), so the preview's content-match decision
+      // matches the eventual ingest exactly: öre-normalized amount (handles a
+      // PostgREST numeric returned as a string) plus the description prefix.
       const bookedKeys = new Set(
         (bookedInRange ?? []).map((r) => {
-          const row = r as { date: string; amount: number }
-          return `${row.date}|${amountKey(row.amount)}`
+          const row = r as { date: string; amount: number | string; description: string | null }
+          return contentDedupKey(row.date, row.amount, row.description)
         }),
       )
 
       const previewRows = body.transactions.map((tx) => {
         const extIdHit = knownExtIds.has(tx.external_id)
-        const contentHit = bookedKeys.has(`${tx.date}|${amountKey(tx.amount)}`)
+        const contentHit = bookedKeys.has(contentDedupKey(tx.date, tx.amount, tx.description))
         const wouldSkip = extIdHit || contentHit
         const reason = extIdHit
           ? 'external_id_match'

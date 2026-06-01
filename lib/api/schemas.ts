@@ -458,6 +458,15 @@ export const CorrectJournalEntrySchema = z.object({
   lines: z.array(CreateJournalEntryLineSchema).min(2, 'At least two lines are required for double-entry'),
 })
 
+/**
+ * Move a posted verifikation to a different date (and thereby fiscal period)
+ * without changing its lines — fixes a booking entered with the wrong
+ * date/year. The corrected lines are copied server-side from the original.
+ */
+export const RecordateJournalEntrySchema = z.object({
+  new_entry_date: isoDate,
+})
+
 // ============================================================
 // Transaction schemas
 // ============================================================
@@ -479,6 +488,15 @@ export const BookTransactionSchema = z.object({
   entry_date: isoDate,
   description: z.string().min(1, 'Description is required'),
   lines: z.array(CreateJournalEntryLineSchema).min(1, 'At least one line is required'),
+})
+
+/**
+ * Edit a bank transaction's title (description). Only the working label —
+ * gated server-side to unbooked, unmatched rows. Trimmed; whitespace-only is
+ * rejected by min(1). Passing the bank original restores the "not edited" tag.
+ */
+export const UpdateTransactionTitleSchema = z.object({
+  description: z.string().trim().min(1, 'Title cannot be empty').max(500),
 })
 
 export const BookInboxItemDirectlySchema = z.object({

@@ -7,6 +7,7 @@ import { findSupplierInvoiceMatch } from '@/lib/invoices/supplier-invoice-matchi
 import { fetchExchangeRate } from '@/lib/currency/riksbanken'
 import { logMatchEvent } from '@/lib/invoices/match-log'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
+import { contentDedupKey, normalizeImportedDescription } from '@/lib/transactions/external-id'
 import type { Transaction, RawTransaction, IngestResult, IngestOptions, SupplierInvoice, Currency, ExchangeRate } from '@/types'
 
 // Re-export types for backward compatibility
@@ -25,18 +26,6 @@ interface ExistingTransactionMaps {
   unbookedEnableBanking: Map<string, number>
 }
 
-/**
- * Stable content-dedup key. Includes a normalized description prefix so the
- * two-tuple (date, amount) doesn't false-positive across unrelated transfers
- * that happen to share a date and amount. Lunar's CSV "Text" column and
- * PSD2's `description || counterparty_name` (see enable-banking/lib/sync.ts)
- * agree well enough in practice for the same underlying transaction.
- */
-function contentDedupKey(date: string, amount: number | string, description: string | null | undefined): string {
-  const descPrefix = (description || '').toLowerCase().trim().slice(0, 24)
-  return `${date}|${amount}|${descPrefix}`
-}
-
 async function buildExistingTransactionMaps(
   supabase: SupabaseClient,
   companyId: string,
@@ -53,7 +42,7 @@ async function buildExistingTransactionMaps(
   try {
     const { data: bookedRows } = await supabase
       .from('transactions')
-      .select('date, amount, description')
+      .select('date, amount, original_description, description')
       .eq('company_id', companyId)
       .not('journal_entry_id', 'is', null)
       .gte('date', dateFrom)
@@ -61,7 +50,15 @@ async function buildExistingTransactionMaps(
 
     if (bookedRows) {
       for (const tx of bookedRows) {
-        const key = contentDedupKey(tx.date, tx.amount, tx.description)
+        // Key off the immutable bank original, not the user-editable
+        // description: a title edit must never make the dedup bridge miss a
+        // genuine re-import. Falls back to description for rows predating the
+        // original_description column.
+        const key = contentDedupKey(
+          tx.date,
+          tx.amount,
+          normalizeImportedDescription(tx.original_description ?? tx.description),
+        )
         booked.set(key, (booked.get(key) || 0) + 1)
       }
     }
@@ -72,7 +69,7 @@ async function buildExistingTransactionMaps(
   try {
     const { data: unbookedBank } = await supabase
       .from('transactions')
-      .select('date, amount, description')
+      .select('date, amount, original_description, description')
       .eq('company_id', companyId)
       .is('journal_entry_id', null)
       .eq('import_source', 'enable_banking')
@@ -81,7 +78,13 @@ async function buildExistingTransactionMaps(
 
     if (unbookedBank) {
       for (const tx of unbookedBank) {
-        const key = contentDedupKey(tx.date, tx.amount, tx.description)
+        // See booked-map note: dedup on the immutable bank original so a
+        // user title edit cannot reopen the duplicate-import window.
+        const key = contentDedupKey(
+          tx.date,
+          tx.amount,
+          normalizeImportedDescription(tx.original_description ?? tx.description),
+        )
         unbookedEnableBanking.set(key, (unbookedEnableBanking.get(key) || 0) + 1)
       }
     }
@@ -216,6 +219,14 @@ export async function ingestTransactions(
   const matchedSupplierInvoiceIds = new Set<string>()
 
   for (const raw of rawTransactions) {
+    // Normalize the source title once. Guarantees a non-empty, Swedish-first
+    // label for every import path (PSD2 sync + all bank-file CSV/CAMT parsers
+    // funnel into raw.description) — catching both empty/whitespace titles and
+    // the legacy English 'Unknown' sentinel. This normalized value is stored as
+    // both description and original_description below; it's what the user sees
+    // and edits, and what the content-dedup key is built from.
+    const description = normalizeImportedDescription(raw.description)
+
     // 1. Check for duplicates via external_id (batch pre-fetched)
     if (existingExternalIds.has(raw.external_id)) {
       result.duplicates++
@@ -223,8 +234,9 @@ export async function ingestTransactions(
     }
 
     // 1b. Content-based dedup: skip if an already-booked transaction
-    // exists with the same date, amount, and description prefix.
-    const contentKey = contentDedupKey(raw.date, raw.amount, raw.description)
+    // exists with the same date, amount, and description prefix. Built from the
+    // normalized description so it matches the stored original_description keys.
+    const contentKey = contentDedupKey(raw.date, raw.amount, description)
     const bookedCount = existingMaps.booked.get(contentKey) || 0
     if (bookedCount > 0) {
       existingMaps.booked.set(contentKey, bookedCount - 1)
@@ -260,7 +272,11 @@ export async function ingestTransactions(
         bank_connection_id: raw.bank_connection_id || null,
         external_id: raw.external_id,
         date: raw.date,
-        description: raw.description,
+        description: description,
+        // Immutable bank/PSD2 original — captured once, never overwritten by a
+        // title edit. Equals description at insert; they diverge only if the
+        // user later edits the title.
+        original_description: description,
         amount: raw.amount,
         currency: raw.currency,
         amount_sek: amountSek,

@@ -1677,6 +1677,27 @@ async function commitCreateSupplierInvoiceFromInbox(
             })
           }
         }
+      } else {
+        // createSupplierInvoiceRegistrationEntry returns null ONLY when no
+        // fiscal period covers invoice_date (every other failure throws into
+        // the catch below). Without this branch the inbox item gets linked to
+        // an unbooked supplier invoice — the same 2440/2641 orphan the catch
+        // guards against. Roll back (items first, see FK note below) and return
+        // an actionable error instead of silently "succeeding".
+        await supabase
+          .from('supplier_invoice_items')
+          .delete()
+          .eq('supplier_invoice_id', invoice.id)
+        await supabase
+          .from('supplier_invoices')
+          .delete()
+          .eq('id', invoice.id)
+          .eq('company_id', companyId)
+        return {
+          error:
+            'Det finns inget räkenskapsår som täcker fakturadatumet. Lägg upp räkenskapsåret först, eller ändra fakturadatumet.',
+          status: 400,
+        }
       }
     } catch (err) {
       // Roll back: orphan supplier_invoices row without its registration JE
@@ -1719,11 +1740,14 @@ async function commitCreateSupplierInvoiceFromInbox(
   }
 
   // Terminal state for the inbox row: created_supplier_invoice_id is the
-  // dedup key for next time this inbox item is touched. status='confirmed'
-  // removes it from the "needs action" filter in the UI.
+  // dedup key for next time this inbox item is touched, and it's what the UI
+  // and list_unmatched_documents use to drop the row out of "needs action".
+  // Do NOT write status here — the status CHECK only allows received|error
+  // (migration 20260504180000); writing 'confirmed' makes Postgres reject the
+  // whole UPDATE, so the link column never lands and the item stays unresolved.
   const { error: linkInboxErr } = await supabase
     .from('invoice_inbox_items')
-    .update({ created_supplier_invoice_id: invoice.id, status: 'confirmed' })
+    .update({ created_supplier_invoice_id: invoice.id })
     .eq('id', inboxItemId)
     .eq('company_id', companyId)
 
@@ -2301,9 +2325,12 @@ async function commitCreateVoucher(
       // zero-rows-updated result and surfaces a structured warning. We also
       // require .eq('created_supplier_invoice_id', null) so a concurrent
       // create_supplier_invoice_from_inbox doesn't get clobbered either.
+      // Only the link column is written — the status CHECK allows received|error
+      // (migration 20260504180000), so writing 'confirmed' here would fail the
+      // whole UPDATE and silently leave the inbox item in "needs action".
       const { data: updatedRows, error: linkInboxErr } = await supabase
         .from('invoice_inbox_items')
-        .update({ created_journal_entry_id: entry.id, status: 'confirmed' })
+        .update({ created_journal_entry_id: entry.id })
         .eq('id', inboxItemId)
         .eq('company_id', companyId)
         .is('created_journal_entry_id', null)

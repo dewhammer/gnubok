@@ -313,10 +313,12 @@ describe('commitPendingOperation: create_voucher', () => {
 
   // ── inbox-direct booking flow ──────────────────────────────────────
   // gnubok_create_voucher accepts an optional inbox_item_id. On commit, the
-  // executor must update invoice_inbox_items (created_journal_entry_id +
-  // status='confirmed') and attach the OCR document to the new JE.
+  // executor must stamp invoice_inbox_items.created_journal_entry_id (the
+  // signal that drops the row out of "needs action") and attach the OCR
+  // document to the new JE. Status is left untouched — the status CHECK only
+  // allows received|error, so the link column alone marks the row processed.
 
-  it('inbox-direct: posts the entry, marks inbox confirmed, and attaches the document', async () => {
+  it('inbox-direct: posts the entry, links the inbox row, and attaches the document', async () => {
     vi.mocked(createJournalEntry).mockResolvedValueOnce(
       makeJournalEntry({ id: 'je-inbox', voucher_number: 17, voucher_series: 'A' })
     )

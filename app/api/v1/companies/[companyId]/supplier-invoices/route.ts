@@ -701,9 +701,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
           // Engine returned null (no open fiscal period). Strict-mode: roll back.
           // Engine returned null before posting — no JE exists.
           await rollbackSupplierInvoice(ctx.supabase, invoiceId, ctx.companyId!, ctx.log, 'no_fiscal_period', false)
-          return v1ErrorResponseFromCode('SI_CREATE_FAILED', ctx.log, {
+          return v1ErrorResponseFromCode('SI_CREATE_NO_FISCAL_PERIOD', ctx.log, {
             requestId: ctx.requestId,
-            details: { step: 'registration_journal_entry', reason: 'no_fiscal_period' },
+            details: { step: 'registration_journal_entry', invoice_date: body.invoice_date },
           })
         }
       } catch (err) {

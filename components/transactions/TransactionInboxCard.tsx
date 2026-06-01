@@ -22,6 +22,7 @@ import {
   FileText,
   Link2,
   Loader2,
+  Pencil,
   Split,
   Trash2,
 } from 'lucide-react'
@@ -54,6 +55,8 @@ interface TransactionInboxCardProps {
   onOpenSplitMatch?: (transaction: TransactionWithInvoice) => void
   onOpenCategoryDialog: (transaction: TransactionWithInvoice) => void
   onDelete?: (id: string) => void
+  /** Open the edit-title dialog. Only wired for editable (unbooked/unmatched) rows. */
+  onEditTitle?: (transaction: TransactionWithInvoice) => void
   onToggleSelect: (id: string) => void
   onAnimationComplete?: (id: string) => void
 }
@@ -69,6 +72,7 @@ export default function TransactionInboxCard({
   onOpenSplitMatch,
   onOpenCategoryDialog,
   onDelete,
+  onEditTitle,
   onToggleSelect,
   onAnimationComplete,
 }: TransactionInboxCardProps) {
@@ -109,6 +113,11 @@ export default function TransactionInboxCard({
   const isUncategorized = transaction.is_business === null && !transaction.journal_entry_id
   const showCheckbox = isBatchMode && isUncategorized
   const isDeletable = !transaction.journal_entry_id
+  // Title is editable only on a mutable staging row — not booked and not
+  // confirmed-matched. Mirrors the server-side gate in PATCH /api/transactions/[id].
+  const isTitleEditable =
+    !transaction.journal_entry_id && !transaction.invoice_id && !transaction.supplier_invoice_id
+  const originalName = transaction.original_description
 
   // Primary action: invoice/supplier-invoice match keeps the 1-click shortcut;
   // otherwise the user opens the template picker.
@@ -290,6 +299,22 @@ export default function TransactionInboxCard({
                     Per-transaction agent help has moved to Dokumentinkorgen:
                     match the underlag to the transaction and ask from there,
                     where the receipt/invoice is in view. */}
+                {isTitleEditable && onEditTitle && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onEditTitle(transaction)
+                    }}
+                    aria-label={t('edit_title_aria')}
+                    title={t('edit_title_aria')}
+                    disabled={isProcessing || isDisabled}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                )}
                 {isDeletable && onDelete && (
                   <Button
                     variant="ghost"
@@ -316,6 +341,18 @@ export default function TransactionInboxCard({
         </div>
         <DataListMeta className="mt-1">
           <span className="tabular-nums">{formatDate(transaction.date)}</span>
+          {transaction.title_edited_at && (
+            <>
+              <DataListMetaSeparator />
+              <Badge
+                variant="secondary"
+                className="h-4 px-1.5 py-0 text-[10px]"
+                title={originalName ? t('original_name_tooltip', { name: originalName }) : undefined}
+              >
+                {t('edited_badge')}
+              </Badge>
+            </>
+          )}
           {skvCounterpartDate && (
             <>
               <DataListMetaSeparator />

@@ -13,6 +13,8 @@
  */
 
 import { getAuthorizationHeader } from './jwt'
+import { deriveTransactionLabel } from './transaction-label'
+import { FALLBACK_DESCRIPTION } from '@/lib/transactions/external-id'
 
 // Prefer _PRODUCTION variant; sandbox uses api.tilisy.com, production uses api.enablebanking.com
 const ENABLE_BANKING_API_URL =
@@ -149,6 +151,11 @@ export interface BankTransaction {
   counterparty_account?: string
   reference?: string
   merchant_category_code?: string
+  // ISO 20022 / proprietary transaction codes — carried through so the
+  // description fallback can derive a meaningful Swedish label when remittance
+  // text and a counterparty name are both absent. See deriveTransactionLabel.
+  bank_transaction_code?: string
+  proprietary_bank_transaction_code?: string
 }
 
 // Constants
@@ -639,14 +646,27 @@ export function convertTransaction(tx: Transaction, accountCurrency: string): Ba
     booking_date: tx.booking_date || tx.value_date || new Date().toISOString().split('T')[0],
     amount,
     currency: tx.transaction_amount.currency || accountCurrency,
+    // Fallback chain: bank's payment message → counterparty name → a Swedish
+    // label derived from the ISO 20022 / MCC codes the bank DID send (card
+    // purchases, ATM, fees, interest) → 'Okänd transaktion'. The final fallback
+    // is also normalized at the ingest boundary, so any leftover lands as the
+    // same Swedish neutral.
     description: tx.remittance_information?.filter(r => r.trim()).join(' ') ||
                  (isCredit ? debtorName : creditorName) ||
-                 'Unknown',
+                 deriveTransactionLabel({
+                   bankTransactionCode: tx.bank_transaction_code,
+                   proprietaryBankTransactionCode: tx.proprietary_bank_transaction_code,
+                   mcc: tx.merchant_category_code,
+                   isCredit,
+                 }) ||
+                 FALLBACK_DESCRIPTION,
     counterparty_name: isCredit ? debtorName : creditorName,
     counterparty_account: isCredit
       ? tx.debtor_account?.iban || tx.debtor_account?.bban
       : tx.creditor_account?.iban || tx.creditor_account?.bban,
-    merchant_category_code: tx.merchant_category_code
+    merchant_category_code: tx.merchant_category_code,
+    bank_transaction_code: tx.bank_transaction_code,
+    proprietary_bank_transaction_code: tx.proprietary_bank_transaction_code,
   }
 }
 

@@ -24,8 +24,9 @@ import { cn, formatCurrency } from '@/lib/utils'
 import { useUnsavedChanges } from '@/lib/hooks/use-unsaved-changes'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import BankTransactionPicker from '@/components/transactions/BankTransactionPicker'
-import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, MessageCircle, Link2 } from 'lucide-react'
-import type { Supplier, BASAccount, VatTreatment, EntityType, InvoiceExtractionResult } from '@/types'
+import CreatePeriodDialog from '@/components/bookkeeping/CreatePeriodDialog'
+import { ArrowLeft, Plus, Trash2, ChevronDown, Loader2, Lock, AlertCircle, AlertTriangle, CalendarPlus, MessageCircle, Link2 } from 'lucide-react'
+import type { Supplier, BASAccount, VatTreatment, EntityType, InvoiceExtractionResult, FiscalPeriod } from '@/types'
 
 interface LineItem {
   description: string
@@ -217,6 +218,10 @@ export default function NewSupplierInvoicePage() {
   const [suppliersLoaded, setSuppliersLoaded] = useState(false)
   const [accounts, setAccounts] = useState<BASAccount[]>([])
   const [entityType, setEntityType] = useState<EntityType>('enskild_firma')
+  const [accountingMethod, setAccountingMethod] = useState<'accrual' | 'cash'>('accrual')
+  const [periods, setPeriods] = useState<FiscalPeriod[]>([])
+  const [periodsLoaded, setPeriodsLoaded] = useState(false)
+  const [showCreatePeriod, setShowCreatePeriod] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [showReview, setShowReview] = useState(false)
   const [pendingData, setPendingData] = useState<FormData | null>(null)
@@ -300,10 +305,23 @@ export default function NewSupplierInvoicePage() {
 
   const isEF = entityType === 'enskild_firma'
 
+  // Out-of-period guard (mirrors the manual voucher form). A registration JE is
+  // only posted at registration time under the accrual method or when the
+  // invoice is marked paid privately — cash method books at payment, so an
+  // out-of-period date is fine there and we stay quiet. periodsLoaded gates the
+  // warning so it never flashes before the fiscal periods have been fetched.
+  const willBookAtRegistration = accountingMethod === 'accrual' || watchedPaidPrivately
+  const invoiceDateOutsidePeriod =
+    periodsLoaded &&
+    !!watchedInvoiceDate &&
+    !periods.some((p) => watchedInvoiceDate >= p.period_start && watchedInvoiceDate <= p.period_end)
+  const showNoPeriodWarning = willBookAtRegistration && invoiceDateOutsidePeriod
+
   useEffect(() => {
     fetchSuppliers()
     fetchAccounts()
     fetchEntityType()
+    fetchPeriods()
   }, [])
 
   // One-shot: load inbox item and prefill form. Runs after suppliers are
@@ -508,8 +526,25 @@ export default function NewSupplierInvoicePage() {
       const res = await fetch('/api/settings')
       const { data } = await res.json()
       if (data?.entity_type) setEntityType(data.entity_type)
+      // Cash method books at payment, not registration — drives whether the
+      // out-of-period warning is relevant (see willBookAtRegistration below).
+      if (data?.accounting_method === 'cash' || data?.accounting_method === 'accrual') {
+        setAccountingMethod(data.accounting_method)
+      }
     } catch {
-      // Default to enskild_firma
+      // Default to enskild_firma / accrual
+    }
+  }
+
+  async function fetchPeriods() {
+    try {
+      const res = await fetch('/api/bookkeeping/fiscal-periods')
+      const { data } = await res.json()
+      setPeriods(data || [])
+    } catch {
+      // Non-critical — the server still hard-blocks an out-of-period booking.
+    } finally {
+      setPeriodsLoaded(true)
     }
   }
 
@@ -1129,6 +1164,26 @@ export default function NewSupplierInvoicePage() {
                 </>
               )}
             </div>
+
+            {showNoPeriodWarning && (
+              <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3">
+                <AlertTriangle className="h-5 w-5 text-warning-foreground mt-0.5 shrink-0" />
+                <div className="flex-1 text-sm text-warning-foreground">
+                  <p className="font-medium">{t('no_period_warning', { date: watchedInvoiceDate })}</p>
+                  <p className="mt-0.5">{t('no_period_help')}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowCreatePeriod(true)}
+                  className="shrink-0"
+                >
+                  <CalendarPlus className="h-3.5 w-3.5 mr-1.5" />
+                  {t('create_period')}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -1678,6 +1733,14 @@ export default function NewSupplierInvoicePage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <CreatePeriodDialog
+        open={showCreatePeriod}
+        onOpenChange={setShowCreatePeriod}
+        entryDate={watchedInvoiceDate}
+        periods={periods}
+        onCreated={fetchPeriods}
+      />
     </div>
   )
 }

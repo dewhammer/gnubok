@@ -324,8 +324,26 @@ export function getErrorMessage(
         return 'Kontering saknas för transaktionen. Kontrollera bokföringsreglerna.'
       }
 
+      if (structured.code === 'NO_OPEN_PERIOD_FOR_DATE') {
+        return 'Det finns ingen räkenskapsperiod som täcker det valda datumet. Skapa eller öppna räkenskapsåret först.'
+      }
+
+      if (structured.code === 'TARGET_PERIOD_CLOSED') {
+        return 'Räkenskapsåret för det valda datumet är stängt (bokslut) och kan inte återöppnas. Bokför rättelsen i innevarande period istället.'
+      }
+
+      if (structured.code === 'TARGET_PERIOD_LOCKED') {
+        const details = structured.details as { lockDate?: string } | undefined
+        return details?.lockDate
+          ? `Räkenskapsperioden för det valda datumet är låst (t.o.m. ${details.lockDate}). Lås upp perioden för att flytta verifikationen dit.`
+          : 'Räkenskapsperioden för det valda datumet är låst. Lås upp perioden för att flytta verifikationen dit.'
+      }
+
       if (structured.code === 'MEANINGLESS_CORRECTION') {
         const details = structured.details as { reason?: string } | undefined
+        if (details?.reason === 'no_date_change') {
+          return 'Det nya datumet är samma som det nuvarande — det finns inget att flytta.'
+        }
         if (details?.reason === 'identical_to_original') {
           return 'Rättelsen är identisk med originalverifikationen — inget har ändrats.'
         }

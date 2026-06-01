@@ -45,11 +45,17 @@ export interface ReconciliationStatus {
    * is computed against `gl_1930_period_movement`, not this.
    */
   gl_1930_balance: number
-  /** Ledger movement on 1930 excluding source_type='opening_balance' lines. */
+  /** Ledger movement on 1930 excluding opening_balance AND storno/correction
+   *  lines — i.e. only movements that have a bank-feed counterpart. */
   gl_1930_period_movement: number
   /** IB on 1930 within the date range — surfaced separately so reconciliation
    *  doesn't treat it as an unmatched bank transaction. */
   gl_1930_opening_balance: number
+  /** Net of posted storno/correction lines on 1930 within the date range.
+   *  Excluded from gl_1930_period_movement (and from the unmatched-voucher set)
+   *  because a book-only correction has no counterpart in the bank feed. Surfaced
+   *  separately so the UI can explain why a corrected period still reconciles. */
+  gl_1930_correction_adjustment: number
   /** bankTotal − gl_1930_period_movement. Zero when every period transaction is matched. */
   difference: number
   is_reconciled: boolean
@@ -278,54 +284,77 @@ export async function getReconciliationStatus(
 
   const { data: transactions } = await txQuery
 
-  // Get GL bank account lines (all, not just unlinked). Pull source_type
-  // from the join so we can split IB out of the period-movement comparison —
-  // an opening_balance line on 1930 is the prior year's closing balance, not
-  // a bank transaction we should expect to match.
+  // Get GL bank account lines. Pull id/status/source_type from the join so we
+  // can (a) split out lines that have no bank-feed counterpart — opening_balance
+  // (prior year's closing balance) and storno/correction (book-only corrections)
+  // — and (b) identify reversed originals, whose still-linked bank transactions
+  // are superseded by the correction and must drop off the bank side too.
+  // 'reversed' is fetched alongside 'posted' precisely to resolve those links;
+  // reversed lines are NOT counted in any movement total.
   let glQuery = supabase
     .from('journal_entry_lines')
-    .select('debit_amount, credit_amount, journal_entries!inner(company_id, entry_date, status, source_type)')
+    .select('debit_amount, credit_amount, journal_entries!inner(id, company_id, entry_date, status, source_type)')
     .eq('account_number', bankAccount)
     .eq('journal_entries.company_id', companyId)
-    .eq('journal_entries.status', 'posted')
+    .in('journal_entries.status', ['posted', 'reversed'])
 
   if (dateFrom) glQuery = glQuery.gte('journal_entries.entry_date', dateFrom)
   if (dateTo) glQuery = glQuery.lte('journal_entries.entry_date', dateTo)
 
   const { data: glLines } = await glQuery
 
+  type GlEntry = { id?: string | null; status?: string | null; source_type?: string | null }
   type GlLineRow = {
     debit_amount: number | string | null
     credit_amount: number | string | null
-    journal_entries: { source_type?: string | null } | { source_type?: string | null }[] | null
+    journal_entries: GlEntry | GlEntry[] | null
   }
-  function isOpeningBalance(line: GlLineRow): boolean {
+  // Supabase typings sometimes widen embedded relations to arrays even when the
+  // join is one-to-one. Handle both shapes defensively.
+  function entryOf(line: GlLineRow): GlEntry | null {
     const je = line.journal_entries
-    if (!je) return false
-    // Supabase typings sometimes widen embedded relations to arrays even when
-    // the join is one-to-one. Handle both shapes defensively.
-    const sourceType = Array.isArray(je) ? je[0]?.source_type : je.source_type
-    return sourceType === 'opening_balance'
+    if (!je) return null
+    return Array.isArray(je) ? je[0] ?? null : je
   }
-
-  // Calculate totals
-  const bankTotal = (transactions || []).reduce(
-    (sum, tx) => sum + (Number(tx.amount) || 0),
-    0
-  )
+  function lineAmount(line: GlLineRow): number {
+    return (Number(line.debit_amount) || 0) - (Number(line.credit_amount) || 0)
+  }
 
   const allLines = (glLines || []) as GlLineRow[]
-  const glBalance = allLines.reduce(
-    (sum, line) => sum + (Number(line.debit_amount) || 0) - (Number(line.credit_amount) || 0),
-    0
+  const postedLines = allLines.filter((l) => entryOf(l)?.status === 'posted')
+
+  // Reversed originals retain their bank-transaction link (the storno flow never
+  // re-points it), so a transaction pointing at one is a superseded booking —
+  // drop it from the bank side to keep the comparison symmetric with the
+  // movement, which excludes the matching storno/correction below.
+  const reversedEntryIds = new Set<string>(
+    allLines
+      .filter((l) => entryOf(l)?.status === 'reversed')
+      .map((l) => entryOf(l)?.id)
+      .filter((id): id is string => Boolean(id))
   )
-  const glOpeningBalance = allLines
-    .filter(isOpeningBalance)
-    .reduce(
-      (sum, line) => sum + (Number(line.debit_amount) || 0) - (Number(line.credit_amount) || 0),
-      0
-    )
-  const glPeriodMovement = glBalance - glOpeningBalance
+
+  // Calculate totals. Exclude transactions whose linked entry was reversed —
+  // their booking lives on in the correction, which is itself excluded from the
+  // movement, so counting the transaction would resurrect a phantom diff.
+  const bankTotal = (transactions || []).reduce((sum, tx) => {
+    if (tx.journal_entry_id && reversedEntryIds.has(tx.journal_entry_id)) return sum
+    return sum + (Number(tx.amount) || 0)
+  }, 0)
+
+  // gl_1930_balance keeps its historical meaning: the posted balance incl. IB.
+  const glBalance = postedLines.reduce((sum, line) => sum + lineAmount(line), 0)
+  const glOpeningBalance = postedLines
+    .filter((l) => entryOf(l)?.source_type === 'opening_balance')
+    .reduce((sum, line) => sum + lineAmount(line), 0)
+  const glCorrectionAdjustment = postedLines
+    .filter((l) => {
+      const st = entryOf(l)?.source_type
+      return st === 'storno' || st === 'correction'
+    })
+    .reduce((sum, line) => sum + lineAmount(line), 0)
+  // Period movement = only the lines that have a bank-feed counterpart.
+  const glPeriodMovement = glBalance - glOpeningBalance - glCorrectionAdjustment
 
   const matchedCount = (transactions || []).filter(
     (tx) => tx.journal_entry_id !== null
@@ -335,8 +364,8 @@ export async function getReconciliationStatus(
     (tx) => tx.journal_entry_id === null && tx.is_ignored !== true
   ).length
 
-  // Unlinked GL lines count (RPC excludes source_type='opening_balance' since
-  // 20260514132534_unlinked_1930_lines_exclude_opening_balance.sql)
+  // Unlinked GL lines count (RPC excludes opening_balance, storno and correction
+  // since 20260601120000_unlinked_gl_lines_exclude_storno_correction.sql)
   const unlinkedLines = await fetchUnlinkedGLLines(supabase, companyId, bankAccount, dateFrom, dateTo)
 
   const difference = Math.round((bankTotal - glPeriodMovement) * 100) / 100
@@ -346,6 +375,7 @@ export async function getReconciliationStatus(
     gl_1930_balance: Math.round(glBalance * 100) / 100,
     gl_1930_period_movement: Math.round(glPeriodMovement * 100) / 100,
     gl_1930_opening_balance: Math.round(glOpeningBalance * 100) / 100,
+    gl_1930_correction_adjustment: Math.round(glCorrectionAdjustment * 100) / 100,
     difference,
     is_reconciled: Math.abs(difference) < 0.01,
     matched_count: matchedCount,

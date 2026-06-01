@@ -50,6 +50,7 @@ interface ReconciliationStatus {
   gl_1930_balance: number
   gl_1930_period_movement: number
   gl_1930_opening_balance: number
+  gl_1930_correction_adjustment: number
   difference: number
   is_reconciled: boolean
   matched_count: number
@@ -642,6 +643,13 @@ export function BankReconciliationView() {
                   Ingående balans (IB) på <AccountNumber number={accountNumber} />:{' '}
                   <span className="font-mono">{formatCurrency(status.gl_1930_opening_balance)}</span>
                   {' '}— räknas inte i avstämningen.
+                </p>
+              )}
+              {status.gl_1930_correction_adjustment !== 0 && (
+                <p className="pt-2 text-xs text-muted-foreground">
+                  Rättelser och stornon på <AccountNumber number={accountNumber} /> i perioden:{' '}
+                  <span className="font-mono">{formatCurrency(status.gl_1930_correction_adjustment)}</span>
+                  {' '}— bokföringsmässiga rättelser utan motsvarande bankhändelse, räknas inte i avstämningen.
                 </p>
               )}
               <div className="flex gap-4 pt-2 text-xs text-muted-foreground">

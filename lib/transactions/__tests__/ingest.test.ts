@@ -212,6 +212,85 @@ describe('ingestTransactions', () => {
   })
 
   // -----------------------------------------------------------------------
+  // 2b-edit. Edit-safety regression: a user-edited stored title must NOT
+  //     reopen the duplicate-import window. The content bridge keys off the
+  //     immutable original_description, so a re-import whose bank text still
+  //     matches the original is deduped even though the stored (editable)
+  //     description was changed.
+  // -----------------------------------------------------------------------
+  it('dedupes against the original bank description even after the stored title was edited', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const raw = makeRaw({
+      date: '2024-06-15',
+      amount: -250.0,
+      description: 'ICA Maxi Solna', // original bank text, re-imported via CSV
+      external_id: 'lunar_csvhash999', // different external_id → primary dedup misses
+      import_source: 'csv_lunar',
+    })
+
+    // Booked transaction map query — none
+    enqueue({ data: [], error: null })
+    // Unbooked bank-synced row whose TITLE was edited by the user, but whose
+    // original_description still holds the bank's verbatim text.
+    enqueue({
+      data: [
+        {
+          date: '2024-06-15',
+          amount: -250.0,
+          original_description: 'ICA Maxi Solna',
+          description: 'Mataffär (egen rubrik)',
+        },
+      ],
+      error: null,
+    })
+    // Supplier invoices fetch
+    enqueue({ data: [], error: null })
+    // Batch external_id dedup query — external_id differs, so no match
+    enqueue({ data: [], error: null })
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.duplicates).toBe(1)
+    expect(result.imported).toBe(0)
+  })
+
+  // -----------------------------------------------------------------------
+  // 2b-unknown. Legacy 'Unknown'/empty rows must still dedup: the stored-side
+  //     content key is normalized the same way as the incoming side, so an
+  //     existing row whose original_description is the legacy 'Unknown'
+  //     sentinel matches an incoming 'Unknown' re-import (both → 'Okänd
+  //     transaktion'). Without symmetric normalization this row would
+  //     re-import as a duplicate.
+  // -----------------------------------------------------------------------
+  it('dedupes legacy "Unknown" rows by normalizing both the stored and incoming keys', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const raw = makeRaw({
+      date: '2024-06-15',
+      amount: -250.0,
+      description: 'Unknown', // legacy English sentinel re-imported via CSV
+      external_id: 'lunar_csvhashU',
+      import_source: 'csv_lunar',
+    })
+
+    // Booked transaction map query — none
+    enqueue({ data: [], error: null })
+    // Unbooked bank-synced row whose original_description is the legacy sentinel.
+    enqueue({
+      data: [{ date: '2024-06-15', amount: -250.0, original_description: 'Unknown', description: 'Unknown' }],
+      error: null,
+    })
+    // Supplier invoices fetch
+    enqueue({ data: [], error: null })
+    // Batch external_id dedup query — external_id differs, so no match
+    enqueue({ data: [], error: null })
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.duplicates).toBe(1)
+    expect(result.imported).toBe(0)
+  })
+
+  // -----------------------------------------------------------------------
   // 2c. No false positive: same date+amount but different description does
   //     NOT trigger content dedup — guards against the historical concern
   //     about unrelated transfers colliding on (date, amount) alone.
@@ -789,6 +868,72 @@ describe('ingestTransactions', () => {
 
     expect(result.imported).toBe(1)
     expect(result.duplicates).toBe(0)
+  })
+
+  it('bridges the external_id scheme change: a booked OLD-scheme eb_ row is caught by content dedup on re-sync', async () => {
+    // Transition scenario: an enable_banking row was imported+booked under the
+    // OLD unstable scheme (eb_{iban}_{txid}). After deploy, the re-sync derives
+    // a NEW content-based external_id that will NOT match by external_id, so
+    // layer-1 misses. Layer 1b (booked content dedup) MUST catch it, otherwise
+    // the user sees the exact duplicate the fix is meant to prevent.
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const raw = makeRaw({
+      external_id: 'eb_SE123_2024-06-15_-25000_0', // new scheme
+      date: '2024-06-15',
+      amount: -250,
+      description: 'ICA Maxi Solna',
+      import_source: 'enable_banking',
+    })
+
+    // Booked map: the SAME transaction still carries its OLD-scheme external_id
+    // in the DB; dedup matches on content, not on external_id.
+    enqueue({
+      data: [{ date: '2024-06-15', amount: -250, description: 'ICA Maxi Solna' }],
+      error: null,
+    })
+    // Unbooked enable_banking map — none
+    enqueue({ data: [], error: null })
+    // Supplier invoices fetch
+    enqueue({ data: [], error: null })
+    // Batch external_id dedup query — DB still holds eb_SE123_{old_txid}, so the
+    // new external_id finds NO match here.
+    enqueue({ data: [], error: null })
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.duplicates).toBe(1)
+    expect(result.imported).toBe(0)
+  })
+
+  it('dedupes against a booked row whose amount is a numeric string (PostgREST), not a number', async () => {
+    // Regression: PostgREST can serialize a `numeric` column as a string
+    // ("-250.00") while the incoming raw amount is a JS number (-250). Before
+    // the öre-normalized dedup key these never compared equal, so content dedup
+    // silently missed and the row was re-imported as a duplicate.
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const raw = makeRaw({
+      external_id: 'eb_acc_2024-06-15_-25000_0',
+      date: '2024-06-15',
+      amount: -250,
+      description: 'ICA Maxi Solna',
+    })
+
+    // Booked map: same transaction, amount as a STRING with trailing zeros.
+    enqueue({
+      data: [{ date: '2024-06-15', amount: '-250.00', description: 'ICA Maxi Solna' }],
+      error: null,
+    })
+    // Unbooked bank-synced transaction map query
+    enqueue({ data: [], error: null })
+    // Supplier invoices fetch
+    enqueue({ data: [], error: null })
+    // Batch external_id dedup query (no match by external_id — the id scheme changed)
+    enqueue({ data: [], error: null })
+
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw])
+
+    expect(result.duplicates).toBe(1)
+    expect(result.imported).toBe(0)
   })
 
   it('handles multiple booked transactions with same date+amount correctly', async () => {

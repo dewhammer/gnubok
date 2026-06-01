@@ -175,6 +175,8 @@ export function makeTransaction(overrides: Partial<Transaction> = {}): Transacti
     external_id: null,
     date: '2024-06-15',
     description: 'ICA MAXI STOCKHOLM',
+    original_description: 'ICA MAXI STOCKHOLM',
+    title_edited_at: null,
     amount: -299.0,
     currency: 'SEK',
     amount_sek: null,

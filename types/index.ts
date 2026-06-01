@@ -404,7 +404,14 @@ export interface Transaction {
 
   // Details
   date: string
-  description: string
+  description: string  // Mutable working title — user-editable while unbooked (see PATCH /api/transactions/[id])
+  // Bank/PSD2 description captured at ingest, normalized (empty/whitespace and
+  // the legacy "Unknown" sentinel map to the Swedish neutral). Never overwritten
+  // by user title edits; source for the dedup bridge and the "restore original"
+  // action. Null only for rows predating the column.
+  original_description: string | null
+  // Set when the user has overridden the title; null = still the bank original.
+  title_edited_at: string | null
   amount: number  // Positive = income, negative = expense
   currency: Currency
 

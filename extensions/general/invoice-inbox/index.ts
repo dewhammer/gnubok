@@ -20,6 +20,7 @@ import {
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
 import { bookkeepingErrorResponse } from '@/lib/bookkeeping/errors'
+import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { CreateSupplierInvoiceSchema, BookInboxItemDirectlySchema } from '@/lib/api/schemas'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
@@ -1766,6 +1767,19 @@ export const invoiceInboxExtension: Extension = {
                   .eq('id', item.document_id)
                   .eq('company_id', ctx.companyId)
               }
+            } else {
+              // createSupplierInvoiceRegistrationEntry returns null ONLY when no
+              // fiscal period covers invoice_date (every other failure throws).
+              // Roll back so we never mark the inbox item converted against an
+              // unbooked supplier invoice (orphan understating 2440/2641).
+              await ctx.supabase
+                .from('supplier_invoices')
+                .delete()
+                .eq('id', invoice.id)
+                .eq('company_id', ctx.companyId)
+              return errorResponseFromCode('SI_CREATE_NO_FISCAL_PERIOD', ctx.log, {
+                details: { invoiceDate: (invoice as SupplierInvoice).invoice_date },
+              })
             }
           } catch (err) {
             console.error('[invoice-inbox/convert] Failed to create registration journal entry:', err)

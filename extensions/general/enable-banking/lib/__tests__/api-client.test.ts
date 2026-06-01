@@ -17,6 +17,8 @@ import {
   getAccountTransactions,
   getAllTransactions,
   getAllTransactionsWithRaw,
+  convertTransaction,
+  type Transaction,
 } from '../api-client'
 
 describe('api-client', () => {
@@ -246,5 +248,49 @@ describe('JWT cache', () => {
     // The actual cache test is in jwt.ts — we verify the cache function exists
     const jwt = await import('../jwt')
     expect(typeof jwt._resetTokenCache).toBe('function')
+  })
+})
+
+describe('convertTransaction', () => {
+  function makeTx(overrides: Partial<Transaction> = {}): Transaction {
+    return {
+      transaction_amount: { amount: '250.00', currency: 'SEK' },
+      credit_debit_indicator: 'DBIT',
+      booking_date: '2024-06-15',
+      ...overrides,
+    }
+  }
+
+  it('uses remittance_information when present', () => {
+    const tx = makeTx({ remittance_information: ['Faktura 123', ' '] })
+    expect(convertTransaction(tx, 'SEK').description).toBe('Faktura 123')
+  })
+
+  it('falls back to the counterparty name when remittance is empty', () => {
+    const out = makeTx({ remittance_information: ['   '], creditor_name: 'Telia AB' })
+    expect(convertTransaction(out, 'SEK').description).toBe('Telia AB')
+  })
+
+  it('derives a Swedish label from bank_transaction_code when remittance and counterparty are both absent', () => {
+    const tx = makeTx({ bank_transaction_code: 'PMNT-CCRD-POSD', merchant_category_code: '5411' })
+    // MCC 5411 wins (most specific).
+    expect(convertTransaction(tx, 'SEK').description).toBe('Inköp dagligvaror')
+  })
+
+  it('uses the ISO family label when only bank_transaction_code is present', () => {
+    const tx = makeTx({ bank_transaction_code: 'PMNT/CCRD' })
+    expect(convertTransaction(tx, 'SEK').description).toBe('Kortköp')
+  })
+
+  it('falls back to the Swedish neutral (never English "Unknown") when nothing is recognized', () => {
+    const tx = makeTx({})
+    expect(convertTransaction(tx, 'SEK').description).toBe('Okänd transaktion')
+  })
+
+  it('carries the ISO codes through onto the converted transaction', () => {
+    const tx = makeTx({ bank_transaction_code: 'PMNT/RCDT', proprietary_bank_transaction_code: 'XB' })
+    const out = convertTransaction(tx, 'SEK')
+    expect(out.bank_transaction_code).toBe('PMNT/RCDT')
+    expect(out.proprietary_bank_transaction_code).toBe('XB')
   })
 })
