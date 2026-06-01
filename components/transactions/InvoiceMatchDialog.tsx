@@ -28,12 +28,29 @@ interface PreviewLine {
   description: string
 }
 
+// Cross-currency conversion info returned by the preview route. When
+// `required` is true the dialog surfaces a Valutaomräkning section so the
+// user sees the rate + invoice-currency-equivalent before approving. When
+// the Riksbanken lookup fails the dialog swaps in a manual-rate input.
+type FxConversion =
+  | { required: false }
+  | {
+      required: true
+      tx_currency: string
+      invoice_currency: string
+      rate: number
+      rate_date: string
+      paid_in_invoice_currency: number
+    }
+  | { required: true; error: 'rate_unavailable'; tx_currency: string; invoice_currency: string }
+
 interface MatchPreview {
   entry_type: 'clearing' | 'cash'
   lines: PreviewLine[]
   invoice_already_booked: boolean
   accounting_method: 'accrual' | 'cash'
   is_fully_paid: boolean
+  fx_conversion?: FxConversion
 }
 
 // String-typed working copy of a line. The amount is a single value plus a
@@ -57,6 +74,10 @@ export interface ConfirmOpts {
     credit_amount: number
     line_description?: string
   }>
+  // Manual SEK-per-invoice-currency override used when Riksbanken's rate
+  // for the payment date isn't available; the dialog asks the user to type
+  // the rate from their bank statement. Same field flows to the route.
+  manual_exchange_rate?: number
 }
 
 interface InvoiceMatchDialogProps {
@@ -109,6 +130,11 @@ export default function InvoiceMatchDialog({
   const [previewFailed, setPreviewFailed] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [editLines, setEditLines] = useState<EditableLine[]>([])
+  // Manual SEK-per-invoice-currency rate the user types when Riksbanken has
+  // no rate for the payment date. Empty string = no override; on submit it
+  // flows through ConfirmOpts.manual_exchange_rate to the route, which
+  // re-runs the preview math with the supplied rate.
+  const [manualRate, setManualRate] = useState<string>('')
   // BAS accounts power the AccountCombobox suggestions in edit mode. Loaded
   // once on dialog open; same endpoint that PaymentBookingDialog uses.
   const [accounts, setAccounts] = useState<BASAccount[]>([])
@@ -138,6 +164,7 @@ export default function InvoiceMatchDialog({
       setPreviewFailed(false)
       setIsEditing(false)
       setEditLines([])
+      setManualRate('')
       return
     }
     let cancelled = false
@@ -233,7 +260,19 @@ export default function InvoiceMatchDialog({
           }
         })
       : undefined
-    onConfirm({ ...(opts ?? {}), ...(linesPayload ? { lines: linesPayload } : {}) })
+    // Forward manual rate only when the preview indicated Riksbanken
+    // failed AND the user typed a value. Same-currency settlements and
+    // the auto-fetched cross-currency case both skip this field.
+    const fx = preview?.fx_conversion
+    const fxNeedsManualRate = fx?.required === true && 'error' in fx
+    const manualRateNum = fxNeedsManualRate ? parseAmount(manualRate) : 0
+    const manualRatePayload =
+      fxNeedsManualRate && manualRateNum > 0 ? { manual_exchange_rate: manualRateNum } : {}
+    onConfirm({
+      ...(opts ?? {}),
+      ...(linesPayload ? { lines: linesPayload } : {}),
+      ...manualRatePayload,
+    })
   }
 
   const resetEdits = () => {
@@ -446,6 +485,112 @@ export default function InvoiceMatchDialog({
               )
             })()}
 
+            {/* Valutaomräkning section — only renders when the preview
+                route flagged a cross-currency settlement. Shows the
+                Riksbanken rate + invoice-currency-equivalent of the bank
+                payment + the projected post-payment invoice state. When
+                the rate lookup failed, swaps in a manual-rate input so
+                the user can type the rate from their bank statement and
+                retry. */}
+            {preview?.fx_conversion?.required && (() => {
+              const fx = preview.fx_conversion
+              if (!fx?.required) return null
+              const txAbs = transaction ? Math.abs(transaction.amount) : 0
+              const invRemaining = transaction?.potential_invoice?.remaining_amount
+                ?? transaction?.potential_invoice?.total
+                ?? 0
+
+              if ('error' in fx) {
+                // Riksbanken unavailable — show manual rate input.
+                return (
+                  <div className="rounded-lg border border-warning/40 bg-warning/5 p-4 space-y-3">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 mt-0.5 text-warning-foreground flex-shrink-0" />
+                      <div className="flex-1 text-sm">
+                        <p className="font-medium">{t('fx_rate_unavailable_title')}</p>
+                        <p className="text-muted-foreground mt-1">
+                          {t('fx_rate_unavailable_description', {
+                            date: transaction ? formatDate(transaction.date) : '',
+                            invoiceCurrency: fx.invoice_currency,
+                          })}
+                        </p>
+                      </div>
+                    </div>
+                    {/* The typed rate flows through onConfirm.manual_exchange_rate
+                        and the route recomputes server-side, so the footer
+                        Confirm button is the trigger — no separate apply button.
+                        Confirm stays disabled until a positive rate is entered
+                        (see DialogFooter guard below). */}
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                        {t('fx_manual_rate_label')}
+                      </label>
+                      <Input
+                        inputMode="decimal"
+                        value={manualRate}
+                        onChange={(e) => setManualRate(e.target.value)}
+                        placeholder={t('fx_manual_rate_placeholder')}
+                        className="tabular-nums"
+                      />
+                    </div>
+                  </div>
+                )
+              }
+
+              const paidInInvoice = fx.paid_in_invoice_currency
+              const remainingAfter = Math.max(0, Math.round((invRemaining - paidInInvoice) * 100) / 100)
+              const willBeFullyPaid = remainingAfter <= 0
+              // FX gain/loss for the kursvinst/kursförlust note: bankSek -
+              // arSek, where arSek = paidInInvoice × invoice.exchange_rate.
+              // Positive number = the SEK we received exceeded the SEK
+              // value of the debt reduction (kursvinst).
+              const invoiceRate = transaction?.potential_invoice?.exchange_rate ?? 0
+              const arSek = invoiceRate > 0 ? Math.round(paidInInvoice * invoiceRate * 100) / 100 : 0
+              const fxGain = invoiceRate > 0 ? Math.round((txAbs - arSek) * 100) / 100 : 0
+
+              return (
+                <div className="rounded-lg border bg-card p-4 space-y-3">
+                  <p className="text-sm font-medium">{t('fx_title')}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t('fx_rate_description', {
+                      date: fx.rate_date,
+                      invoiceCurrency: fx.invoice_currency,
+                      rate: fx.rate.toFixed(4).replace('.', ','),
+                    })}
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 text-sm pt-1">
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                        {t('fx_paid_in_invoice_currency', { amount: '' }).replace(': ', '')}
+                      </p>
+                      <p className="font-medium tabular-nums mt-0.5">
+                        {formatCurrency(paidInInvoice, fx.invoice_currency)}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                        {t('fx_remaining_after', { amount: '' }).replace(': ', '')}
+                      </p>
+                      <p className="font-medium tabular-nums mt-0.5">
+                        {formatCurrency(remainingAfter, fx.invoice_currency)}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {willBeFullyPaid ? t('fx_status_paid') : t('fx_status_partially_paid')}
+                    {Math.abs(fxGain) > 0.005 && (
+                      <>
+                        {' · '}
+                        {fxGain > 0
+                          ? t('fx_gain_note', { amount: formatCurrency(fxGain, 'SEK') })
+                          : t('fx_loss_note', { amount: formatCurrency(Math.abs(fxGain), 'SEK') })}
+                      </>
+                    )}
+                  </p>
+                </div>
+              )
+            })()}
+
             {/* Bookkeeping preview — editable. Read-only by default; user
                 clicks "Redigera" to switch the rows to inputs. */}
             {(preview || previewFailed) && (
@@ -624,7 +769,17 @@ export default function InvoiceMatchDialog({
           </Button>
           <Button
             onClick={() => handleConfirm()}
-            disabled={isConfirming || isCheckingDuplicate || (isEditing && !editValidation.isValid)}
+            disabled={
+              isConfirming ||
+              isCheckingDuplicate ||
+              (isEditing && !editValidation.isValid) ||
+              // Block confirm when cross-currency lookup failed and the user
+              // hasn't typed a manual rate yet. Same-currency and auto-rate
+              // paths pass through unaffected.
+              (preview?.fx_conversion?.required === true &&
+                'error' in preview.fx_conversion &&
+                parseAmount(manualRate) <= 0)
+            }
           >
             {isConfirming ? t('confirming') : t('confirm_match')}
           </Button>

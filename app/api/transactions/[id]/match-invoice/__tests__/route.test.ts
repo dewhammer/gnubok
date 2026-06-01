@@ -30,6 +30,11 @@ vi.mock('@/lib/bookkeeping/engine', () => ({
   createJournalEntry: (...args: unknown[]) => mockCreateJournalEntry(...args),
 }))
 
+const mockFetchExchangeRate = vi.fn()
+vi.mock('@/lib/currency/riksbanken', () => ({
+  fetchExchangeRate: (...args: unknown[]) => mockFetchExchangeRate(...args),
+}))
+
 vi.mock('@/lib/invoices/match-log', () => ({
   logMatchEvent: vi.fn(),
 }))
@@ -57,6 +62,9 @@ vi.mock('@/lib/auth/require-write', () => ({
 }))
 
 import { POST } from '../route'
+// Mocked above — imported here as a spy handle to assert FX rate provenance
+// lands in the audit trail (PR #615 review).
+import { logMatchEvent } from '@/lib/invoices/match-log'
 
 const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000'
 const VALID_UUID_2 = '550e8400-e29b-41d4-a716-446655440001'
@@ -205,36 +213,170 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     expect((body.error as unknown as { code: string }).code).toBe('MATCH_INVOICE_NOT_OPEN')
   })
 
-  it('returns 400 MATCH_INVOICE_CURRENCY_MISMATCH for cross-currency settlement', async () => {
-    // Round-9 fix: a SEK bank tx paying a USD invoice would otherwise
-    // corrupt invoice.paid_amount (accumulator treats SEK as USD), flip
-    // a 140 USD invoice to status=paid after a tiny partial. Block here
-    // and route the user to the multi-allocation flow that handles
-    // 3960/7960 FX-diff postings end-to-end.
-    const tx = makeTransaction({ id: 'tx-1', amount: 1000, invoice_id: null, currency: 'SEK' })
+  it('cross-currency settlement: converts SEK tx via Riksbanken rate, posts FX-diff verifikat', async () => {
+    // 1000 SEK bank tx paying a 140 USD invoice. Spot rate today: 10.45.
+    // Conversion: 1000 / 10.45 = 95.6938 USD. Invoice was booked at 9.30,
+    // so 1510 credit = 95.6938 × 9.30 = 889.95. FX gain = 1000 − 889.95 =
+    // 110.05 → 3960 Cr. Invoice flips to partially_paid with remaining
+    // 140 − 95.6938 = 44.3062 USD.
+    const tx = makeTransaction({
+      id: 'tx-1',
+      amount: 1000,
+      invoice_id: null,
+      currency: 'SEK',
+      date: '2026-05-30',
+    })
     const invoice = makeInvoice({
       id: VALID_UUID,
       status: 'sent',
       currency: 'USD',
+      exchange_rate: 9.3,
       total: 140,
       remaining_amount: 140,
+      paid_amount: 0,
     })
     enqueue({ data: tx, error: null })
     enqueue({ data: invoice, error: null })
+    enqueue({ data: [], error: null }) // hard-duplicate check
+    enqueue({ data: { accounting_method: 'accrual', entity_type: 'enskild_firma' }, error: null })
+
+    mockFetchExchangeRate.mockResolvedValue({
+      currency: 'USD',
+      rate: 10.45,
+      date: '2026-05-30',
+    })
+    mockCreateJournalEntry.mockResolvedValue({ id: 'je-fx' })
+
+    enqueue({ data: [{ id: VALID_UUID }], error: null }) // update invoice
+    enqueue({ data: null, error: null }) // insert invoice_payments
+    enqueue({ data: null, error: null }) // update transaction
+    enqueue({ data: null, error: null }) // logMatchEvent
 
     const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
       method: 'POST',
       body: { invoice_id: VALID_UUID },
     })
     const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
-    const { status, body } = await parseJsonResponse<{ error: { code: string; details: Record<string, string> } }>(response)
+    const { status, body } = await parseJsonResponse<{
+      success: boolean
+      invoice_status: string
+      paid_amount: number
+      remaining_amount: number
+      journal_entry_id: string
+    }>(response)
+
+    expect(status).toBe(200)
+    expect(body.success).toBe(true)
+    expect(body.invoice_status).toBe('partially_paid')
+    // 2dp precision matches the invoice currency's natural precision (USD
+    // is to cent). The internal paidInInvoiceCurrency is computed at 4dp
+    // for FX-rate accuracy then rounded to 2dp when accumulated into the
+    // invoice column.
+    expect(body.paid_amount).toBeCloseTo(95.69, 1)
+    expect(body.remaining_amount).toBeCloseTo(44.31, 1)
+    // Verifikat: Dr 1930 1000, Cr 1510 889.95 (95.6938 × 9.30 ≈ 889.95),
+    // Cr 3960 110.05 (gain). Balances to öre.
+    expect(mockCreateJournalEntry).toHaveBeenCalledWith(
+      expect.anything(),
+      'company-1',
+      'user-1',
+      expect.objectContaining({
+        source_type: 'invoice_paid',
+        lines: expect.arrayContaining([
+          expect.objectContaining({ account_number: '1930', debit_amount: 1000 }),
+          expect.objectContaining({ account_number: '1510' }),
+          expect.objectContaining({ account_number: '3960' }),
+        ]),
+      }),
+    )
+    // The auto path records the rate provenance as 'riksbanken' (vs 'manual').
+    expect(logMatchEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-1',
+      'tx-1',
+      'matched',
+      expect.objectContaining({
+        newState: expect.objectContaining({ rate_source: 'riksbanken', exchange_rate: 10.45 }),
+      }),
+    )
+  })
+
+  it('cross-currency settlement: returns 400 FX_RATE_UNAVAILABLE when Riksbanken fails and no manual rate', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: 1000, invoice_id: null, currency: 'SEK', date: '2026-05-30' })
+    const invoice = makeInvoice({
+      id: VALID_UUID,
+      status: 'sent',
+      currency: 'USD',
+      exchange_rate: 9.3,
+      total: 140,
+      remaining_amount: 140,
+    })
+    enqueue({ data: tx, error: null })
+    enqueue({ data: invoice, error: null })
+
+    mockFetchExchangeRate.mockResolvedValue(null) // Riksbanken outage
+
+    const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
+      method: 'POST',
+      body: { invoice_id: VALID_UUID },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
 
     expect(status).toBe(400)
-    expect(body.error.code).toBe('MATCH_INVOICE_CURRENCY_MISMATCH')
-    expect(body.error.details).toMatchObject({
-      transactionCurrency: 'SEK',
-      invoiceCurrency: 'USD',
+    expect(body.error.code).toBe('MATCH_INVOICE_FX_RATE_UNAVAILABLE')
+  })
+
+  it('cross-currency settlement: manual_exchange_rate succeeds when Riksbanken fails', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: 1000, invoice_id: null, currency: 'SEK', date: '2026-05-30' })
+    const invoice = makeInvoice({
+      id: VALID_UUID,
+      status: 'sent',
+      currency: 'USD',
+      exchange_rate: 9.3,
+      total: 140,
+      remaining_amount: 140,
+      paid_amount: 0,
     })
+    enqueue({ data: tx, error: null })
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: [], error: null }) // hard-duplicate
+    enqueue({ data: { accounting_method: 'accrual', entity_type: 'enskild_firma' }, error: null })
+
+    mockFetchExchangeRate.mockResolvedValue(null) // Riksbanken down — manual rate used instead
+    mockCreateJournalEntry.mockResolvedValue({ id: 'je-fx-manual' })
+
+    enqueue({ data: [{ id: VALID_UUID }], error: null })
+    enqueue({ data: null, error: null })
+    enqueue({ data: null, error: null })
+    enqueue({ data: null, error: null })
+
+    const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
+      method: 'POST',
+      body: { invoice_id: VALID_UUID, manual_exchange_rate: 10.5 },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status } = await parseJsonResponse<{ success: boolean }>(response)
+
+    expect(status).toBe(200)
+    // Manual rate skips the Riksbanken lookup — confirm by inspecting that
+    // mockCreateJournalEntry got the FX-computed line set (1000 / 10.5 =
+    // 95.2381 USD; arSek = 95.2381 × 9.30 = 885.71). Skipping Riksbanken is
+    // intentional: when the user types a rate from their bank statement we
+    // honour it rather than overriding with a possibly-stale Riksbanken value.
+    expect(mockFetchExchangeRate).not.toHaveBeenCalled()
+    expect(mockCreateJournalEntry).toHaveBeenCalled()
+    // Provenance: the manual override is recorded in the audit trail's
+    // new_state so it's distinguishable from an automatic Riksbanken lookup.
+    expect(logMatchEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-1',
+      'tx-1',
+      'matched',
+      expect.objectContaining({
+        newState: expect.objectContaining({ rate_source: 'manual', exchange_rate: 10.5 }),
+      }),
+    )
   })
 
   it('matches transaction to invoice with accrual method (full payment)', async () => {

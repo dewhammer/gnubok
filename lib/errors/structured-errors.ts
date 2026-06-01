@@ -346,12 +346,12 @@ const MATCH_INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Endast fakturor kan matchas mot en transaktion. Proforma och följesedel saknar momsskyldighet.',
     message_en: 'Only invoices may be matched to a transaction; proforma and delivery notes have no VAT obligation.',
   },
-  MATCH_INVOICE_CURRENCY_MISMATCH: {
+  MATCH_INVOICE_FX_RATE_UNAVAILABLE: {
     httpStatus: 400,
     message_sv:
-      'Transaktionens och fakturans valuta måste vara samma. För valutaomräkning, använd flerfaktura-matchningen som hanterar valutakursdifferenser på 3960/7960.',
+      'Kunde inte hämta valutakurs från Riksbanken för betalningsdatumet. Ange kursen manuellt från ditt bankutdrag (fältet manual_exchange_rate).',
     message_en:
-      'Transaction and invoice currency must match. For cross-currency settlement, use the multi-invoice allocation flow which posts FX-diff lines on 3960/7960.',
+      'Could not retrieve an exchange rate from Riksbanken for the payment date. Provide the rate manually from your bank statement (manual_exchange_rate field).',
   },
   MATCH_INVOICE_ALREADY_PAID: {
     httpStatus: 409,

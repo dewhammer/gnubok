@@ -99,19 +99,33 @@ export interface PaymentClearingLines {
  * Build the verifikat lines for a customer-invoice payment matched against
  * a bank tx. Pure — no DB calls. Caller decides how to persist.
  *
- * For same-currency invoices the FX diff is always 0 and only the two
- * bank/AR lines are returned. For cross-currency, a 3960 or 7960 line is
- * appended to balance the verifikat. Per the contract documented in this
- * file, when the tx is cross-currency we assume the bank tx fully clears
- * the invoice's remaining amount and book the full FX diff to one
- * verifikat — same pattern as the match_batch_allocate RPC, which is the
- * only other code path that posts FX diffs on customer-invoice
- * settlements.
+ * # Same-currency
+ *   Bank-leg = AR-leg = bankSek. No FX diff line.
+ *
+ * # Cross-currency with explicit paidInInvoiceCurrency (preferred path)
+ *   The caller supplies how many units of the invoice's currency this bank
+ *   payment satisfies (typically computed as `bankSek / today_rate` where
+ *   `today_rate` is the Riksbanken spot rate on the payment date — see
+ *   `app/api/transactions/[id]/match-invoice/route.ts`). The helper then:
+ *     arSek    = paidInInvoiceCurrency × invoice.exchange_rate (booking rate)
+ *     fxDiffSek = arSek − bankSek
+ *   For a partial cross-currency payment this credits 1510 by the
+ *   proportional foreign amount (not the full remaining) and posts the
+ *   accurate FX-diff line. The verifikat balances per BFL 5 kap 4–5§ and
+ *   the GL stays in sync with the AR sub-ledger because both move in step.
+ *
+ * # Cross-currency without paidInInvoiceCurrency (fallback)
+ *   Earlier behaviour, kept for callers that haven't been updated yet:
+ *   if `bankSek >= remaining × rate`, book the full FX diff (full clear);
+ *   otherwise defer (book 1930 = 1510 = bankSek with no FX line). The
+ *   deferred path leaves the GL slightly understated until the final
+ *   settlement closes the invoice.
  */
 export function buildInvoicePaymentClearingLines(
   tx: PaymentClearingTx,
   invoice: PaymentClearingInvoice,
   description: string,
+  paidInInvoiceCurrency?: number,
 ): PaymentClearingLines {
   // Bank-leg: actual SEK that hit the bank. resolveSekAmount returns the
   // raw amount for SEK txs and amount * exchange_rate for foreign txs
@@ -136,30 +150,25 @@ export function buildInvoicePaymentClearingLines(
     // reduction equals what hit the bank. No FX diff possible.
     arSek = bankSek
     fxDiffSek = 0
+  } else if (paidInInvoiceCurrency != null && paidInInvoiceCurrency > 0) {
+    // Proper FX path: caller computed the invoice-currency equivalent
+    // using today's spot rate. AR-leg comes off 1510 at the invoice's
+    // BOOKING rate (so the GL credit matches what was originally posted
+    // for those units of foreign currency). FX diff balances the verifikat.
+    const invRate = invoice.exchange_rate ?? 1
+    arSek = TWO_DP(paidInInvoiceCurrency * invRate)
+    fxDiffSek = TWO_DP(arSek - bankSek)
   } else {
-    // Cross-currency: AR is denominated in invoice.currency and was
-    // booked on 1510 at invoice.exchange_rate. The remaining-amount × rate
-    // is the SEK currently sitting on 1510 for this invoice.
+    // Fallback when no paidInInvoiceCurrency is supplied (e.g. legacy
+    // callers, Riksbanken lookup failed with no manual override). Same
+    // pre-FX-rewrite behaviour: full-clear gets FX diff, partial defers.
     const invRemainingForeign = invoice.remaining_amount ?? invoice.total - (invoice.paid_amount ?? 0)
     const invRate = invoice.exchange_rate ?? 1
     const arSekFullRemaining = TWO_DP(invRemainingForeign * invRate)
-
-    // Branch on whether the bank tx fully clears (or over-pays) the
-    // remaining 1510 balance. Partial cross-currency must NOT credit the
-    // full remaining — that would zero 1510 in the GL while the invoice
-    // row stays at status=partially_paid, leaving the ledger inconsistent
-    // with the AR sub-ledger and over-stating FX gain/loss for the period.
-    // Defer the FX adjustment to the final settlement (when bank-SEK
-    // covers the full remaining), per BFL 5 kap 4–5§ "verifikat must
-    // reflect the actual affärshändelse".
     if (bankSek >= arSekFullRemaining - 0.005) {
-      // Full payment of remaining (or overpay): clear AR and book FX diff.
       arSek = arSekFullRemaining
       fxDiffSek = TWO_DP(arSek - bankSek)
     } else {
-      // Partial cross-currency: book 1930 / 1510 at bankSek (the actual
-      // SEK that moved), no FX line. The deferred FX diff lands on the
-      // verifikat that finally closes the invoice.
       arSek = bankSek
       fxDiffSek = 0
     }

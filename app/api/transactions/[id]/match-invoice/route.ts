@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createInvoiceCashEntry } from '@/lib/bookkeeping/invoice-entries'
 import { buildInvoicePaymentClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
+import { fetchExchangeRate } from '@/lib/currency/riksbanken'
 import { reverseEntry, createJournalEntry, findFiscalPeriod } from '@/lib/bookkeeping/engine'
 import { AccountsNotInChartError, isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
@@ -12,7 +13,7 @@ import { logMatchEvent } from '@/lib/invoices/match-log'
 import { detectDuplicatePaymentVoucher } from '@/lib/invoices/duplicate-payment-detection'
 import { eventBus } from '@/lib/events/bus'
 import { ensureInitialized } from '@/lib/init'
-import type { EntityType, Invoice, Transaction } from '@/types'
+import type { Currency, EntityType, Invoice, Transaction } from '@/types'
 
 ensureInitialized()
 
@@ -99,29 +100,74 @@ export const POST = withRouteContext(
       })
     }
 
-    // Currency-integrity guard (BFL 5 kap 2§ + swedish-compliance PR #614
-    // round 9). invoices.paid_amount / remaining_amount are denominated in
-    // invoice.currency; invoice_payments rows carry currency = invoice.currency
-    // with amount in that currency. The accumulator below assumes
-    // `tx.amount` is already in invoice.currency. For a SEK bank tx paying
-    // a USD invoice the accumulator would silently treat 230 SEK as "230
-    // USD paid" and flip a 140 USD invoice to status=paid after a partial.
+    // Cross-currency settlement (replaces the PR #614 round-9 block).
     //
-    // Block cross-currency on this single-allocation path until a proper
-    // FX-aware settlement flow lands. Same-currency (SEK→SEK or USD→USD)
-    // remains fully supported including partials; the buildInvoicePayment-
-    // ClearingLines helper handles the bookkeeping side correctly in both
-    // cases. For SEK tx → USD invoice the user should use the multi-
-    // allocation dialog (gnubok_match_batch_allocate) which DOES handle
-    // FX-diff postings on 3960/7960 end-to-end.
+    // invoices.paid_amount / remaining_amount are denominated in
+    // invoice.currency; invoice_payments rows carry currency =
+    // invoice.currency with amount in that currency. When tx and invoice
+    // currencies differ, we convert tx.amount (SEK) to invoice currency
+    // using the Riksbanken spot rate on the payment date (ML 8 kap 21–23§)
+    // and accumulate / record in invoice currency throughout. The JE-lines
+    // helper gets the same converted amount so the verifikat balances
+    // exactly (FX-diff posted to 3960/7960). A manual rate may be supplied
+    // via the request body when the lookup fails (e.g. bank-statement rate
+    // when Riksbanken hasn't published for the date yet).
+    type FxConversion =
+      | { required: false }
+      | {
+          required: true
+          rate: number
+          rate_date: string
+          paidInInvoiceCurrency: number
+          // Provenance of the rate actually used, recorded for the audit
+          // trail: 'manual' = caller-supplied from a bank statement (Riksbanken
+          // had no rate for the date), 'riksbanken' = spot rate fetched on the
+          // payment date. A manual override on a money path must be traceable
+          // (BFL 5 kap 6–7§; ML 8 kap 21–23§).
+          source: 'manual' | 'riksbanken'
+        }
+
+    let fx: FxConversion = { required: false }
     if (transaction.currency !== invoice.currency) {
-      return errorResponseFromCode('MATCH_INVOICE_CURRENCY_MISMATCH', txLog, {
-        requestId,
-        details: {
-          transactionCurrency: transaction.currency,
-          invoiceCurrency: invoice.currency,
-        },
-      })
+      const manualRate =
+        typeof validation.data?.manual_exchange_rate === 'number' &&
+        validation.data.manual_exchange_rate > 0
+          ? validation.data.manual_exchange_rate
+          : null
+      let rate = manualRate
+      let rateDate = transaction.date
+      if (rate == null) {
+        const rateInfo = await fetchExchangeRate(
+          invoice.currency as Currency,
+          new Date(transaction.date),
+        )
+        if (rateInfo && rateInfo.rate > 0) {
+          rate = rateInfo.rate
+          rateDate = rateInfo.date
+        }
+      }
+      if (rate == null || rate <= 0) {
+        return errorResponseFromCode('MATCH_INVOICE_FX_RATE_UNAVAILABLE', txLog, {
+          requestId,
+          details: {
+            transactionCurrency: transaction.currency,
+            invoiceCurrency: invoice.currency,
+            paymentDate: transaction.date,
+          },
+        })
+      }
+      const txAbsSek =
+        transaction.currency === 'SEK'
+          ? Math.abs(transaction.amount)
+          : Math.abs(transaction.amount) * (transaction.exchange_rate ?? 1)
+      const paidInInvoiceCurrency = Math.round((txAbsSek / rate) * 10000) / 10000
+      fx = {
+        required: true,
+        rate,
+        rate_date: rateDate,
+        paidInInvoiceCurrency,
+        source: manualRate != null ? 'manual' : 'riksbanken',
+      }
     }
 
     // Hard-duplicate guard: if the invoice is 'sent'/'overdue' but already
@@ -240,7 +286,15 @@ export const POST = withRouteContext(
     }
 
     const now = new Date().toISOString()
-    const paidAmount = transaction.amount
+    // paidAmountInInvoiceCurrency is what gets accumulated into
+    // invoice.paid_amount / remaining_amount and stored on the
+    // invoice_payments row. For same-currency it's just tx.amount; for
+    // cross-currency it's the Riksbanken-rate conversion computed above.
+    // Using SEK directly for a USD invoice would corrupt the column units
+    // (the bug the PR #614 round-9 block was working around).
+    const paidAmountInInvoiceCurrency = fx.required
+      ? fx.paidInInvoiceCurrency
+      : transaction.amount
 
     const currentRemaining = invoice.remaining_amount ?? (invoice.total - (invoice.paid_amount || 0))
 
@@ -249,19 +303,19 @@ export const POST = withRouteContext(
     // push invoice.paid_amount past invoice.total — silently. Reject and
     // point the user at the split-payment flow which can allocate the excess
     // across additional invoices.
-    if (paidAmount > currentRemaining + 0.005) {
+    if (paidAmountInInvoiceCurrency > currentRemaining + 0.005) {
       return errorResponseFromCode('MATCH_AMOUNT_EXCEEDS_REMAINING', txLog, {
         requestId,
         details: {
-          transaction_amount: paidAmount,
+          transaction_amount: paidAmountInInvoiceCurrency,
           remaining_amount: Math.round(currentRemaining * 100) / 100,
-          excess: Math.round((paidAmount - currentRemaining) * 100) / 100,
+          excess: Math.round((paidAmountInInvoiceCurrency - currentRemaining) * 100) / 100,
         },
       })
     }
 
-    const newPaidAmount = Math.round(((invoice.paid_amount || 0) + paidAmount) * 100) / 100
-    const newRemaining = Math.max(0, Math.round((currentRemaining - paidAmount) * 100) / 100)
+    const newPaidAmount = Math.round(((invoice.paid_amount || 0) + paidAmountInInvoiceCurrency) * 100) / 100
+    const newRemaining = Math.max(0, Math.round((currentRemaining - paidAmountInInvoiceCurrency) * 100) / 100)
     const isFullyPaid = newRemaining <= 0
     const newStatus = isFullyPaid ? 'paid' : 'partially_paid'
 
@@ -367,6 +421,10 @@ export const POST = withRouteContext(
             paid_amount: invoice.paid_amount ?? null,
           },
           desc,
+          // Cross-currency: pass the spot-rate-converted invoice-currency
+          // amount so the helper credits 1510 proportionally and posts the
+          // FX-diff line. Same-currency: undefined, helper just uses bankSek.
+          fx.required ? fx.paidInInvoiceCurrency : undefined,
         )
         const journalEntry = await createJournalEntry(supabase, companyId!, user.id, {
           fiscal_period_id: fiscalPeriodId,
@@ -466,10 +524,29 @@ export const POST = withRouteContext(
     // kontantmetoden partials — invoices that were never booked. When the
     // invoice was booked under accrual, the clearing entry already handles
     // the partial cleanly and the note would be misleading.
-    const paymentNotes = (!invoiceAlreadyBooked && accountingMethod === 'cash' && !isFullyPaid)
+    const cashMethodNote = (!invoiceAlreadyBooked && accountingMethod === 'cash' && !isFullyPaid)
       ? 'Kontantmetoden: intäkt bokförs vid slutbetalning'
       : null
 
+    // Provenance for a manually-supplied FX rate. The Riksbanken spot rate is
+    // self-documenting (rate + rate_date are reproducible), but a rate the
+    // user typed from their bank statement is an override of the ML 8 kap
+    // 21–23§ obligation and must leave a trail on the verifikat's payment row
+    // (BFL 5 kap 6–7§ — the verifikation must reflect the actual affärshändelse).
+    const manualRateNote =
+      fx.required && fx.source === 'manual'
+        ? `Manuell valutakurs ${fx.rate} ${invoice.currency}/SEK (betalningsdatum ${transaction.date})`
+        : null
+
+    const paymentNotes = [cashMethodNote, manualRateNote].filter(Boolean).join(' · ') || null
+
+    // Payment row stores amount in INVOICE currency (the column unit). For
+    // same-currency that's tx.amount; for cross-currency it's the spot-rate
+    // conversion above. exchange_rate records the rate ACTUALLY USED for
+    // this payment — Riksbanken (or manual override) on tx.date — per
+    // ML 8 kap 21–23§. Falling back to invoice.exchange_rate would record
+    // the invoice-date rate, which is what the round-7/8 bot reviews
+    // explicitly flagged as wrong.
     const { error: paymentInsertError } = await supabase
       .from('invoice_payments')
       .insert({
@@ -477,9 +554,9 @@ export const POST = withRouteContext(
         company_id: companyId,
         invoice_id,
         payment_date: transaction.date,
-        amount: paidAmount,
+        amount: paidAmountInInvoiceCurrency,
         currency: invoice.currency,
-        exchange_rate: invoice.exchange_rate,
+        exchange_rate: fx.required ? fx.rate : invoice.exchange_rate,
         journal_entry_id: journalEntryId,
         transaction_id: transactionId,
         notes: paymentNotes,
@@ -513,7 +590,18 @@ export const POST = withRouteContext(
       invoiceId: invoice_id,
       matchConfidence: 1.0,
       matchMethod: 'manual_confirm',
-      newState: { status: newStatus, paid_amount: newPaidAmount, remaining_amount: newRemaining },
+      // rate_source / exchange_rate live inside new_state (the persisted JSON
+      // column) so a manual override — a user-supplied money-path input — is
+      // distinguishable from an automatic Riksbanken lookup in the audit trail
+      // (swarm V16 / SOC 2 CC6.1 / GDPR Art.5(1)(f)). Same-currency matches
+      // carry rate_source: null.
+      newState: {
+        status: newStatus,
+        paid_amount: newPaidAmount,
+        remaining_amount: newRemaining,
+        rate_source: fx.required ? fx.source : null,
+        exchange_rate: fx.required ? fx.rate : null,
+      },
     })
 
     try {

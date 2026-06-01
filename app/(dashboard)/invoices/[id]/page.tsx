@@ -75,6 +75,20 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
   const [invoice, setInvoice] = useState<InvoiceWithRelations | null>(null)
   const [reminders, setReminders] = useState<InvoiceReminder[]>([])
+  // Payment history backing the new Betalningsstatus card. Fetched alongside
+  // the invoice itself so the card stays in sync with paid_amount /
+  // remaining_amount on the invoice row.
+  const [payments, setPayments] = useState<
+    Array<{
+      id: string
+      payment_date: string
+      amount: number
+      currency: string
+      journal_entry_id: string | null
+      voucher_series: string | null
+      voucher_number: number | null
+    }>
+  >([])
   const [creditNote, setCreditNote] = useState<Invoice | null>(null)
   const [originalInvoice, setOriginalInvoice] = useState<Invoice | null>(null)
   const [convertedFromInvoice, setConvertedFromInvoice] = useState<Invoice | null>(null)
@@ -152,6 +166,40 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
     if (reminderData) {
       setReminders(reminderData as InvoiceReminder[])
+    }
+
+    // Fetch payment history for the Betalningsstatus card. Joins the
+    // journal_entries row to get voucher_series + voucher_number so each
+    // payment row can link to its verifikat. Manual payments (no tx, no
+    // JE) still surface with the amount + date.
+    const { data: paymentData } = await supabase
+      .from('invoice_payments')
+      .select(
+        'id, payment_date, amount, currency, journal_entry_id, journal_entries(voucher_series, voucher_number)',
+      )
+      .eq('invoice_id', id)
+      .order('payment_date', { ascending: true })
+
+    if (paymentData) {
+      type PaymentRow = {
+        id: string
+        payment_date: string
+        amount: number
+        currency: string
+        journal_entry_id: string | null
+        journal_entries: { voucher_series: string | null; voucher_number: number | null } | null
+      }
+      setPayments(
+        (paymentData as unknown as PaymentRow[]).map((p) => ({
+          id: p.id,
+          payment_date: p.payment_date,
+          amount: p.amount,
+          currency: p.currency,
+          journal_entry_id: p.journal_entry_id,
+          voucher_series: p.journal_entries?.voucher_series ?? null,
+          voucher_number: p.journal_entries?.voucher_number ?? null,
+        })),
+      )
     }
 
     // If this invoice is credited, find the credit note
@@ -740,24 +788,119 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
             </CardContent>
           </Card>
 
-          {/* Payment info */}
-          {invoice.status === 'paid' && invoice.paid_at && (
+          {/* Betalningsstatus card. Shows for both `paid` and `partially_paid`
+              so the user always sees how much has been paid + what remains +
+              the individual payment events. Previously only the `paid` case
+              had a card, leaving partially-paid invoices without any visible
+              paid_amount/remaining_amount — surfaced by user feedback after
+              PR #614. */}
+          {(invoice.status === 'paid' || invoice.status === 'partially_paid') && (
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-success">
-                  <CheckCircle className="h-5 w-5" />
-                  {t('paid_card_title')}
+                <CardTitle
+                  className={cn(
+                    'flex items-center gap-2',
+                    invoice.status === 'paid' && 'text-success',
+                    invoice.status === 'partially_paid' && 'text-warning-foreground',
+                  )}
+                >
+                  {invoice.status === 'paid' ? (
+                    <CheckCircle className="h-5 w-5" />
+                  ) : (
+                    <AlertTriangle className="h-5 w-5" />
+                  )}
+                  {invoice.status === 'paid'
+                    ? t('paid_card_title')
+                    : t('payment_status_card_title')}
                 </CardTitle>
               </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  {t('paid_received_at', { date: formatDate(invoice.paid_at) })}
-                </p>
-                {invoice.paid_amount && (
-                  <p className="text-lg font-bold mt-2">
-                    {formatCurrency(invoice.paid_amount, invoice.currency)}
+              <CardContent className="space-y-4">
+                {/* Paid / remaining summary. Right-aligned tabular nums so
+                    the two columns scan cleanly. Same SEK / invoice.currency
+                    formatter as the items table. */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {t('payment_status_paid_label')}
+                    </p>
+                    <p className="font-display text-xl tabular-nums mt-1">
+                      {formatCurrency(invoice.paid_amount ?? 0, invoice.currency)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      {t('payment_status_remaining_label')}
+                    </p>
+                    <p
+                      className={cn(
+                        'font-display text-xl tabular-nums mt-1',
+                        invoice.status === 'partially_paid' && 'text-warning-foreground',
+                      )}
+                    >
+                      {formatCurrency(
+                        invoice.remaining_amount ??
+                          Math.max(0, invoice.total - (invoice.paid_amount ?? 0)),
+                        invoice.currency,
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {invoice.status === 'paid' && invoice.paid_at && (
+                  <p className="text-sm text-muted-foreground">
+                    {t('paid_received_at', { date: formatDate(invoice.paid_at) })}
                   </p>
                 )}
+
+                {/* Payment history. Each row links to its verifikat when one
+                    exists. Compact list — dates and amounts tabular-nums for
+                    column alignment, the voucher link sits to the right with
+                    a small chevron. */}
+                <div className="space-y-2">
+                  <p className="text-sm font-medium uppercase tracking-wider text-muted-foreground">
+                    {t('payment_status_payments_heading')}
+                  </p>
+                  {payments.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      {t('payment_status_empty')}
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-border -mx-2">
+                      {payments.map((p) => {
+                        const voucherLabel =
+                          p.voucher_series && p.voucher_number != null
+                            ? `${p.voucher_series}-${p.voucher_number}`
+                            : null
+                        return (
+                          <li
+                            key={p.id}
+                            className="flex items-center justify-between gap-3 px-2 py-2 text-sm transition-colors hover:bg-secondary/60 rounded"
+                          >
+                            <span className="tabular-nums text-muted-foreground">
+                              {formatDate(p.payment_date)}
+                            </span>
+                            <span className="font-medium tabular-nums flex-1 text-right">
+                              {formatCurrency(p.amount, p.currency)}
+                            </span>
+                            {p.journal_entry_id && voucherLabel ? (
+                              <Link
+                                href={`/bookkeeping/${p.journal_entry_id}`}
+                                className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                              >
+                                {t('payment_status_view_voucher', { label: voucherLabel })}
+                                <ExternalLink className="h-3 w-3" />
+                              </Link>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                {t('payment_status_view_voucher_unlinked')}
+                              </span>
+                            )}
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
               </CardContent>
             </Card>
           )}

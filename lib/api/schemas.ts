@@ -516,6 +516,17 @@ export const MatchInvoiceSchema = z
       credit_amount: nonNegativeAmount.default(0),
       line_description: z.string().optional(),
     })).min(2).optional(),
+    // Optional caller-supplied SEK-per-invoice-currency rate for cross-currency
+    // settlement. Used when the Riksbanken lookup returns nothing (rate not
+    // published for that date) — the dialog surfaces an input so the user can
+    // type the rate from their bank statement. Ignored when tx.currency ===
+    // invoice.currency. The .max() is a sanity ceiling against pasted garbage /
+    // scientific-notation input silently corrupting the FX-diff posting and
+    // invoice_payments.amount — no supported currency's SEK rate approaches it
+    // (USD~10.5, EUR~11.5, GBP~13.5). It is a guard rail, not a precise band;
+    // the dialog's live preview (paid_in_invoice_currency + FX gain/loss) is
+    // what catches a plausible-but-wrong decimal-shift typo before confirm.
+    manual_exchange_rate: z.number().positive().max(100000).optional(),
   })
   .refine((v) => !v.force || !!v.expected_journal_entry_id, {
     message: 'expected_journal_entry_id is required when force=true',
