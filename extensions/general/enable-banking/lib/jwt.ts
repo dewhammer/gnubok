@@ -34,6 +34,10 @@ function getPrivateKey(): string {
     throw new Error('ENABLE_BANKING_PRIVATE_KEY environment variable is not set')
   }
 
+  if (PRIVATE_KEY_RAW.includes('-----BEGIN')) {
+    return PRIVATE_KEY_RAW.replace(/\\n/g, '\n')
+  }
+
   // Try decoding as base64-encoded PEM (sandbox format: base64 wrapping a PEM string)
   const decoded = Buffer.from(PRIVATE_KEY_RAW, 'base64').toString('utf-8')
   if (decoded.startsWith('-----BEGIN')) {

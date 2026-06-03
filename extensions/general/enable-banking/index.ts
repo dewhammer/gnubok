@@ -30,7 +30,7 @@ const MAX_ENABLED_UIDS = 50
  *
  * Required environment variables:
  * - ENABLE_BANKING_APP_ID
- * - ENABLE_BANKING_PRIVATE_KEY (base64-encoded PEM)
+ * - ENABLE_BANKING_PRIVATE_KEY (PEM private key, base64-encoded PEM, or raw key body)
  * - ENABLE_BANKING_SANDBOX (optional, for sandbox mode)
  */
 export const enableBankingExtension: Extension = {
