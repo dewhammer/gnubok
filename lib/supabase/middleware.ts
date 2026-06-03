@@ -70,6 +70,10 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse
   }
 
+  if (pathname === '/privacy' || pathname === '/dpa' || pathname === '/terms') {
+    return supabaseResponse
+  }
+
   // Public auth routes — allow access
   if (
     pathname.startsWith('/login') ||
