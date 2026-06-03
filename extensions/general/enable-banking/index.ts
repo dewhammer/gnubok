@@ -22,6 +22,38 @@ const RATE_LIMIT_DISCONNECT = { maxRequests: 10, windowMs: 60_000 }
 
 const MAX_ENABLED_UIDS = 50
 
+function getEnableBankingConfigError(): string | null {
+  if (!process.env.ENABLE_BANKING_APP_ID_PRODUCTION && !process.env.ENABLE_BANKING_APP_ID) {
+    return 'ENABLE_BANKING_APP_ID environment variable is not set'
+  }
+  if (!process.env.ENABLE_BANKING_PRIVATE_KEY_PRODUCTION && !process.env.ENABLE_BANKING_PRIVATE_KEY) {
+    return 'ENABLE_BANKING_PRIVATE_KEY environment variable is not set'
+  }
+  return null
+}
+
+function isEnableBankingConfigError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return (
+    error.message.includes('ENABLE_BANKING_APP_ID environment variable is not set') ||
+    error.message.includes('ENABLE_BANKING_PRIVATE_KEY environment variable is not set')
+  )
+}
+
+function fallbackBanksResponse(configError?: string) {
+  return NextResponse.json({
+    banks: [
+      { name: 'Nordea', country: 'SE', bic: 'NDEASESS' },
+      { name: 'SEB', country: 'SE', bic: 'ESSESESS' },
+      { name: 'Swedbank', country: 'SE', bic: 'SWEDSESS' },
+      { name: 'Handelsbanken', country: 'SE', bic: 'HANDSESS' },
+    ],
+    sandbox: isSandboxMode(),
+    configured: !configError,
+    configuration_error: configError ?? null,
+  })
+}
+
 /**
  * Enable Banking (PSD2) extension
  *
@@ -50,6 +82,11 @@ export const enableBankingExtension: Extension = {
       handler: async (_request: Request, ctx?: ExtensionContext) => {
         const log = ctx?.log ?? console
         try {
+          const configError = getEnableBankingConfigError()
+          if (configError) {
+            return fallbackBanksResponse(configError)
+          }
+
           // Detect PSU type from company entity_type
           let psuType: 'personal' | 'business' = 'business'
           if (ctx?.companyId && ctx?.supabase) {
@@ -70,18 +107,10 @@ export const enableBankingExtension: Extension = {
             logo: aspsp.logo,
             bic: aspsp.bic,
           }))
-          return NextResponse.json({ banks, psu_type: psuType, sandbox: isSandboxMode() })
+          return NextResponse.json({ banks, psu_type: psuType, sandbox: isSandboxMode(), configured: true })
         } catch (error) {
           log.error('Error fetching banks:', error)
-          return NextResponse.json({
-            banks: [
-              { name: 'Nordea', country: 'SE', bic: 'NDEASESS' },
-              { name: 'SEB', country: 'SE', bic: 'ESSESESS' },
-              { name: 'Swedbank', country: 'SE', bic: 'SWEDSESS' },
-              { name: 'Handelsbanken', country: 'SE', bic: 'HANDSESS' },
-            ],
-            sandbox: isSandboxMode(),
-          })
+          return fallbackBanksResponse()
         }
       },
     },
@@ -112,6 +141,14 @@ export const enableBankingExtension: Extension = {
         }
 
         try {
+          const configError = getEnableBankingConfigError()
+          if (configError) {
+            return NextResponse.json(
+              { error: 'Enable Banking is not configured', code: 'NOT_CONFIGURED', configuration_error: configError },
+              { status: 503 }
+            )
+          }
+
           // Detect PSU type: explicit override > company entity_type > default 'business'
           let psuType: 'personal' | 'business' = 'business'
           if (explicitPsuType === 'personal' || explicitPsuType === 'business') {
@@ -217,6 +254,14 @@ export const enableBankingExtension: Extension = {
             authorization_url: url,
           })
         } catch (error) {
+          if (isEnableBankingConfigError(error)) {
+            const message = error instanceof Error ? error.message : 'Enable Banking is not configured'
+            return NextResponse.json(
+              { error: 'Enable Banking is not configured', code: 'NOT_CONFIGURED', configuration_error: message },
+              { status: 503 }
+            )
+          }
+
           log.error('[enable-banking] Connect handler error', {
             message: error instanceof Error ? error.message : String(error),
             stack: error instanceof Error ? error.stack : undefined,

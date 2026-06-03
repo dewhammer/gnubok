@@ -20,6 +20,7 @@ import {
   convertTransaction,
   type Transaction,
 } from '../api-client'
+import { resolveEnableBankingApiUrl, resolveEnableBankingJwtAudience } from '../config'
 
 describe('api-client', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>
@@ -31,6 +32,24 @@ describe('api-client', () => {
 
   afterEach(() => {
     fetchSpy.mockRestore()
+  })
+
+  describe('resolveEnableBankingApiUrl', () => {
+    it('uses the sandbox API when ENABLE_BANKING_SANDBOX=true and no explicit URL is set', () => {
+      expect(resolveEnableBankingApiUrl({ ENABLE_BANKING_SANDBOX: 'true' })).toBe('https://api.tilisy.com')
+    })
+
+    it('prefers explicit URLs over the sandbox flag', () => {
+      expect(resolveEnableBankingApiUrl({
+        ENABLE_BANKING_SANDBOX: 'true',
+        ENABLE_BANKING_API_URL: 'https://api.example.test',
+      })).toBe('https://api.example.test')
+    })
+
+    it('uses the API host as JWT audience', () => {
+      expect(resolveEnableBankingJwtAudience({ ENABLE_BANKING_SANDBOX: 'true' })).toBe('api.tilisy.com')
+      expect(resolveEnableBankingJwtAudience({})).toBe('api.enablebanking.com')
+    })
   })
 
   // -------------------------------------------------------------------------

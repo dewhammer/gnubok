@@ -15,12 +15,10 @@
 import { getAuthorizationHeader } from './jwt'
 import { deriveTransactionLabel } from './transaction-label'
 import { FALLBACK_DESCRIPTION } from '@/lib/transactions/external-id'
+import { resolveEnableBankingApiUrl } from './config'
 
 // Prefer _PRODUCTION variant; sandbox uses api.tilisy.com, production uses api.enablebanking.com
-const ENABLE_BANKING_API_URL =
-  process.env.ENABLE_BANKING_API_URL_PRODUCTION ||
-  process.env.ENABLE_BANKING_API_URL ||
-  'https://api.enablebanking.com'
+const ENABLE_BANKING_API_URL = resolveEnableBankingApiUrl()
 
 // Types
 

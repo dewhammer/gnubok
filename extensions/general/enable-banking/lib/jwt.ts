@@ -6,10 +6,12 @@
  */
 
 import * as crypto from 'crypto'
+import { resolveEnableBankingJwtAudience } from './config'
 
 // Prefer _PRODUCTION variants when available (Vercel production deploys)
 const APP_ID = process.env.ENABLE_BANKING_APP_ID_PRODUCTION || process.env.ENABLE_BANKING_APP_ID
 const PRIVATE_KEY_RAW = process.env.ENABLE_BANKING_PRIVATE_KEY_PRODUCTION || process.env.ENABLE_BANKING_PRIVATE_KEY
+const API_AUDIENCE = resolveEnableBankingJwtAudience()
 
 interface JWTHeader {
   typ: string
@@ -34,14 +36,20 @@ function getPrivateKey(): string {
     throw new Error('ENABLE_BANKING_PRIVATE_KEY environment variable is not set')
   }
 
+  const raw = PRIVATE_KEY_RAW.trim().replace(/^['"]|['"]$/g, '').replace(/\\n/g, '\n')
+  if (raw.startsWith('-----BEGIN')) {
+    return raw
+  }
+
   // Try decoding as base64-encoded PEM (sandbox format: base64 wrapping a PEM string)
-  const decoded = Buffer.from(PRIVATE_KEY_RAW, 'base64').toString('utf-8')
+  const decoded = Buffer.from(raw, 'base64').toString('utf-8').trim()
   if (decoded.startsWith('-----BEGIN')) {
-    return decoded
+    return decoded.replace(/\\n/g, '\n')
   }
 
   // Otherwise treat as raw base64 DER key material — wrap in PEM headers
-  const lines = PRIVATE_KEY_RAW.match(/.{1,64}/g) || []
+  const compact = raw.replace(/\s/g, '')
+  const lines = compact.match(/.{1,64}/g) || []
   return `-----BEGIN PRIVATE KEY-----\n${lines.join('\n')}\n-----END PRIVATE KEY-----`
 }
 
@@ -66,7 +74,7 @@ export function generateJWT(expiresInSeconds: number = 3600): string {
 
   const payload: JWTPayload = {
     iss: 'enablebanking.com',
-    aud: 'api.enablebanking.com',
+    aud: API_AUDIENCE,
     iat: now,
     exp: now + expiresInSeconds
   }
