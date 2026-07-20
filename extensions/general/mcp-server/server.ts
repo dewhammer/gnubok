@@ -13,7 +13,7 @@ import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-ent
 import { upsertCounterpartyTemplate, findCounterpartyTemplatesBatch, formatCounterpartyName } from '@/lib/bookkeeping/counterparty-templates'
 import { formatVoucherLabel } from '@/lib/transactions/link-journal-entry'
 import { eventBus } from '@/lib/events/bus'
-import { getVatRules, getAvailableVatRates, getVatRuleForSelectedRate } from '@/lib/invoices/vat-rules'
+import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
 import { fetchExchangeRate, convertToSEK } from '@/lib/currency/riksbanken'
 import { getBranding } from '@/lib/branding/service'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
@@ -2773,7 +2773,6 @@ export const tools: McpTool[] = [
         invoice_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
         due_date: { type: 'string', description: 'YYYY-MM-DD (default from payment terms)' },
         currency: { type: 'string', enum: ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK'] },
-        invoice_language: { type: 'string', enum: ['sv', 'en', 'fi'], description: 'Customer-facing PDF language. sv=Swedish, en=English, fi=Finnish.' },
         our_reference: { type: 'string' },
         your_reference: { type: 'string' },
         notes: { type: 'string' },
@@ -2808,7 +2807,6 @@ export const tools: McpTool[] = [
 
       const today = new Date().toISOString().split('T')[0]
       const currency = ((args.currency as string) || 'SEK') as Currency
-      const invoiceLanguage = (args.invoice_language as string) || 'sv'
       const invoiceDate = (args.invoice_date as string) || today
 
       // Fetch customer (full row for VAT rules)
@@ -2843,13 +2841,6 @@ export const tools: McpTool[] = [
         vatAmount += Math.round(lineTotal * itemRate / 100 * 100) / 100
       }
       const total = subtotal + vatAmount
-      const uniqueRates = new Set(items.map((item) => item.vat_rate ?? vatRules.rate))
-      const previewVatRate = uniqueRates.size > 1 ? null : (uniqueRates.values().next().value ?? vatRules.rate)
-      const invoiceVatRule = getVatRuleForSelectedRate(
-        customer.customer_type,
-        customer.vat_number_validated,
-        previewVatRate,
-      )
 
       // Due date from payment terms if not provided
       let dueDate = args.due_date as string | undefined
@@ -2868,7 +2859,6 @@ export const tools: McpTool[] = [
           invoice_date: invoiceDate,
           due_date: dueDate,
           currency,
-          invoice_language: invoiceLanguage,
           our_reference: (args.our_reference as string) || null,
           your_reference: (args.your_reference as string) || null,
           notes: (args.notes as string) || null,
@@ -2885,8 +2875,7 @@ export const tools: McpTool[] = [
           vat_amount: Math.round(vatAmount * 100) / 100,
           total: Math.round(total * 100) / 100,
           currency,
-          invoice_language: invoiceLanguage,
-          vat_treatment: invoiceVatRule.treatment,
+          vat_treatment: vatRules.treatment,
           invoice_date: invoiceDate,
           due_date: dueDate,
         },
