@@ -255,14 +255,16 @@ function CustomersPageInner() {
                 {t('new_customer')}
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-2xl max-h-[95dvh] sm:max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
+            <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-4 overflow-hidden sm:max-w-2xl">
+              <DialogHeader className="shrink-0 pr-6">
                 <DialogTitle>{t('add_customer')}</DialogTitle>
               </DialogHeader>
-              <CustomerForm
-                onSubmit={handleCreateCustomer}
-                isLoading={isCreating}
-              />
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                <CustomerForm
+                  onSubmit={handleCreateCustomer}
+                  isLoading={isCreating}
+                />
+              </div>
             </DialogContent>
           </Dialog>
         }

@@ -381,31 +381,33 @@ export default function CustomerDetailPage({
 
       <DestructiveConfirmDialog {...confirmDialogProps} />
 
-      {/* Edit dialog */}
+      {/* Edit dialog — scroll lives on an inner pane so focus doesn't kill overflow */}
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-        <DialogContent className="sm:max-w-2xl max-h-[95dvh] sm:max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-4 overflow-hidden sm:max-w-2xl">
+          <DialogHeader className="shrink-0 pr-6">
             <DialogTitle>{t('edit_dialog_title')}</DialogTitle>
           </DialogHeader>
-          <CustomerForm
-            onSubmit={handleUpdate}
-            isLoading={isUpdating}
-            initialData={{
-              name: customer.name,
-              customer_type: customer.customer_type,
-              email: customer.email || undefined,
-              phone: customer.phone || undefined,
-              address_line1: customer.address_line1 || undefined,
-              address_line2: customer.address_line2 || undefined,
-              postal_code: customer.postal_code || undefined,
-              city: customer.city || undefined,
-              country: customer.country || undefined,
-              org_number: customer.org_number || undefined,
-              vat_number: customer.vat_number || undefined,
-              default_payment_terms: customer.default_payment_terms || undefined,
-              notes: customer.notes || undefined,
-            }}
-          />
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <CustomerForm
+              onSubmit={handleUpdate}
+              isLoading={isUpdating}
+              initialData={{
+                name: customer.name,
+                customer_type: customer.customer_type,
+                email: customer.email || undefined,
+                phone: customer.phone || undefined,
+                address_line1: customer.address_line1 || undefined,
+                address_line2: customer.address_line2 || undefined,
+                postal_code: customer.postal_code || undefined,
+                city: customer.city || undefined,
+                country: customer.country || undefined,
+                org_number: customer.org_number || undefined,
+                vat_number: customer.vat_number || undefined,
+                default_payment_terms: customer.default_payment_terms || undefined,
+                notes: customer.notes || undefined,
+              }}
+            />
+          </div>
         </DialogContent>
       </Dialog>
     </div>
