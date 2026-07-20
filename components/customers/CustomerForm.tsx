@@ -19,12 +19,18 @@ interface CustomerFormProps {
   onSubmit: (data: CreateCustomerInput) => Promise<void>
   isLoading: boolean
   initialData?: Partial<CreateCustomerInput>
+  /** When set, a parent DialogFooter can submit via form="…". */
+  formId?: string
+  /** Hide inline submit — use with an external DialogFooter submit button. */
+  hideSubmit?: boolean
 }
 
 export default function CustomerForm({
   onSubmit,
   isLoading,
   initialData,
+  formId = 'customer-form',
+  hideSubmit = false,
 }: CustomerFormProps) {
   const { canWrite } = useCanWrite()
   const { toast } = useToast()
@@ -135,11 +141,14 @@ export default function CustomerForm({
       ...data,
       email: data.email || undefined,
       personal_number: data.personal_number || undefined,
+      default_payment_terms: Number.isFinite(data.default_payment_terms)
+        ? data.default_payment_terms
+        : undefined,
     })
   }
 
   return (
-    <form onSubmit={handleSubmit(onFormSubmit)} className="space-y-6">
+    <form id={formId} onSubmit={handleSubmit(onFormSubmit)} className="space-y-6 pb-2">
       {/* Customer Type */}
       <div className="space-y-2">
         <Label>{t('type_label')}</Label>
@@ -351,28 +360,29 @@ export default function CustomerForm({
         />
       </div>
 
-      {/* Submit — sticky within the dialog scroll pane so Save stays reachable */}
-      <div className="sticky bottom-0 z-10 -mx-1 flex justify-end gap-2 border-t bg-background/95 px-1 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <Button
-          type="submit"
-          disabled={isLoading || !canWrite}
-          title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              {t('submit_saving')}
-            </>
-          ) : !canWrite ? (
-            <>
-              <Lock className="mr-2 h-4 w-4" />
-              {t('submit_save')}
-            </>
-          ) : (
-            t('submit_save')
-          )}
-        </Button>
-      </div>
+      {!hideSubmit ? (
+        <div className="flex justify-end gap-2 border-t pt-4">
+          <Button
+            type="submit"
+            disabled={isLoading || !canWrite}
+            title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {t('submit_saving')}
+              </>
+            ) : !canWrite ? (
+              <>
+                <Lock className="mr-2 h-4 w-4" />
+                {t('submit_save')}
+              </>
+            ) : (
+              t('submit_save')
+            )}
+          </Button>
+        </div>
+      ) : null}
     </form>
   )
 }

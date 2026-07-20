@@ -4,11 +4,11 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { use } from 'react'
 import Link from 'next/link'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/use-toast'
 import CustomerForm from '@/components/customers/CustomerForm'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
@@ -29,7 +29,10 @@ import {
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { cn, formatDate } from '@/lib/utils'
 import { invoiceNumberDisplay } from '@/lib/invoices/display'
+import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
 import type { Customer, CustomerType, CreateCustomerInput } from '@/types'
+
+const CUSTOMER_EDIT_FORM_ID = 'customer-edit-form'
 
 const CUSTOMER_TYPE_KEY: Record<CustomerType, string> = {
   individual: 'type_individual',
@@ -70,6 +73,8 @@ export default function CustomerDetailPage({
   const { toast } = useToast()
   const { canWrite } = useCanWrite()
   const t = useTranslations('customer_detail')
+  const tForm = useTranslations('form_customer')
+  const errorLocale = useLocale() as ErrorLocale
   const [customer, setCustomer] = useState<CustomerWithRelations | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isEditOpen, setIsEditOpen] = useState(false)
@@ -110,8 +115,15 @@ export default function CustomerDetailPage({
         body: JSON.stringify(data),
       })
 
+      const result = await response.json()
+
       if (!response.ok) {
-        throw new Error('Update failed')
+        toast({
+          title: t('update_failed_title'),
+          description: getErrorMessage(result, { context: 'customer', locale: errorLocale }),
+          variant: 'destructive',
+        })
+        return
       }
 
       toast({
@@ -383,12 +395,17 @@ export default function CustomerDetailPage({
 
       {/* Edit dialog — scroll lives on an inner pane so focus doesn't kill overflow */}
       <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-4 overflow-hidden sm:max-w-2xl">
-          <DialogHeader className="shrink-0 pr-6">
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+          <DialogHeader className="shrink-0 space-y-1 px-6 pb-2 pt-6 pr-12">
             <DialogTitle>{t('edit_dialog_title')}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {t('edit_dialog_title')}
+            </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6">
             <CustomerForm
+              formId={CUSTOMER_EDIT_FORM_ID}
+              hideSubmit
               onSubmit={handleUpdate}
               isLoading={isUpdating}
               initialData={{
@@ -408,6 +425,28 @@ export default function CustomerDetailPage({
               }}
             />
           </div>
+          <DialogFooter className="shrink-0 border-t px-6 py-4">
+            <Button
+              type="submit"
+              form={CUSTOMER_EDIT_FORM_ID}
+              disabled={isUpdating || !canWrite}
+              title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
+            >
+              {isUpdating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {tForm('submit_saving')}
+                </>
+              ) : !canWrite ? (
+                <>
+                  <Lock className="mr-2 h-4 w-4" />
+                  {tForm('submit_save')}
+                </>
+              ) : (
+                tForm('submit_save')
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

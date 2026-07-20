@@ -8,7 +8,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -20,7 +28,7 @@ import {
 } from '@/components/ui/table'
 import { useToast } from '@/components/ui/use-toast'
 import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
-import { Plus, Search, Users, Lock, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
+import { Plus, Search, Users, Lock, Loader2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 import CustomerForm from '@/components/customers/CustomerForm'
 import { EmptyCustomers, EmptyState } from '@/components/ui/empty-state'
 import { PageHeader } from '@/components/ui/page-header'
@@ -29,6 +37,8 @@ import Link from 'next/link'
 import { useCompany } from '@/contexts/CompanyContext'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import type { Customer, CustomerType, CreateCustomerInput } from '@/types'
+
+const CUSTOMER_CREATE_FORM_ID = 'customer-create-form'
 
 const CUSTOMER_TYPE_LABEL_KEYS: Record<CustomerType, string> = {
   individual: 'type_individual',
@@ -77,6 +87,7 @@ function CustomersPageInner() {
   const { toast } = useToast()
   const supabase = createClient()
   const t = useTranslations('customers')
+  const tForm = useTranslations('form_customer')
   const errorLocale = useLocale() as ErrorLocale
 
   const router = useRouter()
@@ -255,16 +266,43 @@ function CustomersPageInner() {
                 {t('new_customer')}
               </Button>
             </DialogTrigger>
-            <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-4 overflow-hidden sm:max-w-2xl">
-              <DialogHeader className="shrink-0 pr-6">
+            <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+              <DialogHeader className="shrink-0 space-y-1 px-6 pb-2 pt-6 pr-12">
                 <DialogTitle>{t('add_customer')}</DialogTitle>
+                <DialogDescription className="sr-only">
+                  {t('add_customer')}
+                </DialogDescription>
               </DialogHeader>
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6">
                 <CustomerForm
+                  formId={CUSTOMER_CREATE_FORM_ID}
+                  hideSubmit
                   onSubmit={handleCreateCustomer}
                   isLoading={isCreating}
                 />
               </div>
+              <DialogFooter className="shrink-0 border-t px-6 py-4">
+                <Button
+                  type="submit"
+                  form={CUSTOMER_CREATE_FORM_ID}
+                  disabled={isCreating || !canWrite}
+                  title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
+                >
+                  {isCreating ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {tForm('submit_saving')}
+                    </>
+                  ) : !canWrite ? (
+                    <>
+                      <Lock className="mr-2 h-4 w-4" />
+                      {tForm('submit_save')}
+                    </>
+                  ) : (
+                    tForm('submit_save')
+                  )}
+                </Button>
+              </DialogFooter>
             </DialogContent>
           </Dialog>
         }
