@@ -403,29 +403,32 @@ export default function CustomerDetailPage({
             </DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6">
-            <CustomerForm
-              formId={CUSTOMER_EDIT_FORM_ID}
-              hideSubmit
-              onSubmit={handleUpdate}
-              isLoading={isUpdating}
-              initialData={{
-                name: customer.name,
-                customer_type: customer.customer_type,
-                email: customer.email || undefined,
-                phone: customer.phone || undefined,
-                address_line1: customer.address_line1 || undefined,
-                address_line2: customer.address_line2 || undefined,
-                postal_code: customer.postal_code || undefined,
-                city: customer.city || undefined,
-                country: customer.country || undefined,
-                org_number: customer.org_number || undefined,
-                vat_number: customer.vat_number || undefined,
-                personal_number: customer.personal_number || undefined,
-                language: customer.language || 'sv',
-                default_payment_terms: customer.default_payment_terms || undefined,
-                notes: customer.notes || undefined,
-              }}
-            />
+            {isEditOpen ? (
+              <CustomerForm
+                key={customer.id}
+                formId={CUSTOMER_EDIT_FORM_ID}
+                hideSubmit
+                onSubmit={handleUpdate}
+                isLoading={isUpdating}
+                initialData={{
+                  name: customer.name,
+                  customer_type: customer.customer_type,
+                  email: customer.email || undefined,
+                  phone: customer.phone || undefined,
+                  address_line1: customer.address_line1 || undefined,
+                  address_line2: customer.address_line2 || undefined,
+                  postal_code: customer.postal_code || undefined,
+                  city: customer.city || undefined,
+                  country: customer.country || undefined,
+                  org_number: customer.org_number || undefined,
+                  vat_number: customer.vat_number || undefined,
+                  personal_number: customer.personal_number || undefined,
+                  language: customer.language || 'sv',
+                  default_payment_terms: customer.default_payment_terms ?? 30,
+                  notes: customer.notes || undefined,
+                }}
+              />
+            ) : null}
           </div>
           <DialogFooter className="shrink-0 border-t px-6 py-4">
             <Button
