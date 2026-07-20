@@ -151,6 +151,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   // Customers
   gnubok_list_customers:                  'customers:read',
   gnubok_create_customer:                 'customers:write',
+  gnubok_update_customer:                 'customers:write',
   // Invoices
   gnubok_list_invoices:                   'invoices:read',
   gnubok_create_invoice:                  'invoices:write',

@@ -7,6 +7,12 @@ import {
   TOOL_SCOPE_MAP,
 } from '@/lib/auth/api-keys'
 import { createLogger } from '@/lib/logger'
+import {
+  applyEuVatValidationToUpdate,
+  buildCustomerUpdateData,
+  type CustomerUpdateBody,
+} from '@/lib/customers/build-update-data'
+import { UpdateCustomerSchema } from '@/lib/api/schemas'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { buildMappingResultFromCategory } from '@/lib/bookkeeping/category-mapping'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
@@ -2680,6 +2686,116 @@ export const tools: McpTool[] = [
           idempotencyKey: typeof args.idempotency_key === 'string' ? args.idempotency_key : undefined,
         }
       )
+    },
+  },
+
+  {
+    name: 'gnubok_update_customer',
+    description:
+      'Update an existing customer (email, language, address, payment terms, etc.). Applies immediately — no staging queue.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        customer_id: { type: 'string', description: 'Customer UUID' },
+        name: { type: 'string' },
+        customer_type: {
+          type: 'string',
+          enum: ['individual', 'swedish_business', 'eu_business', 'non_eu_business'],
+        },
+        email: { type: 'string', description: 'Email address (e.g. Procountor APix routing address)' },
+        phone: { type: 'string' },
+        address_line1: { type: 'string' },
+        address_line2: { type: 'string' },
+        postal_code: { type: 'string' },
+        city: { type: 'string' },
+        country: { type: 'string' },
+        org_number: { type: 'string' },
+        vat_number: { type: 'string' },
+        personal_number: { type: 'string' },
+        language: {
+          type: 'string',
+          enum: ['sv', 'en'],
+          description: 'Invoice PDF and email language for this customer',
+        },
+        payment_terms: { type: 'number', description: 'Default payment terms in days' },
+        notes: { type: 'string' },
+      },
+      required: ['customer_id'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async execute(args, companyId, _userId, supabase, actor) {
+      const customerId = args.customer_id as string
+      if (!customerId?.trim()) throw new Error('customer_id is required.')
+
+      const rawBody: Record<string, unknown> = {}
+      for (const key of [
+        'name',
+        'customer_type',
+        'email',
+        'phone',
+        'address_line1',
+        'address_line2',
+        'postal_code',
+        'city',
+        'country',
+        'org_number',
+        'vat_number',
+        'personal_number',
+        'language',
+        'notes',
+      ] as const) {
+        if (args[key] !== undefined) rawBody[key] = args[key]
+      }
+      if (args.payment_terms !== undefined) {
+        rawBody.default_payment_terms = args.payment_terms
+      }
+
+      if (Object.keys(rawBody).length === 0) {
+        throw new Error('At least one field to update is required.')
+      }
+
+      const parsed = UpdateCustomerSchema.safeParse(rawBody)
+      if (!parsed.success) {
+        const message = parsed.error.issues.map((i) => i.message).join('; ')
+        throw new Error(message || 'Invalid customer update payload.')
+      }
+
+      const body = parsed.data as CustomerUpdateBody
+      const updateData = buildCustomerUpdateData(body)
+      const updateLog = log.child({
+        operation: 'gnubok_update_customer',
+        customerId,
+        companyId,
+        actorType: actor?.type ?? 'api_key',
+        actorId: actor?.id,
+      })
+
+      await applyEuVatValidationToUpdate(supabase, companyId, customerId, body, updateData, updateLog)
+
+      const { data, error } = await supabase
+        .from('customers')
+        .update(updateData)
+        .eq('id', customerId)
+        .eq('company_id', companyId)
+        .select('id, name, email, language, customer_type, vat_number, vat_number_validated')
+        .maybeSingle()
+
+      if (error) {
+        updateLog.error('customer update failed', error)
+        throw new Error('Customer update failed.')
+      }
+      if (!data) throw new Error('Customer not found.')
+
+      return {
+        updated: true,
+        customer: data,
+      }
     },
   },
 
