@@ -13,7 +13,7 @@ import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-ent
 import { upsertCounterpartyTemplate, findCounterpartyTemplatesBatch, formatCounterpartyName } from '@/lib/bookkeeping/counterparty-templates'
 import { formatVoucherLabel } from '@/lib/transactions/link-journal-entry'
 import { eventBus } from '@/lib/events/bus'
-import { getVatRules, getAvailableVatRates } from '@/lib/invoices/vat-rules'
+import { getVatRules, getAvailableVatRates, getVatRuleForSelectedRate } from '@/lib/invoices/vat-rules'
 import { fetchExchangeRate, convertToSEK } from '@/lib/currency/riksbanken'
 import { getBranding } from '@/lib/branding/service'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
@@ -2773,6 +2773,7 @@ export const tools: McpTool[] = [
         invoice_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
         due_date: { type: 'string', description: 'YYYY-MM-DD (default from payment terms)' },
         currency: { type: 'string', enum: ['SEK', 'EUR', 'USD', 'GBP', 'NOK', 'DKK'] },
+        invoice_language: { type: 'string', enum: ['sv', 'en', 'fi'], description: 'Customer-facing PDF language. sv=Swedish, en=English, fi=Finnish.' },
         our_reference: { type: 'string' },
         your_reference: { type: 'string' },
         notes: { type: 'string' },
@@ -2807,6 +2808,7 @@ export const tools: McpTool[] = [
 
       const today = new Date().toISOString().split('T')[0]
       const currency = ((args.currency as string) || 'SEK') as Currency
+      const invoiceLanguage = (args.invoice_language as string) || 'sv'
       const invoiceDate = (args.invoice_date as string) || today
 
       // Fetch customer (full row for VAT rules)
@@ -2841,6 +2843,13 @@ export const tools: McpTool[] = [
         vatAmount += Math.round(lineTotal * itemRate / 100 * 100) / 100
       }
       const total = subtotal + vatAmount
+      const uniqueRates = new Set(items.map((item) => item.vat_rate ?? vatRules.rate))
+      const previewVatRate = uniqueRates.size > 1 ? null : (uniqueRates.values().next().value ?? vatRules.rate)
+      const invoiceVatRule = getVatRuleForSelectedRate(
+        customer.customer_type,
+        customer.vat_number_validated,
+        previewVatRate,
+      )
 
       // Due date from payment terms if not provided
       let dueDate = args.due_date as string | undefined
@@ -2859,6 +2868,7 @@ export const tools: McpTool[] = [
           invoice_date: invoiceDate,
           due_date: dueDate,
           currency,
+          invoice_language: invoiceLanguage,
           our_reference: (args.our_reference as string) || null,
           your_reference: (args.your_reference as string) || null,
           notes: (args.notes as string) || null,
@@ -2875,7 +2885,8 @@ export const tools: McpTool[] = [
           vat_amount: Math.round(vatAmount * 100) / 100,
           total: Math.round(total * 100) / 100,
           currency,
-          vat_treatment: vatRules.treatment,
+          invoice_language: invoiceLanguage,
+          vat_treatment: invoiceVatRule.treatment,
           invoice_date: invoiceDate,
           due_date: dueDate,
         },
@@ -9074,10 +9085,89 @@ function emitWorkflowStarted(payload: {
  * Handle an MCP JSON-RPC request.
  * Auth is done via Bearer API key (extension route has skipAuth: true).
  */
-export async function handleMcpRequest(request: Request): Promise<Response> {
+function mcpWwwAuthenticateHeader(): string {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
-  const wwwAuth = `Bearer resource_metadata="${appUrl}/.well-known/oauth-protected-resource"`
+  return `Bearer resource_metadata="${appUrl}/.well-known/oauth-protected-resource"`
+}
 
+type McpAuthSuccess = {
+  ok: true
+  userId: string
+  companyId: string
+  scopes: import('@/lib/auth/api-keys').ApiKeyScope[]
+  apiKeyId: string
+  apiKeyName: string | null
+}
+
+type McpAuthResult = McpAuthSuccess | { ok: false; response: Response }
+
+async function authenticateMcpBearer(request: Request): Promise<McpAuthResult> {
+  const wwwAuth = mcpWwwAuthenticateHeader()
+  const token = extractBearerToken(request)
+  if (!token) {
+    return {
+      ok: false,
+      response: new Response('Unauthorized', {
+        status: 401,
+        headers: { 'WWW-Authenticate': wwwAuth },
+      }),
+    }
+  }
+
+  const authResult = await validateApiKey(token)
+  if ('error' in authResult) {
+    if (authResult.status === 429) {
+      return {
+        ok: false,
+        response: new Response(authResult.error, {
+          status: 429,
+          headers: { 'Content-Type': 'text/plain', 'Retry-After': '60' },
+        }),
+      }
+    }
+    return {
+      ok: false,
+      response: new Response('Unauthorized', {
+        status: 401,
+        headers: { 'WWW-Authenticate': wwwAuth },
+      }),
+    }
+  }
+
+  return { ok: true, ...authResult }
+}
+
+/**
+ * Streamable HTTP clients (e.g. Cursor) open GET with Accept: text/event-stream
+ * after POST initialize. Stateless tool servers have no server-initiated messages,
+ * but the stream must still authenticate and accept the connection.
+ */
+export async function handleMcpGetRequest(request: Request): Promise<Response> {
+  const auth = await authenticateMcpBearer(request)
+  if (!auth.ok) return auth.response
+
+  const accept = request.headers.get('accept') ?? ''
+  if (!accept.includes('text/event-stream')) {
+    return new Response(null, { status: 405 })
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(': connected\n\n'))
+    },
+  })
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+    },
+  })
+}
+
+export async function handleMcpRequest(request: Request): Promise<Response> {
   // ── Pre-auth: handle fire-and-forget notifications before auth check ──
   // MCP notifications have no id and don't expect error responses.
   // Checking auth on them would return 401 which confuses clients.
@@ -9092,30 +9182,10 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
   }
 
   // ── Auth ──
-  const token = extractBearerToken(request)
-  if (!token) {
-    return new Response('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': wwwAuth },
-    })
-  }
+  const auth = await authenticateMcpBearer(request)
+  if (!auth.ok) return auth.response
 
-  const authResult = await validateApiKey(token)
-  if ('error' in authResult) {
-    const status = authResult.status
-    if (status === 429) {
-      return new Response(authResult.error, {
-        status: 429,
-        headers: { 'Content-Type': 'text/plain', 'Retry-After': '60' },
-      })
-    }
-    return new Response('Unauthorized', {
-      status: 401,
-      headers: { 'WWW-Authenticate': wwwAuth },
-    })
-  }
-
-  const { userId, companyId, scopes: keyScopes, apiKeyId, apiKeyName } = authResult
+  const { userId, companyId, scopes: keyScopes, apiKeyId, apiKeyName } = auth
   const supabase = createServiceClientNoCookies()
   // The Mcp-Session-Id header (introduced in spec 2025-06-18) is the canonical
   // way for an agent to keep a stable identifier across tools/call invocations

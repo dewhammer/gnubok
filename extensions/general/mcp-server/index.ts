@@ -1,5 +1,5 @@
 import type { Extension } from '@/lib/extensions/types'
-import { handleMcpRequest, tools as mcpTools } from './server'
+import { handleMcpGetRequest, handleMcpRequest, tools as mcpTools } from './server'
 import { registerAgentTools } from '@/lib/agent/tools/registry'
 import type { AgentTool } from '@/lib/agent/tools/types'
 
@@ -30,16 +30,8 @@ export const mcpServerExtension: Extension = {
     {
       method: 'GET',
       path: '/mcp',
-      skipAuth: true,
-      handler: async () => {
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
-        return new Response('Authorization required', {
-          status: 401,
-          headers: {
-            'WWW-Authenticate': `Bearer resource_metadata="${appUrl}/.well-known/oauth-protected-resource"`,
-          },
-        })
-      },
+      skipAuth: true, // Auth handled via API key in the handler
+      handler: handleMcpGetRequest,
     },
     {
       method: 'DELETE',
