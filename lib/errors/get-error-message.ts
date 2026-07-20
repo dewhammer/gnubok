@@ -350,6 +350,20 @@ export function getErrorMessage(
         return 'Rättelsen saknar ekonomisk innebörd: varje konto netto till noll. En rättelse måste beskriva en faktisk affärshändelse (BFL 5 kap. 5 §).'
       }
 
+      if (structured.code === 'CUSTOMER_UPDATE_FAILED' || structured.code === 'CUSTOMER_CREATE_FAILED') {
+        const details = structured.details as { reason?: string } | undefined
+        const reason = details?.reason ?? ''
+        if (reason.includes('customers_personal_number_check') || reason.includes('23514')) {
+          return 'Personnumret är ogiltigt. Ange formatet YYMMDD-XXXX.'
+        }
+        if (reason.includes('23505')) {
+          return 'En kund med samma organisationsnummer finns redan.'
+        }
+        if (reason.includes('PGRST116') || reason.includes('0 rows')) {
+          return 'Kunden kunde inte hittas.'
+        }
+      }
+
       if (structured.code === 'BOOKKEEPING_DATABASE_ERROR') {
         // A DB-layer error may carry a user-relevant cause (e.g. period lock
         // trigger). Try the known-pattern map before falling back to the

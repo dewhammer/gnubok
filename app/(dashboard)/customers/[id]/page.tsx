@@ -420,6 +420,8 @@ export default function CustomerDetailPage({
                 country: customer.country || undefined,
                 org_number: customer.org_number || undefined,
                 vat_number: customer.vat_number || undefined,
+                personal_number: customer.personal_number || undefined,
+                language: customer.language || 'sv',
                 default_payment_terms: customer.default_payment_terms || undefined,
                 notes: customer.notes || undefined,
               }}
