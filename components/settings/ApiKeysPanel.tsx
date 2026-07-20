@@ -484,7 +484,7 @@ export function ApiKeysPanel() {
 
       {/* Create key dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent className="max-w-[calc(100vw-2rem)] rounded-2xl p-4 sm:max-w-3xl sm:p-6">
+        <DialogContent className="max-w-[calc(100vw-2rem)] rounded-2xl sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>{t('create_dialog_title')}</DialogTitle>
             <DialogDescription>
