@@ -9095,8 +9095,9 @@ type McpAuthSuccess = {
   userId: string
   companyId: string
   scopes: import('@/lib/auth/api-keys').ApiKeyScope[]
-  apiKeyId: string
-  apiKeyName: string | null
+  apiKeyId?: string
+  apiKeyName?: string
+  mode: import('@/lib/auth/api-keys').ApiKeyMode
 }
 
 type McpAuthResult = McpAuthSuccess | { ok: false; response: Response }
