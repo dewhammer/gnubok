@@ -2783,12 +2783,12 @@ export const tools: McpTool[] = [
         .update(updateData)
         .eq('id', customerId)
         .eq('company_id', companyId)
-        .select('id, name, email, language, customer_type, vat_number, vat_number_validated')
+        .select('id, name, email, customer_type, vat_number, vat_number_validated')
         .maybeSingle()
 
       if (error) {
         updateLog.error('customer update failed', error)
-        throw new Error('Customer update failed.')
+        throw new Error(`Customer update failed: ${error.message}`)
       }
       if (!data) throw new Error('Customer not found.')
 
